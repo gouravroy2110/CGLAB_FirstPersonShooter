@@ -1,5 +1,5 @@
 // =============================================================================
-//  mainwindow.h  —  FPS Raycaster  |  Week 1
+//  mainwindow.h  —  FPS Raycaster  |  Week 1+
 // =============================================================================
 #pragma once
 #include <QWidget>
@@ -9,6 +9,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QApplication>
 #include <set>
 #include "game.h"
 
@@ -30,36 +31,44 @@ private slots:
 private:
     // ── Framebuffer ──────────────────────────────────────────────────────────
     QImage    m_buf;
-    uint32_t *m_pixels;   // raw pointer into m_buf.bits()
-    float     m_zBuf[W];  // per-column wall depth (for sprite occlusion)
+    uint32_t *m_pixels;
+    float     m_zBuf[W];
 
     // ── Loop ─────────────────────────────────────────────────────────────────
-    QTimer       m_timer;
+    QTimer        m_timer;
     QElapsedTimer m_clock;
-    double       m_lastMs = 0;
-    double       m_fps    = 60;
+    double        m_lastMs = 0;
+    double        m_fps    = 60;
+    float         m_dt     = 0.016f;  // last frame delta (for bullet trails)
 
     // ── Input ────────────────────────────────────────────────────────────────
     std::set<int> m_keys;
 
-    // ── Game ─────────────────────────────────────────────────────────────────
+    // ── State ────────────────────────────────────────────────────────────────
     GameState m_gs;
+    bool      m_paused = false;
 
     // ── Logic ────────────────────────────────────────────────────────────────
-    void initLevel();
+    void initGame();
+    void loadLevel(int lv);
     void gameStep(float dt);
     void fireBullet();
+    void enemyFire(Enemy &e);
     bool posValid(float x, float y) const;
+    bool hasLOS(float x0, float y0, float x1, float y1) const;
 
     // ── Renderer ─────────────────────────────────────────────────────────────
     void render();
-    void renderFloorCeiling();          // full-screen floor/ceiling pass
-    void renderWalls();                 // DDA raycaster → fills m_zBuf
-    void renderSprites();               // billboard sprites (enemies + bullets)
-    void renderWeapon();                // first-person gun at screen bottom
-    void renderHUD();                   // QPainter text overlay
+    void renderFloorCeiling();
+    void renderWalls();
+    void renderSprites();
+    void renderWeaponAndArms();
+    void renderDamageVignette();
+    void renderHUD();
+    void renderPauseMenu();
+    void renderLevelBanner();
 
-    // Pixel-level helpers
+    // Pixel helpers (pure raster — all write directly to m_pixels)
     inline void  px(int x, int y, uint32_t c);
     void fillRect(int x, int y, int w, int h, uint32_t c);
     void fillCircle(int cx, int cy, int r, uint32_t c);
@@ -67,7 +76,9 @@ private:
 
     // Color helpers
     static uint32_t fogBlend(uint32_t col, float dist);
+    static uint32_t dimColor(uint32_t col, float bright);
     static uint32_t wallPixel(int type, float wx, float wy, int side, float dist);
     static uint32_t sampleImp(float u, float v, bool flash);
-    static uint32_t sampleBullet(float u, float v);
+    static uint32_t samplePlayerBullet(float u, float v);
+    static uint32_t sampleEnemyBullet(float u, float v);
 };
