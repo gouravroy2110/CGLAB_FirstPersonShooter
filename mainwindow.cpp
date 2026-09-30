@@ -1118,8 +1118,31 @@ void MainWindow::renderRadar()
     fillCircle(RX,RY,3,0xFFFFFFFF);
     for(int r=4;r<20;r++)px(RX+int(pl.dirX*r),RY+int(pl.dirY*r),r<10?0xFFFFFFFF:0x88FFFFFF);
     bool blink=(m_gs.frameNum/8)%2==0;
-    for(const auto &e:m_gs.enemies){if(!e.alive)continue;float relX=e.x-pl.posX,relY=e.y-pl.posY,fwd=relX*pl.dirX+relY*pl.dirY,rgt=relY*pl.dirX-relX*pl.dirY;int ex2=RX+int(rgt*float(RD)/12.f),ey2=RY-int(fwd*float(RD)/12.f);if(ex2<2||ex2>=W-2||ey2<2||ey2>=H-2)continue;fillCircle(ex2,ey2,blink?4:3,blink?0xFFFF2200:0xFFFF6600);}
-    for(const auto &k:m_gs.healthKits){if(!k.active)continue;float relX=k.x-pl.posX,relY=k.y-pl.posY,fwd=relX*pl.dirX+relY*pl.dirY,rgt=relY*pl.dirX-relX*pl.dirY;int kx=RX+int(rgt*float(RD)/12.f),ky=RY-int(fwd*float(RD)/12.f);if(kx>=2&&kx<W-2&&ky>=2&&ky<H-2)fillCircle(kx,ky,3,0xFF22FF66);}
+    auto clampRadar = [&](float &rx, float &ry){
+        float d2 = rx*rx + ry*ry;
+        float maxD = RD - 4.f;
+        if(d2 > maxD*maxD){
+            float d = sqrtf(d2);
+            rx = rx / d * maxD;
+            ry = ry / d * maxD;
+        }
+    };
+    for(const auto &e:m_gs.enemies){
+        if(!e.alive)continue;
+        float relX=e.x-pl.posX,relY=e.y-pl.posY,fwd=relX*pl.dirX+relY*pl.dirY,rgt=relY*pl.dirX-relX*pl.dirY;
+        float pxOff = rgt*float(RD)/12.f, pyOff = -fwd*float(RD)/12.f;
+        clampRadar(pxOff, pyOff);
+        int ex2=RX+int(pxOff),ey2=RY+int(pyOff);
+        fillCircle(ex2,ey2,blink?4:3,blink?0xFFFF2200:0xFFFF6600);
+    }
+    for(const auto &k:m_gs.healthKits){
+        if(!k.active)continue;
+        float relX=k.x-pl.posX,relY=k.y-pl.posY,fwd=relX*pl.dirX+relY*pl.dirY,rgt=relY*pl.dirX-relX*pl.dirY;
+        float pxOff = rgt*float(RD)/12.f, pyOff = -fwd*float(RD)/12.f;
+        clampRadar(pxOff, pyOff);
+        int kx=RX+int(pxOff),ky=RY+int(pyOff);
+        fillCircle(kx,ky,3,0xFF22FF66);
+    }
     QPainter p2(&m_buf);p2.setFont(QFont("Courier New",7,QFont::Bold));p2.setPen(QColor(0,150,70));p2.drawText(QRect(RX-30,RY+RD+2,60,13),Qt::AlignCenter,"RADAR");p2.end();
 }
 
