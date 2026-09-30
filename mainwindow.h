@@ -1,5 +1,5 @@
 // =============================================================================
-//  mainwindow.h  —  FPS Raycaster  |  Full feature set
+//  mainwindow.h  —  Raster FPS | Full feature set
 // =============================================================================
 #pragma once
 #include <QWidget>
@@ -12,6 +12,8 @@
 #include <QPainter>
 #include <QApplication>
 #include <set>
+#include <vector>
+#include <QString>
 #include "game.h"
 
 class MainWindow : public QWidget {
@@ -36,16 +38,14 @@ private:
     QImage    m_buf;
     uint32_t *m_pixels;
     float     m_zBuf[W];
+    int       m_map[MAP_H][MAP_W];
 
-    // ── Active map (mutable copy, selected per game start) ───────────────────
-    int m_map[MAP_H][MAP_W];
+    // ── Zoom & pixel-scale (raster proof) ────────────────────────────────────
+    float m_zoomFactor = 1.f;
+    int   m_pixelScale = 1;
 
-    // ── Zoom & pixel-scale (professor raster proof) ───────────────────────────
-    float m_zoomFactor = 1.f;  // window display scale  (scroll wheel)
-    int   m_pixelScale = 1;    // render block size 1/2/4/8  ([ ] keys)
-
-    // ── ADS smooth transition ─────────────────────────────────────────────────
-    float m_adsFOVMult = 1.f;  // 1.0=normal, 0.5=zoomed in (lerps)
+    // ── ADS lerp ─────────────────────────────────────────────────────────────
+    float m_adsFOVMult = 1.f;
 
     // ── Loop ─────────────────────────────────────────────────────────────────
     QTimer        m_timer;
@@ -53,16 +53,28 @@ private:
     double        m_lastMs = 0;
     double        m_fps    = 60;
     float         m_dt     = 0.016f;
-    int           m_menuFrame = 0; // animates menus even when not playing
+    int           m_menuFrame = 0;
 
     // ── Input ────────────────────────────────────────────────────────────────
     std::set<int> m_keys;
 
-    // ── UI state ─────────────────────────────────────────────────────────────
-    GameScreen m_screen     = SCR_MENU;
-    bool       m_paused     = false;
-    int        m_mapChoice  = 0;     // pending map selection
-    int        m_charChoice = 0;     // pending character selection
+    // ── Screen state ─────────────────────────────────────────────────────────
+    GameScreen m_screen    = SCR_MENU;
+    bool       m_paused    = false;
+    int        m_mapChoice = 0;
+    int        m_charChoice= 0;
+    int        m_menuCursor= 0;   // navigable cursor for menus
+
+    // ── Visual feedback ───────────────────────────────────────────────────────
+    float m_hitMarker      = 0.f;  // >0: crosshair flash (white X when bullet hits)
+    float m_damageAngle    = 0.f;  // world angle toward damage source
+    float m_damageDirTimer = 0.f;  // >0: show damage direction indicator
+    int   m_combo          = 0;    // current kill streak
+    float m_comboTimer     = 0.f;  // resets combo after idle
+    float m_comboDisplay   = 0.f;  // fade timer for combo text
+
+    struct KFEntry { QString text; float life; };
+    std::vector<KFEntry> m_killFeed;  // recent kill notifications (max 4)
 
     // ── Game ─────────────────────────────────────────────────────────────────
     GameState m_gs;
@@ -77,24 +89,36 @@ private:
     bool posValid(float x, float y) const;
     bool hasLOS(float x0, float y0, float x1, float y1) const;
 
-    // ── Screens ───────────────────────────────────────────────────────────────
+    // ── Menu screens ──────────────────────────────────────────────────────────
+    static void drawMenuBg(uint32_t *px, int frame);
     void renderMenu();
     void renderMapSelect();
     void renderCharSelect();
 
-    // ── Game renderers ────────────────────────────────────────────────────────
+    // ── Game render pipeline ──────────────────────────────────────────────────
     void render();
     void renderFloorCeiling();
     void renderWalls();
-    void renderSprites();        // enemies + bullets with trail
-    void renderParticles();      // blood FX
-    void renderWeaponAndArms();  // arms + ADS + muzzle flash
+    void renderSprites();
+    void renderParticles();
+    void renderWeaponAndArms();
     void renderDamageVignette();
     void renderHUD();
-    void renderPauseMenu();
     void renderLevelBanner();
+    void renderPauseMenu();
 
-    // ── Pixel helpers (pure raster — write directly to m_pixels) ─────────────
+    // ── HUD sub-renderers ─────────────────────────────────────────────────────
+    void renderTopBar();
+    void renderRadar();
+    void renderHealthPanel();
+    void renderAmmoPanel();
+    void renderCrosshair();
+    void renderDamageDirection();
+    void renderTargetBar();
+    void renderComboDisplay();
+    void renderKillFeed();
+
+    // ── Pixel helpers (pure raster, all write to m_pixels) ───────────────────
     inline void  px(int x, int y, uint32_t c);
     void fillRect(int x, int y, int w, int h, uint32_t c);
     void fillCircle(int cx, int cy, int r, uint32_t c);
