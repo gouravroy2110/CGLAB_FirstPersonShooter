@@ -322,9 +322,21 @@ Level 1 enemies at corners + centre. More spawn slots filled each level.
 No external libraries. Only Qt Widgets module required.
 
 ---
-## Changes :
----
+## Changes & New Features
 
+### High-Fidelity Tactical Updates
+- **Procedural Sky & Clouds:** Beautiful 5-octave FBM Value Noise computed per-pixel for sky and clouds, complete with parallax scrolling and dynamic sun. Pure software rendering!
+- **Difficulty Select:** New pre-game screen to choose Easy, Medium, or Hard. Scales enemy HP, damage, firing speed, and health kit spawns.
+- **Health Kits:** Added medkits to maps. Walk over to heal. Rendered as bobbing raster billboards with a pulsing green glow ring.
+- **Enemy HP Display:** Hitting an enemy displays an HP bar above their sprite for 2.2 seconds.
+- **Improved Weapon Visuals:** High-detail tactical pistol featuring an ejector port, barrel bore, rear serrations, stippled grip, trigger guard, and dot sights.
+- **Improved Arms:** Tactical gloved arms with forearm muscle definition, knuckle highlights, and a wrist watch detail on the firing hand.
+
+### UI & Performance Fixes
+- **Massive FPS Boost:** Skybox, wall textures, and menu vignette are now pre-generated, eliminating millions of per-pixel floating-point math calls per frame. FPS increased significantly!
+- **UI Layout Fixes:** Adjusted heading alignment on the Character Select screen to prevent text clipping.
+
+---
 ## Movement Fixes and Improvements
 
 ### Corrected A/D Strafing
