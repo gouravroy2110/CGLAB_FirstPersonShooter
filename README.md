@@ -322,6 +322,75 @@ Level 1 enemies at corners + centre. More spawn slots filled each level.
 No external libraries. Only Qt Widgets module required.
 
 ---
+## Changes :
+---
+
+## Movement Fixes and Improvements
+
+### Corrected A/D Strafing
+
+The original strafing calculations were reversed. Pressing **A** moved the player right, while pressing **D** moved the player left.
+
+The movement vectors were corrected so that:
+
+- **A** strafes left relative to the player's viewing direction.
+- **D** strafes right relative to the player's viewing direction.
+
+### Fixed Diagonal Movement
+
+Previously, each movement key applied full speed independently. Pressing two keys together, such as **W + D**, made diagonal movement approximately `√2` times faster than straight movement.
+
+The movement inputs are now combined into a single vector and normalized before applying speed:
+
+```cpp
+float moveX = 0.f;
+float moveY = 0.f;
+
+if (m_keys.count(Qt::Key_W)) {
+    moveX += pl.dirX;
+    moveY += pl.dirY;
+}
+
+if (m_keys.count(Qt::Key_S)) {
+    moveX -= pl.dirX;
+    moveY -= pl.dirY;
+}
+
+// Strafe left
+if (m_keys.count(Qt::Key_A)) {
+    moveX += pl.dirY;
+    moveY -= pl.dirX;
+}
+
+// Strafe right
+if (m_keys.count(Qt::Key_D)) {
+    moveX -= pl.dirY;
+    moveY += pl.dirX;
+}
+
+// Normalize the movement vector
+float moveLength = std::sqrt(moveX * moveX + moveY * moveY);
+
+if (moveLength > 0.f) {
+    moveX /= moveLength;
+    moveY /= moveLength;
+
+    tryMove(
+        pl.posX + moveX * SPD,
+        pl.posY + moveY * SPD
+    );
+}
+```
+
+### Why This Change Was Made
+
+This update provides:
+
+- Correct left and right strafing
+- Working diagonal movement
+- Equal speed in every direction
+- Controls that behave like a standard first-person shooter
+- Existing wall-collision handling for diagonal movement
 
 ## How to Extend (Week 2+ Roadmap)
 
