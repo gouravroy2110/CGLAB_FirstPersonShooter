@@ -1149,7 +1149,7 @@ void MainWindow::renderRadar()
 void MainWindow::renderHealthPanel()
 {
     const Player &pl=m_gs.player; const CharProfile &cp=CHAR_PROFILES[m_charChoice];
-    const int PX=8,PY=H-80,PW=190,PH=72;
+    const int PX=8,PY=H-80,PW=215,PH=72;
     for(int y=PY;y<PY+PH;y++) for(int x=PX-2;x<PX+PW+2;x++){if(x<0||x>=W||y<0||y>=H)continue;uint32_t &pp=m_pixels[y*W+x];uint8_t r=(pp>>16&0xFF)/6,g2=(pp>>8&0xFF)/6+4,b2=(pp&0xFF)/6+6;m_pixels[y*W+x]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
     for(int x=PX-2;x<PX+PW+2&&x<W;x++)px(x,PY-1,0xFF004422);
     int segs=10,segW=(PW-30)/segs;
@@ -1210,7 +1210,16 @@ void MainWindow::renderDamageDirection()
 void MainWindow::renderTargetBar()
 {
     const Player &pl=m_gs.player;float bestDot=-1;int bestIdx=-1;float cosThr=cosf(20.f*3.14159f/180.f);
-    for(int i=0;i<int(m_gs.enemies.size());i++){const Enemy &e=m_gs.enemies[i];if(!e.alive)continue;float dx=e.x-pl.posX,dy=e.y-pl.posY,d=sqrtf(dx*dx+dy*dy);if(d>10)continue;float dot=(dx*pl.dirX+dy*pl.dirY)/d;if(dot>cosThr&&dot>bestDot){bestDot=dot;bestIdx=i;}}
+    for(int i=0;i<int(m_gs.enemies.size());i++){
+        const Enemy &e=m_gs.enemies[i];
+        if(!e.alive)continue;
+        float dx=e.x-pl.posX,dy=e.y-pl.posY,d=sqrtf(dx*dx+dy*dy);
+        if(d>10)continue;
+        float dot=(dx*pl.dirX+dy*pl.dirY)/d;
+        if(dot>cosThr&&dot>bestDot && hasLOS(pl.posX,pl.posY,e.x,e.y)){
+            bestDot=dot;bestIdx=i;
+        }
+    }
     if(bestIdx<0)return;
     const Enemy &te=m_gs.enemies[bestIdx];
     int maxHP=std::max(1,int(float(LEVEL_CFG[std::min(m_gs.level,5)].enemyHP+(m_gs.level>5?(m_gs.level-5)*2:0))*DIFF_CFG[m_difficulty].enemyHPMult));
