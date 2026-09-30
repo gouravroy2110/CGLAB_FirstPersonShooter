@@ -7,8 +7,7 @@ int main(int argc, char *argv[])
     app.setApplicationName("FPS Raster Game");
 
     MainWindow win;
-    win.setWindowTitle("FPS Raycaster — Doom Style  |  Week 1");
-    win.setFixedSize(W, H);          // lock to our framebuffer size
+    win.setWindowTitle("FPS Raster  |  Doom Style  |  SCROLL to zoom  |  [ ] pixel size");
     win.show();
 
     return app.exec();
