@@ -1,0 +1,48 @@
+# Qt / MinGW build artifacts
+*.o
+*.obj
+Makefile
+Makefile.Debug
+Makefile.Release
+*.pro.user
+*.pro.user.*
+
+# Build output directories
+debug/
+release/
+build/
+build-*/
+
+# Qt Creator project files
+*.creator
+*.creator.user
+*.qbs
+*.qbs.user
+*.qmlproject.user
+*.pri
+
+# Generated files
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+*.qrc.depends
+
+# Windows executables and DLLs
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# VS Code / CLion
+.vscode/
+.idea/
+CMakeLists.txt.user
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
