@@ -154,10 +154,44 @@ void MainWindow::gameStep(float dt)
         if (posValid(nx, pl.posY)) pl.posX = nx;
         if (posValid(pl.posX, ny)) pl.posY = ny;
     };
-    if (m_keys.count(Qt::Key_W)) tryMove(pl.posX+pl.dirX*SPD, pl.posY+pl.dirY*SPD);
-    if (m_keys.count(Qt::Key_S)) tryMove(pl.posX-pl.dirX*SPD, pl.posY-pl.dirY*SPD);
-    if (m_keys.count(Qt::Key_A)) tryMove(pl.posX-pl.dirY*SPD, pl.posY+pl.dirX*SPD);
-    if (m_keys.count(Qt::Key_D)) tryMove(pl.posX+pl.dirY*SPD, pl.posY-pl.dirX*SPD);
+    float moveX = 0.f;
+    float moveY = 0.f;
+
+   // Forward and backward
+   if (m_keys.count(Qt::Key_W)) {
+    moveX += pl.dirX;
+    moveY += pl.dirY;
+   }
+
+  if (m_keys.count(Qt::Key_S)) {
+    moveX -= pl.dirX;
+    moveY -= pl.dirY;
+  }
+
+  // A = left
+  if (m_keys.count(Qt::Key_A)) {
+    moveX += pl.dirY;
+    moveY -= pl.dirX;
+  }
+
+  // D =  right
+  if (m_keys.count(Qt::Key_D)) {
+    moveX -= pl.dirY;
+    moveY += pl.dirX;
+  }
+
+  // Normalize so diagonal movement is not faster
+  float moveLength = std::sqrt(moveX * moveX + moveY * moveY);
+
+  if (moveLength > 0.f) {
+    moveX /= moveLength;
+    moveY /= moveLength;
+
+    tryMove(
+        pl.posX + moveX * SPD,
+        pl.posY + moveY * SPD
+    );
+  }
 
     // Weapon bob
     if (moving) pl.bobPhase += dt * (pl.sprinting ? 8.f : 5.f);
