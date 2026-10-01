@@ -862,7 +862,7 @@ void MainWindow::renderWalls()
         int wt=m_map[mapY][mapX];
         float hScale=(wt==2)?0.85f:(wt==3)?1.3f:(wt==4)?0.9f:1.0f;
         int lh=std::max(1,int(float(H)/dist*hScale));
-        int ds=std::max(0,hor-lh/2),de=H-1;
+        int ds=std::max(0,hor-lh/2), de=std::min(H-1,hor+lh/2);
         
         float fog=std::max(0.f,1.f-dist/14.f);
         uint32_t fogM = uint32_t(fog*256);
@@ -881,56 +881,30 @@ void MainWindow::renderWalls()
         }
     }
 
-    // ── Stepped Platform Terrain Floor ─────────────────────────────────────
-    // Height is discrete: 0 (ground), 1 (low platform ~0.3), 2 (high platform ~0.55)
-    // Creates visible steps/ledges the player must jump to traverse
-    auto tileH = [](int tx, int ty) -> float {
-        int h = ((tx*17 + ty*31) ^ (tx*3+ty)) & 15;
-        if(h < 3)  return 0.55f;   // ~20% high platforms
-        if(h < 6)  return 0.28f;   // ~20% low platforms
-        return 0.f;                  // 60% ground level
-    };
-    auto getH = [&](float fx, float fy) -> float {
-        return tileH(int(floorf(fx)), int(floorf(fy)));
-    };
-    for(int x=0;x<W;x+=PS){
-        float camX = 2.f*x/float(W)-1.f;
-        float rX = pl.dirX + pl.planeX*m_adsFOVMult*camX;
-        float rY = pl.dirY + pl.planeY*m_adsFOVMult*camX;
-        int max_y = H;
-        float d = 0.15f;
-        int lastTX = -999, lastTY = -999;
-        float lastH = 0.f;
-        while(d < std::min(m_zBuf[x], 18.f)){
-            float fx = pl.posX + rX*d, fy = pl.posY + rY*d;
-            int itx=int(floorf(fx)), ity=int(floorf(fy));
-            float h = tileH(itx, ity);
-            // Only re-paint when we enter a new tile or height changes
-            if(itx!=lastTX || ity!=lastTY){
-                lastTX=itx; lastTY=ity; lastH=h;
-                // Compute screen Y where floor of this tile appears
-                float elev = 0.5f - h; // how far below horizon the tile surface is
-                int sy = hor + int(elev*(H)/d);
-                if(sy < max_y && sy < H){
-                    sy = std::max(0, sy);
-                    // Color: darker for high platforms, lighter for ground
-                    float bright = 0.4f + h*0.5f;
-                    int n = ((itx*7+ity*13)^itx)&15;
-                    float fog = std::max(0.f, 1.f - d/16.f);
-                    // Edge highlight: top pixel of platform is lighter (ledge)
-                    bool isEdge = (sy > 0 && sy < H-1);
-                    for(int y=sy; y<max_y && y<H; y++){
-                        float tileBlend = (y==sy && isEdge && h>0.1f) ? (bright+0.25f) : bright;
-                        uint8_t base = uint8_t(std::min(255.f, (30.f + n*2 + h*40.f) * fog * tileBlend));
-                        uint8_t r2 = uint8_t(base * 0.95f);
-                        uint8_t g2 = uint8_t(base * 0.88f);
-                        uint8_t b2 = uint8_t(base * 0.62f);
-                        for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[y*W+(x+bx)] = (0xFF<<24)|(r2<<16)|(g2<<8)|b2;
-                    }
-                    max_y = sy;
-                }
-            }
-            d += 0.04f + d*0.025f;
+    // ── Floor — perspective-correct + stepped visual tint ────────────────────
+    float rdX0=pl.dirX-pl.planeX*m_adsFOVMult, rdY0=pl.dirY-pl.planeY*m_adsFOVMult;
+    float rdX1=pl.dirX+pl.planeX*m_adsFOVMult, rdY1=pl.dirY+pl.planeY*m_adsFOVMult;
+    for(int y=hor+1;y<H;y+=PS){
+        int p2=y-hor; if(p2<=0) continue;
+        float rowDist=float(H/2)/float(p2);
+        float sX=rowDist*(rdX1-rdX0)/float(W), sY=rowDist*(rdY1-rdY0)/float(W);
+        float fX=pl.posX+rowDist*rdX0, fY=pl.posY+rowDist*rdY0;
+        float fog=std::max(0.f,1.f-rowDist/14.f);
+        uint32_t fogM = uint32_t(fog*256);
+        for(int x=0;x<W;x+=PS){
+            // Stepped platform tint: hash tile coordinates for height
+            int itx=int(floorf(fX)), ity=int(floorf(fY));
+            int hv=((itx*17+ity*31)^(itx*3+ity))&15;
+            float h=(hv<3)?0.4f:(hv<6)?0.2f:0.f;  // platform heights (well below eye)
+            // Brightness: elevated platforms appear lighter
+            uint32_t base_v = uint32_t(28 + int(h*30) + ((itx*7+ity*11)^itx)%8);
+            uint8_t r = uint8_t((base_v * 95 / 100 * fogM) >> 8);
+            uint8_t g = uint8_t((base_v * 88 / 100 * fogM) >> 8);
+            uint8_t b = uint8_t((base_v * 62 / 100 * fogM) >> 8);
+            uint32_t fc = (0xFF<<24)|(r<<16)|(g<<8)|b;
+            for(int by=0;by<PS&&y+by<H;by++)
+                for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[(y+by)*W+(x+bx)]=fc;
+            fX+=sX*PS; fY+=sY*PS;
         }
     }
 }
