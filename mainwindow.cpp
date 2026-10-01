@@ -39,11 +39,43 @@ MainWindow::MainWindow(QWidget *parent)
                 case 1:{bool m=(ty%16<2)||((ty/16)%2==0?(tx%32<2):((tx+16)%32<2));if(m){c=0xFF555555;break;}int n=((tx*7+ty*13)^tx)&7;uint8_t v=uint8_t(125+n);c=(0xFF<<24)|(v<<16)|(v<<8)|v;break;}
                 case 2:{bool m=(ty%8<1)||((ty/8)%2==0?(tx%20<2):((tx+10)%20<2));if(m){c=0xFF777766;break;}int n=((tx*5+ty*11)^ty)&15;c=(0xFF<<24)|(uint8_t(155+n)<<16)|(uint8_t(72+n/3)<<8)|uint8_t(55+n/3);break;}
                 case 3:{int n=((tx*3+ty*7)^(tx+ty))&31;uint8_t v=uint8_t(90+n);c=(0xFF<<24)|(uint8_t(v*.75f)<<16)|(uint8_t(v*.85f)<<8)|v;break;}
-                case 4:{ // Door — dark wood planks
-                    bool plank=(ty%10<2);
-                    if(plank){c=0xFF2A1A0A;break;}
+                case 4:{ // Door — detailed realistic door texture
+                    // Outer frame (4px border)
+                    bool frame = (tx<4||tx>59||ty<4||ty>59);
+                    if(frame){c=0xFF2A1E10;break;}
+                    // Inner frame shadow
+                    bool frameIn = (tx<6||tx>57||ty<6||ty>57);
+                    if(frameIn){c=0xFF1A1208;break;}
+                    // Door panels: two recessed panels (top half and bottom half)
+                    // Each panel has an inset and sunken area
+                    int px2=tx-6, py2=ty-6, pw=52, ph=53;
+                    int midY=ph/2+4;
+                    // Top panel  (ty 6..32), Bottom panel (ty 34..57)
+                    bool topPanelBorder   = (ty>=6 &&ty<=32)&&(px2<2||px2>=pw-2||py2<2||py2>=midY-8);
+                    bool botPanelBorder   = (ty>=34&&ty<=57)&&(px2<2||px2>=pw-2||(ty-34)<2||(ty-34)>=pw-12);
+                    if(topPanelBorder||botPanelBorder){c=0xFF1E1508;break;}
+                    bool topPanelInner = (ty>=8&&ty<=30)&&(px2>=2&&px2<pw-2);
+                    bool botPanelInner = (ty>=36&&ty<=55)&&(px2>=2&&px2<pw-2);
+                    if(topPanelInner||botPanelInner){
+                        // Sunken panel — slightly lighter than frame
+                        int n=((tx*5+ty*11)^ty)&7;
+                        uint8_t r=uint8_t(88+n*3),g2=uint8_t(55+n*2),b2=uint8_t(28+n);
+                        c=(0xFF<<24)|(r<<16)|(g2<<8)|b2; break;
+                    }
+                    // Centre divider strip between panels
+                    if(ty>=31&&ty<=35){c=0xFF221800;break;}
+                    // Door handle: small circle on right side, middle height
+                    int hcx=52,hcy=32;
+                    int hdx=tx-hcx,hdy=ty-hcy;
+                    if(hdx*hdx+hdy*hdy<9){c=0xFFD4AA00;break;} // gold knob
+                    if(hdx*hdx+hdy*hdy<16){c=0xFF8A6A00;break;}// knob shadow
+                    // Keyhole below handle
+                    int kcx=52,kcy=38;
+                    int kdx=tx-kcx,kdy=ty-kcy;
+                    if(kdx*kdx+kdy*kdy<4){c=0xFF101008;break;}
+                    // Main wood grain
                     int n=((tx*3+ty*7)^tx)&15;
-                    uint8_t r=uint8_t(100+n*4),g2=uint8_t(62+n*2),b2=uint8_t(30+n);
+                    uint8_t r=uint8_t(110+n*4),g2=uint8_t(68+n*2),b2=uint8_t(32+n);
                     c=(0xFF<<24)|(r<<16)|(g2<<8)|b2;
                     break;
                 }
@@ -248,7 +280,18 @@ void MainWindow::gameStep(float dt)
     if(m_keys.count(Qt::Key_D)){mx-=pl.dirY;my+=pl.dirX;}
     float len=sqrtf(mx*mx+my*my); if(len>0.001f){mx/=len;my/=len;}
     float nx=pl.posX+mx*SPD,ny=pl.posY+my*SPD;
-    if(posValid(nx,pl.posY))pl.posX=nx; if(posValid(pl.posX,ny))pl.posY=ny;
+    // Terrain height step collision — can't walk up ledges without jumping
+    auto tileHfn=[](float fx,float fy)->float{
+        int tx=int(floorf(fx)),ty=int(floorf(fy));
+        int h=((tx*17+ty*31)^(tx*3+ty))&15;
+        return (h<3)?0.55f:(h<6)?0.28f:0.f;
+    };
+    float srcH=tileHfn(pl.posX,pl.posY);
+    float dstHx=tileHfn(nx,pl.posY), dstHy=tileHfn(pl.posX,ny);
+    // Block if destination platform > source by more than jump can clear
+    float jumpH=m_jumpZ;
+    if(posValid(nx,pl.posY) && (dstHx <= srcH+0.15f || jumpH > dstHx-srcH-0.05f)) pl.posX=nx;
+    if(posValid(pl.posX,ny) && (dstHy <= srcH+0.15f || jumpH > dstHy-srcH-0.05f)) pl.posY=ny;
     if(moving)pl.bobPhase+=dt*(pl.sprinting?8.f:4.f); else pl.bobPhase*=0.85f;
 
     // Health kit pickup
@@ -449,12 +492,20 @@ void MainWindow::mousePressEvent(QMouseEvent *e){
 void MainWindow::mouseReleaseEvent(QMouseEvent *e){if(e->button()==Qt::RightButton)m_gs.player.adsMode=false;}
 void MainWindow::mouseMoveEvent(QMouseEvent *e){
     if(m_screen!=SCR_PLAYING||m_paused||m_gs.gameOver)return;
-    int cx=width()/2; float dx=float(e->x()-cx); if(std::fabs(dx)<1.f)return;
-    float rot2=dx*-(m_gs.player.adsMode?0.0008f:0.0015f);
+    int cx=width()/2, cy=height()/2;
+    float dxf=float(e->x()-cx), dyf=float(e->y()-cy);
+    if(std::fabs(dxf)<1.f && std::fabs(dyf)<1.f) return;
+    // Horizontal rotation
+    float sens = m_gs.player.adsMode ? 0.0008f : 0.0015f;
+    float rot2 = dxf * -sens;
     Player &pl=m_gs.player; float ox=pl.dirX,op=pl.planeX;
     pl.dirX=pl.dirX*cosf(rot2)+pl.dirY*sinf(rot2);pl.dirY=-ox*sinf(rot2)+pl.dirY*cosf(rot2);
     pl.planeX=pl.planeX*cosf(rot2)+pl.planeY*sinf(rot2);pl.planeY=-op*sinf(rot2)+pl.planeY*cosf(rot2);
-    QCursor::setPos(mapToGlobal(QPoint(cx,height()/2)));
+    // Vertical look (pitch)
+    float pitchSens = m_gs.player.adsMode ? 0.35f : 0.55f;
+    m_pitch += dyf * pitchSens;
+    m_pitch = std::max(-220.f, std::min(220.f, m_pitch));
+    QCursor::setPos(mapToGlobal(QPoint(cx, cy)));
 }
 void MainWindow::wheelEvent(QWheelEvent *e){
     int steps=e->angleDelta().y()/120;
@@ -744,7 +795,7 @@ void MainWindow::renderCharSelect()
 void MainWindow::renderFloorCeiling()
 {
     const Player &pl=m_gs.player;
-    int shOff=int(pl.shakeY), hor=H/2+shOff+int(m_jumpZ*70.f);
+    int shOff=int(pl.shakeY), hor=H/2+shOff+int(m_jumpZ*70.f)+int(m_pitch);
     int PS=m_pixelScale;
     float facing=atan2f(pl.dirY,pl.dirX);
 
@@ -796,7 +847,7 @@ void MainWindow::renderFloorCeiling()
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::renderWalls()
 {
-    const Player &pl=m_gs.player; int shOff=int(pl.shakeY),hor=H/2+shOff+int(m_jumpZ*70.f); int PS=m_pixelScale;
+    const Player &pl=m_gs.player; int shOff=int(pl.shakeY),hor=H/2+shOff+int(m_jumpZ*70.f)+int(m_pitch); int PS=m_pixelScale;
     for(int x=0;x<W;x+=PS){
         float camX=2.f*x/float(W)-1.f,rdX=pl.dirX+pl.planeX*m_adsFOVMult*camX,rdY=pl.dirY+pl.planeY*m_adsFOVMult*camX;
         int mapX=int(pl.posX),mapY=int(pl.posY);
@@ -831,41 +882,60 @@ void MainWindow::renderWalls()
         }
     }
 
-    // ── Voxel Terrain Floor ──────────────────────────────────────────────
-    auto getH = [](float fx, float fy) {
-        return sinf(fx*1.5f)*0.08f + cosf(fy*1.5f)*0.08f + sinf((fx+fy)*0.8f)*0.04f;
+    // ── Stepped Platform Terrain Floor ─────────────────────────────────────
+    // Height is discrete: 0 (ground), 1 (low platform ~0.3), 2 (high platform ~0.55)
+    // Creates visible steps/ledges the player must jump to traverse
+    auto tileH = [](int tx, int ty) -> float {
+        int h = ((tx*17 + ty*31) ^ (tx*3+ty)) & 15;
+        if(h < 3)  return 0.55f;   // ~20% high platforms
+        if(h < 6)  return 0.28f;   // ~20% low platforms
+        return 0.f;                  // 60% ground level
+    };
+    auto getH = [&](float fx, float fy) -> float {
+        return tileH(int(floorf(fx)), int(floorf(fy)));
     };
     for(int x=0;x<W;x+=PS){
         float camX = 2.f*x/float(W)-1.f;
         float rX = pl.dirX + pl.planeX*m_adsFOVMult*camX;
         float rY = pl.dirY + pl.planeY*m_adsFOVMult*camX;
         int max_y = H;
-        float d = 0.2f;
-        while(d < m_zBuf[x]){
+        float d = 0.15f;
+        int lastTX = -999, lastTY = -999;
+        float lastH = 0.f;
+        while(d < std::min(m_zBuf[x], 18.f)){
             float fx = pl.posX + rX*d, fy = pl.posY + rY*d;
-            float h = getH(fx,fy);
-            int sy = hor + int((0.5f-h)*(H/2)/d);
-            if(sy < max_y){
-                sy = std::max(0, sy);
-                int tx = int(fx*64.f)&63;
-                int ty = int(fy*64.f)&63;
-                int n = ((tx*5+ty*11)^tx)&15;
-                uint32_t c_val = 25 + n*2;
-                float fog = std::max(0.f, 1.f - d/14.f);
-                uint32_t fogM = uint32_t(fog*256);
-                uint8_t r = (c_val * fogM) >> 8;
-                uint8_t g = ((c_val * 210 / 256) * fogM) >> 8;
-                uint8_t b = ((c_val * 160 / 256) * fogM) >> 8;
-                uint32_t fc = (0xFF<<24)|(r<<16)|(g<<8)|b;
-                for(int y=sy; y<max_y; y++){
-                    for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[y*W+(x+bx)] = fc;
+            int itx=int(floorf(fx)), ity=int(floorf(fy));
+            float h = tileH(itx, ity);
+            // Only re-paint when we enter a new tile or height changes
+            if(itx!=lastTX || ity!=lastTY){
+                lastTX=itx; lastTY=ity; lastH=h;
+                // Compute screen Y where floor of this tile appears
+                float elev = 0.5f - h; // how far below horizon the tile surface is
+                int sy = hor + int(elev*(H)/d);
+                if(sy < max_y && sy < H){
+                    sy = std::max(0, sy);
+                    // Color: darker for high platforms, lighter for ground
+                    float bright = 0.4f + h*0.5f;
+                    int n = ((itx*7+ity*13)^itx)&15;
+                    float fog = std::max(0.f, 1.f - d/16.f);
+                    // Edge highlight: top pixel of platform is lighter (ledge)
+                    bool isEdge = (sy > 0 && sy < H-1);
+                    for(int y=sy; y<max_y && y<H; y++){
+                        float tileBlend = (y==sy && isEdge && h>0.1f) ? (bright+0.25f) : bright;
+                        uint8_t base = uint8_t(std::min(255.f, (30.f + n*2 + h*40.f) * fog * tileBlend));
+                        uint8_t r2 = uint8_t(base * 0.95f);
+                        uint8_t g2 = uint8_t(base * 0.88f);
+                        uint8_t b2 = uint8_t(base * 0.62f);
+                        for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[y*W+(x+bx)] = (0xFF<<24)|(r2<<16)|(g2<<8)|b2;
+                    }
+                    max_y = sy;
                 }
-                max_y = sy;
             }
-            d += 0.02f + d*0.015f;
+            d += 0.04f + d*0.025f;
         }
     }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  3. Sprites — enemies + bullets + medkits + enemy HP bars
@@ -884,7 +954,7 @@ void MainWindow::renderSprites()
     std::sort(sprites.begin(),sprites.end(),[](const Sp&a,const Sp&b2){return a.dist>b2.dist;});
     float eplX=pl.planeX*m_adsFOVMult,eplY=pl.planeY*m_adsFOVMult;
     float invDet=1.f/(eplX*pl.dirY-pl.dirX*eplY);
-    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f);
+    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f)+int(m_pitch);
 
     // Collect HP bar data for a single QPainter pass at end
     struct HPBar{int scrX,sprTop,sprH;float frac,alpha;int hp;};
@@ -973,7 +1043,7 @@ void MainWindow::renderParticles()
     const Player &pl=m_gs.player;
     float eplX=pl.planeX*m_adsFOVMult,eplY=pl.planeY*m_adsFOVMult;
     float invDet=1.f/(eplX*pl.dirY-pl.dirX*eplY);
-    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f);
+    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f)+int(m_pitch);
     for(const Particle &pt:m_gs.particles){
         if(pt.life<=0)continue;
         float spX=pt.x-pl.posX,spY=pt.y-pl.posY;
@@ -1485,7 +1555,7 @@ void MainWindow::renderPickupSprites()
     const Player &pl=m_gs.player;
     float eplX=pl.dirX,eplY=pl.dirY;
     float invDet=1.f/(pl.planeX*pl.dirY-pl.dirX*pl.planeY);
-    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f);
+    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f)+int(m_pitch);
     for(auto &wp : m_gs.weaponPickups){
         if(!wp.active) continue;
         float bob=sinf(wp.bobPhase)*0.08f;

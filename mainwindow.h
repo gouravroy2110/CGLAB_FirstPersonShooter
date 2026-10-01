@@ -58,6 +58,8 @@ private:
     float m_casingTimer = 0.f;
     float m_casingX = 0.f, m_casingY = 0.f;
     float m_casingVX = 0.f, m_casingVY = 0.f;
+    // Vertical look (pitch)
+    float m_pitch = 0.f;
 
     // ── Loop ─────────────────────────────────────────────────────────────────
     QTimer        m_timer;
