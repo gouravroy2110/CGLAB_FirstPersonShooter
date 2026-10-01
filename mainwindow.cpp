@@ -790,29 +790,8 @@ void MainWindow::renderFloorCeiling()
     // Horizon haze line
     for(int x=0;x<W;x++){int hy=std::max(0,std::min(H-1,hor));m_pixels[hy*W+x]=0xFF202830;}
 
-    // ── Floor — perspective-correct floor cast ────────────────────────────────
-    float rdX0=pl.dirX-pl.planeX*m_adsFOVMult,rdY0=pl.dirY-pl.planeY*m_adsFOVMult;
-    float rdX1=pl.dirX+pl.planeX*m_adsFOVMult,rdY1=pl.dirY+pl.planeY*m_adsFOVMult;
-    for(int y=hor+1;y<H;y+=PS){
-        int p2=y-hor; float rowDist=float(H/2)/float(p2);
-        float sX=rowDist*(rdX1-rdX0)/float(W),sY=rowDist*(rdY1-rdY0)/float(W);
-        float fX=pl.posX+rowDist*rdX0,fY=pl.posY+rowDist*rdY0;
-        float fog=std::max(0.f,1.f-rowDist/14.f);
-        uint32_t fogM = uint32_t(fog*256);
-        for(int x=0;x<W;x+=PS){
-            bool check=((int(fX)+int(fY))&1)==0;
-            uint32_t c_val = check ? 42 : 26;
-            uint8_t r = (c_val * fogM) >> 8;
-            uint8_t g = ((c_val * 220 / 256) * fogM) >> 8;
-            uint8_t b = ((c_val * 160 / 256) * fogM) >> 8;
-            uint32_t fc = (0xFF<<24)|(r<<16)|(g<<8)|b;
-            for(int by=0;by<PS&&y+by<H;by++) for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[(y+by)*W+(x+bx)]=fc;
-            fX+=sX*PS; fY+=sY*PS;
-        }
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
+} 
 //  2. Walls
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::renderWalls()
@@ -833,7 +812,7 @@ void MainWindow::renderWalls()
         int wt=m_map[mapY][mapX];
         float hScale=(wt==2)?0.85f:(wt==3)?1.3f:(wt==4)?0.9f:1.0f;
         int lh=std::max(1,int(float(H)/dist*hScale));
-        int ds=std::max(0,hor-lh/2),de=std::min(H-1,hor+lh/2);
+        int ds=std::max(0,hor-lh/2),de=H-1;
         
         float fog=std::max(0.f,1.f-dist/14.f);
         uint32_t fogM = uint32_t(fog*256);
@@ -849,6 +828,41 @@ void MainWindow::renderWalls()
             uint8_t r=(c>>16&0xFF)*fogM>>8, g=(c>>8&0xFF)*fogM>>8, b=(c&0xFF)*fogM>>8;
             c = (0xFF<<24)|(r<<16)|(g<<8)|b;
             for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[y*W+(x+bx)]=c;
+        }
+    }
+
+    // ── Voxel Terrain Floor ──────────────────────────────────────────────
+    auto getH = [](float fx, float fy) {
+        return sinf(fx*1.5f)*0.08f + cosf(fy*1.5f)*0.08f + sinf((fx+fy)*0.8f)*0.04f;
+    };
+    for(int x=0;x<W;x+=PS){
+        float camX = 2.f*x/float(W)-1.f;
+        float rX = pl.dirX + pl.planeX*m_adsFOVMult*camX;
+        float rY = pl.dirY + pl.planeY*m_adsFOVMult*camX;
+        int max_y = H;
+        float d = 0.2f;
+        while(d < m_zBuf[x]){
+            float fx = pl.posX + rX*d, fy = pl.posY + rY*d;
+            float h = getH(fx,fy);
+            int sy = hor + int((0.5f-h)*(H/2)/d);
+            if(sy < max_y){
+                sy = std::max(0, sy);
+                int tx = int(fx*64.f)&63;
+                int ty = int(fy*64.f)&63;
+                int n = ((tx*5+ty*11)^tx)&15;
+                uint32_t c_val = 25 + n*2;
+                float fog = std::max(0.f, 1.f - d/14.f);
+                uint32_t fogM = uint32_t(fog*256);
+                uint8_t r = (c_val * fogM) >> 8;
+                uint8_t g = ((c_val * 210 / 256) * fogM) >> 8;
+                uint8_t b = ((c_val * 160 / 256) * fogM) >> 8;
+                uint32_t fc = (0xFF<<24)|(r<<16)|(g<<8)|b;
+                for(int y=sy; y<max_y; y++){
+                    for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[y*W+(x+bx)] = fc;
+                }
+                max_y = sy;
+            }
+            d += 0.02f + d*0.015f;
         }
     }
 }
