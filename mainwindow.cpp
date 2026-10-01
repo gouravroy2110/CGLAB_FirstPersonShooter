@@ -145,7 +145,8 @@ void MainWindow::loadLevel(int lv)
     for (int y=0;y<MAP_H;y++) for (int x=0;x<MAP_W;x++) m_map[y][x]=src[y*MAP_W+x];
 
     // Player reset
-    m_gs.player.posX=2.5f; m_gs.player.posY=2.5f;
+    m_gs.player.posX=PLAYER_SPAWNS[m_gs.mapChoice][0];
+    m_gs.player.posY=PLAYER_SPAWNS[m_gs.mapChoice][1];
     m_gs.player.dirX=1.f;  m_gs.player.dirY=0.f;
     m_gs.player.planeX=0.f;m_gs.player.planeY=0.66f;
     m_gs.player.shakeY=0;  m_gs.player.adsMode=false;
@@ -555,7 +556,7 @@ void MainWindow::renderMapSelect()
             for(int dy=0;dy<tsize-1;dy++) for(int dx=0;dx<tsize-1;dx++){int px3=previewX+mx2*tsize+dx,py3=previewY+my2*tsize+dy;if(px3>=0&&px3<W&&py3>=0&&py3<H)m_pixels[py3*W+px3]=col;}
         }
         if(sel){int scanY=previewY+int(fmodf(m_menuFrame*0.4f,24*tsize));for(int x=previewX;x<previewX+24*tsize&&x<W;x++){if(scanY>=0&&scanY<H){uint32_t &pp=m_pixels[scanY*W+x];pp=(0xFF<<24)|((pp>>16&0xFF)/2+10)<<16|((pp>>8&0xFF)/2+60)<<8|((pp&0xFF)/2+20);}}}
-        px(previewX+int(2.5f*tsize),previewY+int(2.5f*tsize),0xFF00FFAA);
+        px(previewX+int(PLAYER_SPAWNS[i][0]*tsize),previewY+int(PLAYER_SPAWNS[i][1]*tsize),0xFF00FFAA);
         int infoY=cy+24*tsize+18;
         p.setFont(QFont("Courier New",16,QFont::Bold));p.setPen(sel?QColor(0,255,140):QColor(120,180,140));
         p.drawText(QRect(cx-cw/2+8,infoY,cw-8,28),Qt::AlignCenter,QString("[%1]  %2").arg(i+1).arg(MAP_NAMES[i]));

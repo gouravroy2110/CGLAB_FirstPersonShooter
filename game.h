@@ -73,6 +73,9 @@ static const float CRYPT_KITS[6][2]   = {{5.5f,5.5f},{5.5f,17.5f},{16.5f,5.5f},{
 static const float (*ALL_KITS[3])[2]  = { DUNGEON_KITS, ARENA_KITS, CRYPT_KITS };
 static const int MAX_KITS = 6;
 
+// Player spawn positions per map
+static const float PLAYER_SPAWNS[3][2] = { {2.5f, 2.5f}, {2.5f, 2.5f}, {1.5f, 1.5f} };
+
 // ─── Imp sprite 16×16 ────────────────────────────────────────────────────────
 #define _X 0x00000000
 #define SK 0xFF9B6B3D
