@@ -1,112 +1,78 @@
-﻿// =============================================================================
-//  mainwindow.cpp  ΓÇö  Raster FPS  |  Full feature set
+// =============================================================================
+//  mainwindow.cpp  -  Construction, game loop, game logic, input, hitscan
 //
-//  Γÿà RASTER PROOF:
-//    ΓÇó Sky + clouds are computed PER PIXEL each frame ΓÇö sinusoidal noise,
-//      no textures, no images. Scroll wheel or [ key zooms in ΓåÆ chunky blocks.
-//    ΓÇó All game/HUD geometry: raw uint32_t* writes (fillRect/fillCircle/drawLine).
-//    ΓÇó QPainter used ONLY for drawText (Qt's QRasterPaintEngine ΓÇö no GPU).
+//  RASTER PROOF: every visible pixel is written by the CPU into m_buf
+//  (a QImage used purely as a uint32_t framebuffer). QPainter is used for
+//  one thing only: copying the finished image to the window. Text uses our
+//  bitmap pixel font (pixelfont.h); window scaling and the zoom magnifier are
+//  our own nearest-neighbour loop (paintEvent).
+//
+//  World / terrain logic lives in world.cpp; rendering lives in:
+//    render_world.cpp   heightfield terrain + walls, sky, sprites, particles, tracers
+//    render_weapon.cpp  first-person weapon, hands, scope, reflex sight
+//    render_hud.cpp     HUD, menus, overlays
 // =============================================================================
 #include "mainwindow.h"
+#include "pixelfont.h"
 #include <QPainter>
+#include <QDir>
+#include <QFile>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  Constructor
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+static inline float frand() { return float(rand()) / float(RAND_MAX); }
+static inline float frand(float a, float b) { return a + (b - a) * frand(); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Constructor — bake every texture procedurally
+// ─────────────────────────────────────────────────────────────────────────────
 MainWindow::MainWindow(QWidget *parent)
     : QWidget(parent), m_buf(W, H, QImage::Format_ARGB32)
 {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
-    setMinimumSize(W/2, H/2);
+    setMinimumSize(W / 2, H / 2);
+    setWindowTitle("RASTER  -  Tactical Shooter");
     resize(W, H);
-    m_pixels = reinterpret_cast<uint32_t*>(m_buf.bits());
-    std::fill(m_zBuf, m_zBuf+W, 1e30f);
+    m_pixels = reinterpret_cast<uint32_t *>(m_buf.bits());
+    m_cv = rs::Canvas{m_pixels, W, H};
+    m_depth.assign(size_t(W) * H, 1e30f);
     std::memset(m_map, 0, sizeof(m_map));
-    std::memset(m_enemyHPDisplay, 0, sizeof(m_enemyHPDisplay));
+    for (int m = 0; m < 3; m++) parseLayout(ALL_LAYOUTS[m], m_parsed[m]);
 
-    // Precalculate textures
-    for(int t=1; t<=4; t++){
-        for(int ty=0; ty<64; ty++){
-            for(int tx=0; tx<64; tx++){
-                uint32_t c = 0xFF888888;
-                switch(t){
-                case 1:{bool m=(ty%16<2)||((ty/16)%2==0?(tx%32<2):((tx+16)%32<2));if(m){c=0xFF555555;break;}int n=((tx*7+ty*13)^tx)&7;uint8_t v=uint8_t(125+n);c=(0xFF<<24)|(v<<16)|(v<<8)|v;break;}
-                case 2:{bool m=(ty%8<1)||((ty/8)%2==0?(tx%20<2):((tx+10)%20<2));if(m){c=0xFF777766;break;}int n=((tx*5+ty*11)^ty)&15;c=(0xFF<<24)|(uint8_t(155+n)<<16)|(uint8_t(72+n/3)<<8)|uint8_t(55+n/3);break;}
-                case 3:{int n=((tx*3+ty*7)^(tx+ty))&31;uint8_t v=uint8_t(90+n);c=(0xFF<<24)|(uint8_t(v*.75f)<<16)|(uint8_t(v*.85f)<<8)|v;break;}
-                case 4:{ // Door ΓÇö dark wood planks
-                    bool plank=(ty%10<2);
-                    if(plank){c=0xFF2A1A0A;break;}
-                    int n=((tx*3+ty*7)^tx)&15;
-                    uint8_t r=uint8_t(100+n*4),g2=uint8_t(62+n*2),b2=uint8_t(30+n);
-                    c=(0xFF<<24)|(r<<16)|(g2<<8)|b2;
-                    break;
-                }
-                }
-                m_textures[t][ty*64+tx] = c;
-            }
+    std::vector<uint32_t> tmp;
+    for (int t = 0; t < 3; t++) {
+        bakeSky(m_sky[t], t);
+        bakeFloor(tmp, t);
+        m_floorTex[t].build(tmp, FLOOR_TS);
+        for (int type = 1; type <= 5; type++) {
+            bakeWall(tmp, type, t);
+            m_wallTex[t][type].build(tmp, WALL_TS);
         }
     }
-    // Precalculate vignette
-    for(int y=0; y<H; y++){
-        for(int x=0; x<W; x++){
-            float ddx = float(x-W/2)/(W/2);
-            float ddy = float(y-H/2)/(H/2);
-            float vig = ddx*ddx + ddy*ddy;
-            if(vig > 0.5f){
-                m_vignette[y][x] = uint8_t(std::min(1.f, (vig-0.5f)*1.6f) * 255);
-            } else {
-                m_vignette[y][x] = 0;
-            }
-        }
+    bakeEnemyAtlas(m_enemyAtlas, m_enemyMask, ENEMY_LOOK);
+    bakeEnemyAtlas(m_eliteAtlas, m_eliteMask, ELITE_LOOK);
+    bakePickups(m_pickupTex);
+    for (int c = 0; c < 3; c++) {
+        m_portrait[c].assign(PORTRAIT * PORTRAIT, 0);
+        paintSoldier(m_portrait[c].data(), nullptr, PORTRAIT, lookForClass(c), POSE_WALK, 0.f, c == 2);
     }
-    // Precalculate nice cloud skybox (FBM with Value Noise)
-    auto hash = [](int x, int y) {
-        int n = x + y * 57; n = (n<<13) ^ n;
-        return ( 1.0f - ( (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f);    
-    };
-    auto pnoise = [&](float x, float y, int period) {
-        int ix = (int)floorf(x), iy = (int)floorf(y);
-        float fx = x - ix, fy = y - iy;
-        float u = fx*fx*(3.0f-2.0f*fx), v = fy*fy*(3.0f-2.0f*fy);
-        int ix0 = ix % period; if(ix0<0) ix0+=period;
-        int ix1 = (ix+1) % period; if(ix1<0) ix1+=period;
-        float a = hash(ix0, iy), b = hash(ix1, iy), c = hash(ix0, iy+1), d = hash(ix1, iy+1);
-        return (a*(1.0f-u) + b*u)*(1.0f-v) + (c*(1.0f-u) + d*u)*v;
-    };
-    for(int y=0; y<300; y++){
-        float skyV = 1.f - float(y)/300.f;
-        float zR=12,zG=22,zB=70, hR=100,hG=150,hB=210;
-        uint8_t sr=uint8_t(hR*(1-skyV)+zR*skyV), sg=uint8_t(hG*(1-skyV)+zG*skyV), sb=uint8_t(hB*(1-skyV)+zB*skyV);
-        for(int x=0; x<1024; x++){
-            float skyU = float(x)/1024.f;
-            float n = 0, amp = 0.5f, freq = 6.0f;
-            for(int o=0; o<5; o++){
-                n += pnoise(skyU * freq, skyV * freq * 0.6f, (int)freq) * amp;
-                amp *= 0.5f; freq *= 2.0f;
-            }
-            n = n * 0.5f + 0.5f;
-            float cloud = std::max(0.f, (n - 0.45f) * 2.5f);
-            cloud *= std::min(1.f, skyV * 3.f);
-            cloud = std::min(1.f, cloud);
-            uint8_t cr = uint8_t(sr + (245-sr)*cloud), cg = uint8_t(sg + (245-sg)*cloud), cb = uint8_t(sb + (255-sb)*cloud*0.9f);
-            m_skybox[y*1024 + x] = (0xFF<<24)|(cr<<16)|(cg<<8)|cb;
-        }
-    }
+    // Bake every map's light map up front so menus never hitch
+    for (int m = 0; m < 3; m++) loadMapGeometry(m);
+    loadMapGeometry(m_mapChoice);
 
     connect(&m_timer, &QTimer::timeout, this, &MainWindow::tick);
     m_timer.start(16);
     m_clock.start();
 }
 
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// ─────────────────────────────────────────────────────────────────────────────
 //  initGame / loadLevel
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::initGame()
 {
     m_gs = GameState{};
@@ -116,1405 +82,1100 @@ void MainWindow::initGame()
 
     const CharProfile &cp = CHAR_PROFILES[m_charChoice];
     const DiffConfig  &dc = DIFF_CFG[m_difficulty];
-    m_gs.player.hp              = cp.hp;
-    m_gs.player.ammo            = cp.ammo;
-    m_gs.player.stamina         = cp.stamina;
-    m_gs.player.speedMult       = cp.speedMult + dc.speedBonus;
-    m_gs.player.damageReduction = cp.damageReduction;
-    m_gs.player.weaponTier = 0;
+    Player &pl = m_gs.player;
+    pl.hp              = cp.hp;
+    pl.stamina         = cp.stamina;
+    pl.speedMult       = cp.speedMult + dc.speedBonus;
+    pl.damageReduction = cp.damageReduction;
+    pl.curWeapon = WPN_PISTOL;
+    pl.mag[WPN_PISTOL] = WEAPONS[WPN_PISTOL].magSize;
+    pl.reserve[WPN_PISTOL] = cp.ammo * 2;
 
-    m_combo=0; m_comboTimer=0; m_comboDisplay=0; m_pitch=0.f;
-    m_hitMarker=0; m_damageDirTimer=0;
-    m_killFeed.clear();
+    m_combo = 0; m_comboTimer = 0; m_comboDisplay = 0;
+    m_pitch = 0; m_recoilPitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f; m_adsT = 0; m_adsFOVMult = 1;
+    m_hitMarker = m_headMarker = m_killMarker = m_headshotBanner = 0; m_damageDirTimer = 0;
+    m_velZ = 0; m_onGround = true; m_acidAcc = 0; m_kick = m_actionT = 0; m_pendingWeapon = -1;
+    m_killFeed.clear(); m_casings.clear();
     std::memset(m_enemyHPDisplay, 0, sizeof(m_enemyHPDisplay));
     loadLevel(1);
     m_paused = false;
+}
+
+int MainWindow::enemyMaxHP() const
+{
+    int idx = std::min(m_gs.level, 5);
+    return std::max(1, int(float(LEVEL_CFG[idx].enemyHP + (m_gs.level > 5 ? (m_gs.level - 5) * 25 : 0)) *
+                           DIFF_CFG[m_difficulty].enemyHPMult));
 }
 
 void MainWindow::loadLevel(int lv)
 {
     int idx = std::min(lv, 5);
     const LevelCfg   &cfg = LEVEL_CFG[idx];
-    const DiffConfig  &dc  = DIFF_CFG[m_difficulty];
+    const DiffConfig &dc  = DIFF_CFG[m_difficulty];
 
-    m_gs.level=lv; m_gs.killsThisLevel=0; m_gs.killsNeeded=cfg.killsNeeded;
-    m_gs.levelComplete=false; m_gs.levelTransTimer=0;
-    m_gs.bullets.clear(); m_gs.particles.clear(); m_gs.healthKits.clear();
-    m_gs.weaponPickups.clear();
+    m_gs.level = lv; m_gs.killsThisLevel = 0; m_gs.killsNeeded = cfg.killsNeeded;
+    m_gs.levelComplete = false; m_gs.levelTransTimer = 0;
+    m_gs.bullets.clear(); m_gs.tracers.clear(); m_gs.particles.clear(); m_gs.healthKits.clear();
+    m_gs.weaponPickups.clear(); m_gs.damageNums.clear();
     m_gs.enemyBulletSpeed = cfg.bulletSpeed  * dc.bulletSpeedMult;
     m_gs.enemyFireRate    = cfg.fireCooldown * dc.fireCoolMult;
 
-    if (lv>1) {
-        m_gs.player.hp   = std::min(m_gs.player.hp+30, CHAR_PROFILES[m_charChoice].hp);
-        m_gs.player.ammo = std::min(m_gs.player.ammo+20, CHAR_PROFILES[m_charChoice].ammo);
-        m_gs.player.damageFlash=0;
+    Player &pl = m_gs.player;
+    if (lv > 1) {
+        pl.hp = std::min(pl.hp + 30, CHAR_PROFILES[m_charChoice].hp);
+        int w = pl.curWeapon;
+        pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize, WEAPONS[w].maxReserve);
+        pl.damageFlash = 0;
     }
 
-    // Copy map
-    const int *src = ALL_MAPS[m_gs.mapChoice];
-    for (int y=0;y<MAP_H;y++) for (int x=0;x<MAP_W;x++) m_map[y][x]=src[y*MAP_W+x];
+    loadMapGeometry(m_gs.mapChoice);
 
-    // Player reset
-    m_gs.player.posX=PLAYER_SPAWNS[m_gs.mapChoice][0];
-    m_gs.player.posY=PLAYER_SPAWNS[m_gs.mapChoice][1];
-    m_gs.player.dirX=1.f;  m_gs.player.dirY=0.f;
-    m_gs.player.planeX=0.f;m_gs.player.planeY=0.66f;
-    m_gs.player.shakeY=0;  m_gs.player.adsMode=false;
+    const ParsedMap &pm = m_parsed[m_gs.mapChoice];
+    pl.posX = pm.spawnX;
+    pl.posY = pm.spawnY;
+    m_footZ = floorH(pl.posX, pl.posY); m_velZ = 0; m_onGround = true;
+    pl.dirX = 1.f;  pl.dirY = 0.f;
+    pl.planeX = 0.f; pl.planeY = 0.66f;
+    pl.shakeY = 0;  pl.adsMode = false;
+    pl.reloadTimer = 0; pl.switchTimer = 0;
+    m_pitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f;
 
-    // Spawn enemies (HP scaled by difficulty + level)
+    // Enemies: a random subset of the map's patrol spawns, plus every vault guard
     m_gs.enemies.clear();
-    const float (*spawns)[2]=ALL_SPAWNS[m_gs.mapChoice];
-    for (int i=0;i<std::min(cfg.numEnemies,12);i++){
-        Enemy e; e.x=spawns[i][0]; e.y=spawns[i][1];
-        e.hp   = int(std::max(1.f, float(cfg.enemyHP+(lv>5?(lv-5)*2:0))*dc.enemyHPMult));
-        e.aggroRange=cfg.aggroRange; e.fireCooldown=cfg.fireCooldown*dc.fireCoolMult; e.alive=true;
+    std::vector<Marker> spawns, kits;
+    for (const Marker &mk : pm.markers) { if (mk.kind == 'e') spawns.push_back(mk); if (mk.kind == 'k') kits.push_back(mk); }
+    for (size_t i = spawns.size(); i > 1; i--) std::swap(spawns[i - 1], spawns[size_t(rand()) % i]);
+    for (size_t i = kits.size(); i > 1; i--) std::swap(kits[i - 1], kits[size_t(rand()) % i]);
+    int hp = enemyMaxHP();
+    auto addEnemy = [&](float x, float y, bool elite) {
+        Enemy e; e.x = x; e.y = y; e.elite = elite;
+        e.hp = e.maxHp = elite ? hp * 2 : hp;
+        e.aggroRange = elite ? cfg.aggroRange + 3.f : cfg.aggroRange;
+        e.fireCooldown = frand(1.f, 3.f) * dc.fireCoolMult;
+        e.wanderTimer = frand(0.f, 3.f);
+        e.walkPhase = frand();
         m_gs.enemies.push_back(e);
-    }
+    };
+    int nEnemies = std::min(cfg.numEnemies + (lv > 5 ? 2 : 0), int(spawns.size()));
+    for (int i = 0; i < nEnemies; i++) addEnemy(spawns[i].x, spawns[i].y, false);
+    for (const Marker &mk : pm.markers) if (mk.kind == 'x') addEnemy(mk.x, mk.y, true);
+    m_gs.killsNeeded = std::min(m_gs.killsNeeded, int(m_gs.enemies.size()));
 
-    // Spawn health kits
-    const float (*kits)[2]=ALL_KITS[m_gs.mapChoice];
-    int numKits=std::min(dc.numKits, MAX_KITS);
-    for (int i=0;i<numKits;i++){
-        HealthKit k; k.x=kits[i][0]; k.y=kits[i][1]; k.active=true; k.bobPhase=float(i)*1.2f;
+    // Pickups placed by the level designer (medkit count scales with difficulty)
+    for (int i = 0; i < std::min(dc.numKits, int(kits.size())); i++) {
+        HealthKit k; k.x = kits[i].x; k.y = kits[i].y; k.active = true; k.bobPhase = float(i) * 1.2f;
         m_gs.healthKits.push_back(k);
+    }
+    m_gs.secretsTotal = 0;
+    for (int y = 0; y < MAP_H; y++) for (int x = 0; x < MAP_W; x++) if (m_map[y][x] == CELL_SECRET) m_gs.secretsTotal++;
+    for (const Marker &mk : pm.markers) {
+        WeaponPickup wp; wp.x = mk.x; wp.y = mk.y; wp.bobPhase = frand(0, 6.28f);
+        if (mk.kind == 'a') wp.type = PICKUP_AMMO;
+        else if (mk.kind == 'r') wp.type = PICKUP_RIFLE;
+        else if (mk.kind == 's') wp.type = PICKUP_SHOTGUN;
+        else if (mk.kind == 't') wp.type = PICKUP_INTEL;
+        else continue;
+        m_gs.weaponPickups.push_back(wp);
     }
 }
 
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  Tick
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// ─────────────────────────────────────────────────────────────────────────────
+//  Main loop
+// ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::tick()
 {
-    double now=m_clock.elapsed();
-    m_dt=float((now-m_lastMs)/1000.0); if(m_dt>0.05f)m_dt=0.05f;
-    m_fps=0.9*m_fps+0.1/double(m_dt); m_lastMs=now; m_menuFrame++;
+    double now = m_clock.elapsed();
+    float dt = float((now - m_lastMs) / 1000.0);
+    if (dt > 0.05f) dt = 0.05f;
+    if (dt < 0.001f) dt = 0.001f;
+    m_fps = 0.92 * m_fps + 0.08 / double(dt);
+    m_lastMs = now;
 
-    if(m_screen==SCR_PLAYING&&!m_paused&&!m_gs.gameOver) gameStep(m_dt);
+    advance(dt);
 
-    float tgtFOV=(m_screen==SCR_PLAYING&&m_gs.player.adsMode)?0.45f:1.f;
-    m_adsFOVMult+=(tgtFOV-m_adsFOVMult)*std::min(1.f,m_dt*14.f);
-    m_gs.player.shakeY*=0.72f; if(std::fabs(m_gs.player.shakeY)<0.2f) m_gs.player.shakeY=0;
-
-    m_hitMarker     =std::max(0.f,m_hitMarker     -m_dt);
-    m_damageDirTimer=std::max(0.f,m_damageDirTimer-m_dt);
-    m_comboDisplay  =std::max(0.f,m_comboDisplay  -m_dt);
-    if(m_comboTimer>0){m_comboTimer-=m_dt;if(m_comboTimer<=0)m_combo=0;}
-    for(auto &k:m_killFeed) k.life-=m_dt;
-    m_killFeed.erase(std::remove_if(m_killFeed.begin(),m_killFeed.end(),[](const KFEntry&k){return k.life<=0;}),m_killFeed.end());
-    for(int i=0;i<12;i++) if(m_enemyHPDisplay[i]>0) m_enemyHPDisplay[i]-=m_dt;
+    bool captured = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver && hasFocus();
+    Qt::CursorShape want = captured ? Qt::BlankCursor : Qt::ArrowCursor;
+    if (cursor().shape() != want) setCursor(want);
 
     render();
     QWidget::update();
 }
 
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+void MainWindow::advance(float dt)
+{
+    m_dt = dt;
+    m_time += dt;
+    m_menuFrame++;
+    Player &pl = m_gs.player;
+    bool playing = m_screen == SCR_PLAYING;
+
+    if (!playing) {
+        m_menuCamAng += dt * 0.10f;
+        if (m_loadedMap != m_mapChoice) loadMapGeometry(m_mapChoice);
+    }
+    if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
+
+    // ADS blend + FOV
+    const WeaponDef &wd = WEAPONS[pl.curWeapon];
+    bool canAim = playing && pl.adsMode && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !pl.sprinting && !m_gs.gameOver;
+    m_adsT += ((canAim ? 1.f : 0.f) - m_adsT) * std::min(1.f, dt * 12.f);
+    float adsFov = wd.scope ? 1.f / m_scopeMag : wd.adsFov;
+    m_adsFOVMult = 1.f + (adsFov - 1.f) * m_adsT;
+
+    // Aiming down sights pulls the free crosshair back to the centre (the
+    // camera absorbs the offset, so the aimed-at point stays put)
+    if (playing && canAim) {
+        float f = std::min(1.f, dt * 14.f);
+        float ox = (m_aimX - W / 2.f) * f, oy = (m_aimY - H / 2.f) * f;
+        turn(std::atan(2.f * ox / W * 0.66f * m_adsFOVMult));
+        m_pitch = rs::clampf(m_pitch - oy / m_K, -0.75f, 0.75f);
+        m_aimX -= ox; m_aimY -= oy;
+    }
+
+    m_sprintT += ((pl.sprinting ? 1.f : 0.f) - m_sprintT) * std::min(1.f, dt * 8.f);
+
+    // Weapon sway lags behind mouse motion
+    m_swayX += (-m_mouseDX * 0.9f - m_swayX) * std::min(1.f, dt * 9.f);
+    m_swayY += (-m_mouseDY * 0.9f - m_swayY) * std::min(1.f, dt * 9.f);
+    m_swayX = rs::clampf(m_swayX, -40.f, 40.f); m_swayY = rs::clampf(m_swayY, -30.f, 30.f);
+    m_mouseDX = m_mouseDY = 0;
+
+    // Scope breathing sway (figure-8). Hold SHIFT while scoped to steady.
+    bool movingKeys = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
+    m_breath += dt * (m_holdBreath ? 0.35f : 1.25f);
+    float amp = m_holdBreath ? 0.8f : (movingKeys ? 9.f : 4.5f);
+    m_scopeSwayX += (std::sin(m_breath * 0.9f) * amp - m_scopeSwayX) * std::min(1.f, dt * 4.f);
+    m_scopeSwayY += (std::sin(m_breath * 1.8f) * amp * 0.6f - m_scopeSwayY) * std::min(1.f, dt * 4.f);
+
+    // Recoil / animation decay
+    m_kick *= std::exp(-dt * 9.f);
+    m_camKick *= std::exp(-dt * 14.f);
+    m_actionT = std::max(0.f, m_actionT - dt * (pl.curWeapon == WPN_SHOTGUN ? 1.4f : 9.f));
+    m_flashLight = std::max(0.f, m_flashLight - dt * 16.f);
+    float rec = m_recoilPitch * std::min(1.f, dt * 5.f);
+    m_pitch -= rec; m_recoilPitch -= rec;
+    pl.shakeY *= std::exp(-dt * 18.f); if (std::fabs(pl.shakeY) < 0.2f) pl.shakeY = 0;
+
+    m_hitMarker      = std::max(0.f, m_hitMarker - dt);
+    m_headMarker     = std::max(0.f, m_headMarker - dt);
+    m_killMarker     = std::max(0.f, m_killMarker - dt);
+    m_headshotBanner = std::max(0.f, m_headshotBanner - dt);
+    m_secretBanner   = std::max(0.f, m_secretBanner - dt);
+    m_acidFlash      = std::max(0.f, m_acidFlash - dt * 2.f);
+    m_damageDirTimer = std::max(0.f, m_damageDirTimer - dt);
+    m_comboDisplay   = std::max(0.f, m_comboDisplay - dt);
+    if (m_comboTimer > 0) { m_comboTimer -= dt; if (m_comboTimer <= 0) m_combo = 0; }
+    for (auto &k : m_killFeed) k.life -= dt;
+    m_killFeed.erase(std::remove_if(m_killFeed.begin(), m_killFeed.end(), [](const KFEntry &k) { return k.life <= 0; }), m_killFeed.end());
+    for (int i = 0; i < 12; i++) if (m_enemyHPDisplay[i] > 0) m_enemyHPDisplay[i] -= dt;
+
+    // Ejected casings (screen space, with gravity and spin)
+    for (auto &c : m_casings) {
+        c.vy += 1500.f * dt; c.x += c.vx * dt; c.y += c.vy * dt; c.a += c.va * dt; c.life -= dt;
+    }
+    m_casings.erase(std::remove_if(m_casings.begin(), m_casings.end(), [](const Casing &c) { return c.life <= 0 || c.y > H + 20; }), m_casings.end());
+
+    // What is under the crosshair? (drives crosshair colour + target panel)
+    m_probeEnemy = -1; m_probePart = 0;
+    if (playing && !m_gs.gameOver) {
+        computeView();
+        float ax, ay; aimPoint(ax, ay);
+        HitResult h = hitscan(ax, ay);
+        m_probeEnemy = h.enemy; m_probePart = h.part;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Game logic
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::pushFeed(const QString &t, float life, bool head)
+{
+    m_killFeed.insert(m_killFeed.begin(), KFEntry{t, life, head});
+    if (int(m_killFeed.size()) > 5) m_killFeed.pop_back();
+}
+
 void MainWindow::gameStep(float dt)
 {
-    Player &pl=m_gs.player;
-    if(m_gs.levelComplete){m_gs.levelTransTimer-=dt;if(m_gs.levelTransTimer<=0)loadLevel(m_gs.level+1);return;}
-    if(pl.attackCooldown>0)pl.attackCooldown-=dt;
-    if(pl.flashTimer>0)    pl.flashTimer    -=dt;
-    if(pl.damageFlash>0)   pl.damageFlash   -=dt;
-
-    // Jump physics
-    if(m_jumpVelZ != 0.f || m_jumpZ > 0.f){
-        m_jumpVelZ -= 20.f * dt;
-        m_jumpZ += m_jumpVelZ * dt;
-        if(m_jumpZ <= 0.f){ m_jumpZ = 0.f; m_jumpVelZ = 0.f; }
-        if(m_jumpZ > 1.5f){ m_jumpZ = 1.5f; m_jumpVelZ = 0.f; }
-    }
-
-    // Rotation
-    float rotSpd=2.2f*dt*(pl.adsMode?0.55f:1.f);
-    auto rot=[&](float a){float ox=pl.dirX,op=pl.planeX;pl.dirX=pl.dirX*cosf(a)+pl.dirY*sinf(a);pl.dirY=-ox*sinf(a)+pl.dirY*cosf(a);pl.planeX=pl.planeX*cosf(a)+pl.planeY*sinf(a);pl.planeY=-op*sinf(a)+pl.planeY*cosf(a);};
-    if(m_keys.count(Qt::Key_Left)||m_keys.count(Qt::Key_Q))  rot( rotSpd);
-    if(m_keys.count(Qt::Key_Right)) rot(-rotSpd);
-
-    // Sprint + stamina
-    bool moving=m_keys.count(Qt::Key_W)||m_keys.count(Qt::Key_S)||m_keys.count(Qt::Key_A)||m_keys.count(Qt::Key_D);
-    bool wantSprint=moving&&m_keys.count(Qt::Key_Shift)&&pl.stamina>0&&!pl.adsMode;
-    pl.sprinting=wantSprint;
-    pl.stamina+=wantSprint?(-45.f*dt):(28.f*dt);
-    pl.stamina=std::max(0.f,std::min(CHAR_PROFILES[m_charChoice].stamina,pl.stamina));
-
-    // Movement ΓÇö normalised so diagonal isn't faster
-    float SPD=pl.speedMult*(pl.sprinting?5.8f:pl.adsMode?2.2f:3.5f)*dt;
-    float mx=0,my=0;
-    if(m_keys.count(Qt::Key_W)){mx+=pl.dirX;my+=pl.dirY;}
-    if(m_keys.count(Qt::Key_S)){mx-=pl.dirX;my-=pl.dirY;}
-    if(m_keys.count(Qt::Key_A)){mx+=pl.dirY;my-=pl.dirX;}
-    if(m_keys.count(Qt::Key_D)){mx-=pl.dirY;my+=pl.dirX;}
-    float len=sqrtf(mx*mx+my*my); if(len>0.001f){mx/=len;my/=len;}
-    float nx=pl.posX+mx*SPD,ny=pl.posY+my*SPD;
-    if(posValid(nx,pl.posY))pl.posX=nx; if(posValid(pl.posX,ny))pl.posY=ny;
-    if(moving)pl.bobPhase+=dt*(pl.sprinting?8.f:4.f); else pl.bobPhase*=0.85f;
-
-    // Health kit pickup
-    for(auto &k:m_gs.healthKits){
-        if(!k.active) continue;
-        k.bobPhase+=dt*2.2f;
-        float dx=pl.posX-k.x,dy=pl.posY-k.y;
-        if(dx*dx+dy*dy<0.35f){
-            k.active=false;
-            int maxHP=CHAR_PROFILES[m_charChoice].hp;
-            pl.hp=std::min(pl.hp+30,maxHP);
-            KFEntry kf; kf.text="+ HEALTH KIT  +30 HP"; kf.life=3.f;
-            m_killFeed.insert(m_killFeed.begin(),kf);
-            if(int(m_killFeed.size())>4)m_killFeed.pop_back();
-        }
-    }
-
-    // Weapon pickup
-    for(auto &wp : m_gs.weaponPickups){
-        if(!wp.active) continue;
-        wp.bobPhase += dt * 2.8f;
-        float dx=pl.posX-wp.x, dy=pl.posY-wp.y;
-        if(dx*dx+dy*dy < 0.35f){
-            wp.active = false;
-            if(wp.type==PICKUP_AMMO){
-                pl.ammo = std::min(pl.ammo+20, 60);
-                KFEntry kf; kf.text="+ AMMO CRATE  +20 ROUNDS"; kf.life=3.f;
-                m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
-            } else if(wp.type==PICKUP_SHOTGUN && pl.weaponTier < 1){
-                pl.weaponTier=1; pl.ammo=std::min(pl.ammo+15,60);
-                KFEntry kf; kf.text="WEAPON UPGRADE: SHOTGUN"; kf.life=4.f;
-                m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
-            } else if(wp.type==PICKUP_RIFLE && pl.weaponTier < 2){
-                pl.weaponTier=2; pl.ammo=std::min(pl.ammo+25,60);
-                KFEntry kf; kf.text="WEAPON UPGRADE: ASSAULT RIFLE"; kf.life=4.f;
-                m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
-            }
-        }
-    }
-
-    // Enemy AI
-    for(auto &e:m_gs.enemies){
-        if(!e.alive) continue;
-        if(e.fireCooldown>0){e.fireCooldown-=dt;continue;}
-        float dx=pl.posX-e.x,dy=pl.posY-e.y,d=sqrtf(dx*dx+dy*dy);
-        if(d<e.aggroRange&&hasLOS(e.x,e.y,pl.posX,pl.posY)){enemyFire(e);e.fireCooldown=m_gs.enemyFireRate;}
-    }
-
-    // Bullets
-    const DiffConfig &dc=DIFF_CFG[m_difficulty];
-    for(auto &b:m_gs.bullets){
-        if(!b.alive) continue;
-        b.x+=b.dx*dt; b.y+=b.dy*dt;
-        int bx=int(b.x),by=int(b.y);
-        if(bx<0||bx>=MAP_W||by<0||by>=MAP_H||m_map[by][bx]>0){b.alive=false;continue;}
-        if(b.owner==PLAYER_SHOT){
-            for(int i=0;i<int(m_gs.enemies.size());i++){
-                Enemy &e=m_gs.enemies[i]; if(!e.alive) continue;
-                float dx=b.x-e.x,dy=b.y-e.y;
-                if(dx*dx+dy*dy<0.18f){
-                    b.alive=false; e.hp--; e.hitFlash=0.18f;
-                    m_hitMarker=0.35f;
-                    if(i<12) m_enemyHPDisplay[i]=2.2f;  // show HP for 2.2s
-                    if(e.hp<=0){
-                        e.alive=false; m_gs.kills++; m_gs.killsThisLevel++; m_gs.score+=100*m_gs.level;
-                        spawnBlood(e.x,e.y,14);
-                        m_combo++; m_comboTimer=3.5f; m_comboDisplay=1.8f;
-                        KFEntry kf; kf.text=(m_combo>1?QString("x%1 ").arg(m_combo):"")+QString("ENEMY DOWN"); kf.life=4.5f;
-                        m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
-                        if(rand()%3==0) spawnPickup(e.x, e.y);
-                    }
-                    break;
-                }
-            }
-        } else {
-            float dx=b.x-pl.posX,dy=b.y-pl.posY;
-            if(dx*dx+dy*dy<0.15f){
-                b.alive=false;
-                int dmg=int((10+4*(m_gs.level-1))*(1.f-pl.damageReduction)*dc.dmgReceivedMult);
-                pl.hp-=dmg; pl.damageFlash=0.45f; pl.shakeY=-9.f;
-                m_damageAngle=atan2f(-b.dy,-b.dx); m_damageDirTimer=2.0f;
-                if(pl.hp<=0){pl.hp=0;m_gs.gameOver=true;}
-            }
-        }
-    }
-    m_gs.bullets.erase(std::remove_if(m_gs.bullets.begin(),m_gs.bullets.end(),[](const Bullet&b){return!b.alive;}),m_gs.bullets.end());
-    for(auto &e:m_gs.enemies) if(e.hitFlash>0)e.hitFlash-=dt;
-
-    // Blood particles
-    for(auto &pt:m_gs.particles){
-        if(pt.life<=0)continue; pt.vz-=9.f*dt; pt.x+=pt.vx*dt; pt.y+=pt.vy*dt; pt.z+=pt.vz*dt;
-        if(pt.z<0){pt.z=0;pt.vz*=-0.3f;pt.vx*=0.6f;pt.vy*=0.6f;} pt.life-=dt*0.9f;
-    }
-    m_gs.particles.erase(std::remove_if(m_gs.particles.begin(),m_gs.particles.end(),[](const Particle&p){return p.life<=0;}),m_gs.particles.end());
-
-    if(!m_gs.levelComplete&&m_gs.killsThisLevel>=m_gs.killsNeeded){
-        m_gs.levelComplete=true; m_gs.levelTransTimer=3.5f; m_gs.score+=500*m_gs.level;
-    }
+    Player &pl = m_gs.player;
     m_gs.frameNum++;
-}
+    if (m_gs.levelComplete) { m_gs.levelTransTimer -= dt; if (m_gs.levelTransTimer <= 0) loadLevel(m_gs.level + 1); return; }
+    if (pl.attackCooldown > 0) pl.attackCooldown -= dt;
+    if (pl.flashTimer > 0)     pl.flashTimer -= dt;
+    if (pl.damageFlash > 0)    pl.damageFlash -= dt;
 
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  Helpers
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-bool MainWindow::posValid(float x,float y) const {
-    const float R=0.28f;
-    auto ok=[&](float tx,float ty){int mx=int(tx),my=int(ty);return mx>=0&&mx<MAP_W&&my>=0&&my<MAP_H&&m_map[my][mx]==0;};
-    return ok(x-R,y-R)&&ok(x+R,y-R)&&ok(x-R,y+R)&&ok(x+R,y+R);
-}
-bool MainWindow::hasLOS(float x0,float y0,float x1,float y1) const {
-    float dx=x1-x0,dy=y1-y0,dist=sqrtf(dx*dx+dy*dy); if(dist<0.1f)return true;
-    float nx=dx/dist*0.12f,ny=dy/dist*0.12f,cx=x0+nx,cy=y0+ny;
-    for(int i=0;i<int(dist/0.12f);i++){int mx=int(cx),my=int(cy);if(mx<0||mx>=MAP_W||my<0||my>=MAP_H||m_map[my][mx]>0)return false;cx+=nx;cy+=ny;} return true;
-}
-void MainWindow::fireBullet(){
-    Player &pl=m_gs.player; if(pl.ammo<=0||pl.attackCooldown>0)return;
-    pl.ammo--; pl.attackCooldown=0.45f; pl.flashTimer=0.14f; pl.shakeY=-11.f;
-    Bullet b; b.x=pl.posX+pl.dirX*0.4f; b.y=pl.posY+pl.dirY*0.4f; b.dx=pl.dirX*9.f; b.dy=pl.dirY*9.f; b.owner=PLAYER_SHOT; b.alive=true;
-    m_gs.bullets.push_back(b);
-    // Start casing ejection
-    m_casingTimer=0.55f;
-    m_casingX=float(W/2+100); m_casingY=float(H-80);
-    m_casingVX=200.f+rand()%60; m_casingVY=-300.f-rand()%80;
-}
-void MainWindow::enemyFire(Enemy &e){
-    float dx=m_gs.player.posX-e.x,dy=m_gs.player.posY-e.y,d=sqrtf(dx*dx+dy*dy); if(d<0.1f)return;
-    Bullet b; b.x=e.x; b.y=e.y; b.dx=(dx/d)*m_gs.enemyBulletSpeed; b.dy=(dy/d)*m_gs.enemyBulletSpeed; b.owner=ENEMY_SHOT; b.alive=true;
-    m_gs.bullets.push_back(b);
-}
-void MainWindow::spawnBlood(float wx,float wy,int count){
-    for(int i=0;i<count;i++){
-        Particle p; p.x=wx+(rand()%20-10)*0.015f; p.y=wy+(rand()%20-10)*0.015f;
-        p.z=0.4f+(rand()%10)*0.05f; p.vx=(rand()%100-50)*0.025f; p.vy=(rand()%100-50)*0.025f; p.vz=(rand()%60)*0.035f;
-        p.life=0.7f+(rand()%40)*0.008f; p.color=(0xFF<<24)|((180+rand()%60)<<16)|(rand()%25<<8); m_gs.particles.push_back(p);
-    }
-}
-
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  Input
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-void MainWindow::keyPressEvent(QKeyEvent *e)
-{
-    m_keys.insert(e->key());
-    if(m_screen==SCR_MENU){
-        if(e->key()==Qt::Key_Up)   m_menuCursor=std::max(0,m_menuCursor-1);
-        if(e->key()==Qt::Key_Down) m_menuCursor=std::min(1,m_menuCursor+1);
-        if(e->key()==Qt::Key_Return||e->key()==Qt::Key_Space||e->key()==Qt::Key_1){if(m_menuCursor==0||e->key()==Qt::Key_1)m_screen=SCR_MAP_SELECT;else QApplication::quit();}
-        if(e->key()==Qt::Key_Escape||e->key()==Qt::Key_Q) QApplication::quit();
-        return;
-    }
-    if(m_screen==SCR_MAP_SELECT){
-        if(e->key()==Qt::Key_1){m_mapChoice=0;m_screen=SCR_DIFF_SELECT;m_menuCursor=1;}
-        if(e->key()==Qt::Key_2){m_mapChoice=1;m_screen=SCR_DIFF_SELECT;m_menuCursor=1;}
-        if(e->key()==Qt::Key_3){m_mapChoice=2;m_screen=SCR_DIFF_SELECT;m_menuCursor=1;}
-        if(e->key()==Qt::Key_Left)  m_mapChoice=std::max(0,m_mapChoice-1);
-        if(e->key()==Qt::Key_Right) m_mapChoice=std::min(2,m_mapChoice+1);
-        if(e->key()==Qt::Key_Return||e->key()==Qt::Key_Space){m_screen=SCR_DIFF_SELECT;m_menuCursor=1;}
-        if(e->key()==Qt::Key_Escape){m_screen=SCR_MENU;m_menuCursor=0;}
-        return;
-    }
-    if(m_screen==SCR_DIFF_SELECT){
-        if(e->key()==Qt::Key_1){m_difficulty=0;m_screen=SCR_CHAR_SELECT;m_menuCursor=0;}
-        if(e->key()==Qt::Key_2){m_difficulty=1;m_screen=SCR_CHAR_SELECT;m_menuCursor=0;}
-        if(e->key()==Qt::Key_3){m_difficulty=2;m_screen=SCR_CHAR_SELECT;m_menuCursor=0;}
-        if(e->key()==Qt::Key_Left)  m_difficulty=std::max(0,m_difficulty-1);
-        if(e->key()==Qt::Key_Right) m_difficulty=std::min(2,m_difficulty+1);
-        if(e->key()==Qt::Key_Return||e->key()==Qt::Key_Space){m_screen=SCR_CHAR_SELECT;m_menuCursor=0;}
-        if(e->key()==Qt::Key_Escape){m_screen=SCR_MAP_SELECT;m_menuCursor=0;}
-        return;
-    }
-    if(m_screen==SCR_CHAR_SELECT){
-        if(e->key()==Qt::Key_1){m_charChoice=0;initGame();m_screen=SCR_PLAYING;}
-        if(e->key()==Qt::Key_2){m_charChoice=1;initGame();m_screen=SCR_PLAYING;}
-        if(e->key()==Qt::Key_3){m_charChoice=2;initGame();m_screen=SCR_PLAYING;}
-        if(e->key()==Qt::Key_Left)  m_charChoice=std::max(0,m_charChoice-1);
-        if(e->key()==Qt::Key_Right) m_charChoice=std::min(2,m_charChoice+1);
-        if(e->key()==Qt::Key_Return||e->key()==Qt::Key_Space){initGame();m_screen=SCR_PLAYING;}
-        if(e->key()==Qt::Key_Escape){m_screen=SCR_DIFF_SELECT;m_menuCursor=m_difficulty;}
-        return;
-    }
-    // In-game
-    if(e->key()==Qt::Key_Space && m_jumpZ<=0.001f) m_jumpVelZ=5.5f;
-    if(e->key()==Qt::Key_F) fireBullet();
-    if(e->key()==Qt::Key_E) tryOpenDoor();
-    if(e->key()==Qt::Key_C) m_pitch=0.f;
-    if(e->key()==Qt::Key_Escape){if(m_paused)QApplication::quit();else m_paused=true;}
-    if(e->key()==Qt::Key_R){if(m_paused)m_paused=false;if(m_gs.gameOver){initGame();m_paused=false;}}
-    if(e->key()==Qt::Key_Q&&(m_paused||m_gs.gameOver)) QApplication::quit();
-    if(e->key()==Qt::Key_M&&!m_gs.gameOver){m_screen=SCR_MENU;m_paused=false;m_menuCursor=0;}
-    if(e->key()==Qt::Key_BracketLeft)  m_pixelScale=std::min(m_pixelScale*2,8);
-    if(e->key()==Qt::Key_BracketRight) m_pixelScale=std::max(m_pixelScale/2,1);
-}
-void MainWindow::keyReleaseEvent(QKeyEvent *e){m_keys.erase(e->key());}
-void MainWindow::mousePressEvent(QMouseEvent *e){
-    if(m_screen!=SCR_PLAYING||m_paused||m_gs.gameOver)return;
-    if(e->button()==Qt::LeftButton) fireBullet();
-    if(e->button()==Qt::RightButton) m_gs.player.adsMode=true;
-}
-void MainWindow::mouseReleaseEvent(QMouseEvent *e){if(e->button()==Qt::RightButton)m_gs.player.adsMode=false;}
-void MainWindow::mouseMoveEvent(QMouseEvent *e){
-    if(m_screen!=SCR_PLAYING||m_paused||m_gs.gameOver)return;
-    int cx=width()/2; float dx=float(e->x()-cx); if(std::fabs(dx)<1.f)return;
-    float rot2=dx*-(m_gs.player.adsMode?0.0008f:0.0015f);
-    Player &pl=m_gs.player; float ox=pl.dirX,op=pl.planeX;
-    pl.dirX=pl.dirX*cosf(rot2)+pl.dirY*sinf(rot2);pl.dirY=-ox*sinf(rot2)+pl.dirY*cosf(rot2);
-    pl.planeX=pl.planeX*cosf(rot2)+pl.planeY*sinf(rot2);pl.planeY=-op*sinf(rot2)+pl.planeY*cosf(rot2);
-    QCursor::setPos(mapToGlobal(QPoint(cx,height()/2)));
-}
-void MainWindow::wheelEvent(QWheelEvent *e){
-    int steps=e->angleDelta().y()/120;
-    m_zoomFactor=std::max(0.5f,std::min(4.f,m_zoomFactor+steps*0.25f));
-    resize(int(W*m_zoomFactor),int(H*m_zoomFactor));
-}
-
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  Color helpers
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-uint32_t MainWindow::fogBlend(uint32_t c,float dist){float f=std::max(0.f,1.f-dist/14.f);return(0xFF<<24)|(uint8_t(((c>>16)&0xFF)*f)<<16)|(uint8_t(((c>>8)&0xFF)*f)<<8)|uint8_t((c&0xFF)*f);}
-uint32_t MainWindow::dimColor(uint32_t c,float b){if(b>=1.f)return c;uint8_t a=c>>24;return(a<<24)|(uint8_t(((c>>16)&0xFF)*b)<<16)|(uint8_t(((c>>8)&0xFF)*b)<<8)|uint8_t((c&0xFF)*b);}
-uint32_t MainWindow::wallPixel(int t,float wx,float wy,int side,float dist){
-    int tx=int(wx*64)&63,ty=int(wy*64)&63; uint32_t c=0xFF888888;
-    switch(t){
-    case 1:{bool m=(ty%16<2)||((ty/16)%2==0?(tx%32<2):((tx+16)%32<2));if(m){c=0xFF555555;break;}int n=((tx*7+ty*13)^tx)&7;uint8_t v=uint8_t(125+n);c=(0xFF<<24)|(v<<16)|(v<<8)|v;break;}
-    case 2:{bool m=(ty%8<1)||((ty/8)%2==0?(tx%20<2):((tx+10)%20<2));if(m){c=0xFF777766;break;}int n=((tx*5+ty*11)^ty)&15;c=(0xFF<<24)|(uint8_t(155+n)<<16)|(uint8_t(72+n/3)<<8)|uint8_t(55+n/3);break;}
-    case 3:{int n=((tx*3+ty*7)^(tx+ty))&31;uint8_t v=uint8_t(90+n);c=(0xFF<<24)|(uint8_t(v*.75f)<<16)|(uint8_t(v*.85f)<<8)|v;break;}
-    }
-    if(side==1){uint8_t r=(c>>16&0xFF)/2,g=(c>>8&0xFF)/2,b=(c&0xFF)/2;c=(0xFF<<24)|(r<<16)|(g<<8)|b;}
-    return fogBlend(c,dist);
-}
-uint32_t MainWindow::sampleImp(float u,float v,bool flash){
-    int col=std::min(23,std::max(0,int(u*24)));
-    int row=std::min(23,std::max(0,int(v*24)));
-    uint32_t c=ENEMY_SPRITE[row][col];
-    if((c>>24)==0) return 0;
-    if(flash){uint8_t r=std::min(255,int((c>>16&0xFF)+120));return(0xFF<<24)|(r<<16)|(c&0x00FFFF);}
-    return c;
-}
-uint32_t MainWindow::samplePlayerBullet(float u,float v){
-    float cx=u-0.5f, cy=v-0.5f;
-    float d=cx*cx*6.f+cy*cy*2.f;
-    if(d>0.25f) return 0;
-    float t=1.f-d*4.f;
-    if(d<0.05f) return (0xFF<<24)|(0xFF<<16)|(0xFF<<8)|0xEE;
-    return (0xFF<<24)|(0xFF<<16)|uint8_t(200*t)<<8|0;
-}
-uint32_t MainWindow::sampleEnemyBullet(float u,float v){float du=u-.5f,dv=v-.5f,d=du*du+dv*dv;if(d>.22f)return 0;float t=1.f-d*4.5f;return(0xFF<<24)|(uint8_t(220*t+35)<<16)|(uint8_t(30*t)<<8)|uint8_t(180*t);}
-uint32_t MainWindow::sampleMedkit(float u,float v){int tx=std::min(15,std::max(0,int(u*16))),ty=std::min(15,std::max(0,int(v*16)));return MEDKIT_SPRITE[ty][tx];}
-
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  Pixel helpers
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-inline void MainWindow::px(int x,int y,uint32_t c){if((unsigned)x<(unsigned)W&&(unsigned)y<(unsigned)H)m_pixels[y*W+x]=c;}
-void MainWindow::fillRect(int x,int y,int w,int h,uint32_t c){int x0=std::max(x,0),x1=std::min(x+w,W),y0=std::max(y,0),y1=std::min(y+h,H);for(int r=y0;r<y1;r++)for(int col=x0;col<x1;col++)m_pixels[r*W+col]=c;}
-void MainWindow::fillCircle(int cx,int cy,int r,uint32_t c){for(int dy=-r;dy<=r;dy++)for(int dx=-r;dx<=r;dx++)if(dx*dx+dy*dy<=r*r)px(cx+dx,cy+dy,c);}
-void MainWindow::drawLine(int x0,int y0,int x1,int y1,uint32_t c){int dx=std::abs(x1-x0),sx=x0<x1?1:-1,dy=std::abs(y1-y0),sy=y0<y1?1:-1,err=(dx>dy?dx:-dy)/2;for(;;){px(x0,y0,c);if(x0==x1&&y0==y1)break;int e=err;if(e>-dx){err-=dy;x0+=sx;}if(e<dy){err+=dx;y0+=sy;}}}
-
-// =============================================================================
-//  MENU SCREENS
-// =============================================================================
-
-void MainWindow::drawMenuBg()
-{
-    // Precalculated base background
-    static uint32_t rowCol[H];
-    static bool initRow = false;
-    if(!initRow){
-        for(int y=0;y<H;y++){
-            float fy = float(y)/H; uint8_t b = uint8_t(18*(1.f-fy)+3);
-            rowCol[y] = (0xFF<<24)|(uint8_t(b*0.15f)<<16)|(uint8_t(b*0.40f)<<8)|b;
-        }
-        initRow = true;
-    }
-    for(int y=0;y<H;y++){
-        uint32_t rc = rowCol[y];
-        for(int x=0;x<W;x++) m_pixels[y*W+x] = rc;
-    }
-    for(int y=0;y<H;y+=4) for(int x=0;x<W;x++){
-        uint32_t &p=m_pixels[y*W+x];
-        uint8_t r=(p>>16&0xFF)*3/4,g=(p>>8&0xFF)*3/4,b2=(p&0xFF)*3/4;
-        m_pixels[y*W+x]=(0xFF<<24)|(r<<16)|(g<<8)|b2;
-    }
-    for(int col=0;col<55;col++){
-        int x=((col*17+3)%55)*14+(col%3)*3; if(x>=W)continue;
-        float speed=0.8f+(col%7)*0.22f; int baseY=int(fmodf(m_menuFrame*speed*0.18f+col*41.7f,H+100))-50;
-        int len=20+(col*19)%55;
-        for(int dy=0;dy<len;dy++){
-            int py=baseY+dy;if(py<0||py>=H)continue;
-            float t=1.f-float(dy)/len;uint8_t v=uint8_t(t*t*90);
-            if(dy==0) m_pixels[py*W+x]=(0xFF<<24)|(uint8_t(v*.1f)<<16)|(255<<8)|uint8_t(v*.6f);
-            else m_pixels[py*W+x]=(0xFF<<24)|(0<<16)|(uint8_t(v*.7f)<<8)|uint8_t(v*.3f);
+    // Reload / weapon switch timers
+    if (pl.reloadTimer > 0) {
+        pl.reloadTimer -= dt;
+        if (pl.reloadTimer <= 0) {
+            int w = pl.curWeapon;
+            int take = std::min(WEAPONS[w].magSize - pl.mag[w], pl.reserve[w]);
+            pl.mag[w] += take; pl.reserve[w] -= take; pl.reloadTimer = 0;
         }
     }
-    int sweepY=int(fmodf(m_menuFrame*0.6f,H));
-    for(int x=0;x<W;x++){
-        uint32_t &p=m_pixels[sweepY*W+x];
-        uint8_t g2=std::min(255,int((p>>8&0xFF)+18));
-        m_pixels[sweepY*W+x]=(0xFF<<24)|((p>>16)&0xFF)<<16|(g2<<8)|(p&0xFF);
+    if (pl.switchTimer > 0) {
+        float before = pl.switchTimer;
+        pl.switchTimer -= dt;
+        if (before > 0.2f && pl.switchTimer <= 0.2f && m_pendingWeapon >= 0) { pl.curWeapon = m_pendingWeapon; m_pendingWeapon = -1; }
+        if (pl.switchTimer < 0) pl.switchTimer = 0;
     }
-    for(int y=0;y<H;y++) for(int x=0;x<W;x++){
-        uint8_t v = m_vignette[y][x];
-        if(v > 0){
-            float s = v / 255.f;
-            uint32_t &p=m_pixels[y*W+x];
-            uint8_t r=uint8_t((p>>16&0xFF)*(1-s*.6f)),g2=uint8_t((p>>8&0xFF)*(1-s*.6f)),b2=uint8_t((p&0xFF)*(1-s*.6f));
-            m_pixels[y*W+x]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;
+
+    updateDoors(dt);
+
+    // Keyboard turning
+    float rotSpd = 2.2f * dt * (pl.adsMode ? 0.5f : 1.f);
+    if (m_keys.count(Qt::Key_Left))  turn(-rotSpd);
+    if (m_keys.count(Qt::Key_Right)) turn(rotSpd);
+
+    // Sprint, stamina, breath-holding
+    bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
+    bool shift = m_keys.count(Qt::Key_Shift) > 0;
+    bool scoped = WEAPONS[pl.curWeapon].scope && m_adsT > 0.85f;
+    bool wantSprint = moving && shift && pl.stamina > 0 && !pl.adsMode && pl.reloadTimer <= 0;
+    m_holdBreath = scoped && shift && pl.stamina > 4.f;
+    pl.sprinting = wantSprint;
+    pl.stamina += wantSprint ? -45.f * dt : m_holdBreath ? -22.f * dt : 28.f * dt;
+    pl.stamina = std::max(0.f, std::min(CHAR_PROFILES[m_charChoice].stamina, pl.stamina));
+
+    float SPD = pl.speedMult * (pl.sprinting ? 5.8f : pl.adsMode ? 2.0f : 3.5f) * dt;
+    float mx = 0, my = 0;
+    if (m_keys.count(Qt::Key_W)) { mx += pl.dirX; my += pl.dirY; }
+    if (m_keys.count(Qt::Key_S)) { mx -= pl.dirX; my -= pl.dirY; }
+    if (m_keys.count(Qt::Key_A)) { mx += pl.dirY; my -= pl.dirX; }
+    if (m_keys.count(Qt::Key_D)) { mx -= pl.dirY; my += pl.dirX; }
+    float len = std::sqrt(mx * mx + my * my); if (len > 0.001f) { mx /= len; my /= len; }
+    float nx = pl.posX + mx * SPD, ny = pl.posY + my * SPD;
+    // Ground under the feet may rise at most a step (0.32) unless we're mid-jump above it
+    if (canStep(nx, pl.posY, m_footZ, 0.32f)) pl.posX = nx;
+    if (canStep(pl.posX, ny, m_footZ, 0.32f)) pl.posY = ny;
+
+    // Vertical: gravity, landing, sticking to slopes when walking downhill
+    float g = floorH(pl.posX, pl.posY);
+    m_velZ -= 20.f * dt;
+    m_footZ += m_velZ * dt;
+    if (m_onGround && m_velZ <= 0 && m_footZ - g < 0.12f) { m_footZ = g; m_velZ = 0; }
+    if (m_footZ <= g) {
+        if (!m_onGround && m_velZ < -4.f) pl.shakeY += std::min(10.f, -m_velZ * 1.2f);
+        m_footZ = g; m_velZ = 0; m_onGround = true;
+    } else if (m_footZ > g + 0.12f) m_onGround = false;
+
+    // Acid burns while standing in it
+    int pcx = int(pl.posX), pcy = int(pl.posY);
+    if (m_acid[pcy][pcx] && m_footZ <= g + 0.05f) {
+        m_acidAcc += 28.f * dt * (1.f - pl.damageReduction * 0.5f);
+        m_acidFlash = 1.f;
+        if (m_acidAcc >= 1.f) { int d = int(m_acidAcc); m_acidAcc -= d; pl.hp -= d; pl.damageFlash = std::max(pl.damageFlash, 0.2f); }
+        if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
+    }
+    if (moving) pl.bobPhase += dt * (pl.sprinting ? 9.f : 5.5f); else pl.bobPhase *= 0.9f;
+
+    // Automatic fire while the trigger is held
+    if (m_lmb && WEAPONS[pl.curWeapon].automatic) tryFire();
+
+    // Health kits
+    for (auto &k : m_gs.healthKits) {
+        if (!k.active) continue;
+        k.bobPhase += dt * 2.2f;
+        float dx = pl.posX - k.x, dy = pl.posY - k.y;
+        int maxHP = CHAR_PROFILES[m_charChoice].hp;
+        if (dx * dx + dy * dy < 0.35f && pl.hp < maxHP && std::fabs(m_footZ - floorH(k.x, k.y)) < 0.6f) {
+            k.active = false;
+            pl.hp = std::min(pl.hp + 30, maxHP);
+            pushFeed("+30 HEALTH", 3.f);
         }
     }
-}
-
-void MainWindow::renderMenu()
-{
-    drawMenuBg();
-    
-    // Pure raster passes first
-    for(int y=0;y<H;y++){float pulse=0.6f+0.4f*sinf(m_menuFrame*0.04f+y*0.01f);px(W*2/5,y,(uint32_t(uint8_t(80*pulse))<<24)|(0<<16)|(uint8_t(200*pulse)<<8)|uint8_t(80*pulse));}
-    for(int x=28;x<W*2/5-20;x++){uint8_t b=uint8_t(255*(1.f-float(x-28)/float(W*2/5-48)));px(x,235,(0xFF<<24)|(0<<16)|(b<<8)|uint8_t(b/2));}
-    
-    int mx=W*2/5+60,my=H/2-55;
-    for(int i=0;i<2;i++){
-        bool sel=(m_menuCursor==i); int ox=mx,oy=my+i*70,ow=260,oh=56;
-        if(sel){float pulse2=0.7f+0.3f*sinf(m_menuFrame*0.15f);for(int ay=oy;ay<oy+oh;ay++) px(ox,ay,(0xFF<<24)|(0<<16)|(uint8_t(255*pulse2)<<8)|uint8_t(120*pulse2));fillRect(ox+1,oy+1,3,oh-2,(uint32_t(180)<<24)|(0<<16)|(uint8_t(200*pulse2)<<8)|uint8_t(80*pulse2));}
-    }
-    fillRect(0,H-24,W,24,0xCC000000); for(int x=0;x<W;x++) px(x,H-24,0xFF004422);
-
-    QPainter p(&m_buf);
-    p.fillRect(0,0,W*2/5,H,QColor(0,0,0,130));
-    p.setFont(QFont("Courier New",64,QFont::Black));p.setPen(QColor(0,255,136));
-    p.drawText(QRect(24,100,W*2/5-24,90),Qt::AlignLeft|Qt::AlignVCenter,"RASTER");
-    p.setFont(QFont("Courier New",20,QFont::Bold));p.setPen(QColor(160,220,200));
-    p.drawText(QRect(28,195,W*2/5-28,36),Qt::AlignLeft,"TACTICAL SHOOTER");
-    
-    p.setFont(QFont("Courier New",9));p.setPen(QColor(40,100,70));
-    p.drawText(QRect(28,250,W*2/5-28,20),Qt::AlignLeft,"Computer Graphics Lab  ΓÇó  Semester 5");
-    p.drawText(QRect(28,264,W*2/5-28,20),Qt::AlignLeft,"Pure software rasterization ΓÇö no GPU");
-    
-    static const char*OPTS[]={"NEW GAME","EXIT"};
-    for(int i=0;i<2;i++){
-        bool sel=(m_menuCursor==i); int ox=mx,oy=my+i*70,ow=260,oh=56;
-        p.fillRect(ox,oy,ow,oh,QColor(0,sel?18:8,0,sel?200:120));
-        p.setPen(QPen(sel?QColor(0,255,140):QColor(0,70,45),sel?2:1)); p.drawRect(ox,oy,ow,oh);
-        p.setFont(QFont("Courier New",22,QFont::Bold));p.setPen(sel?QColor(0,255,140):QColor(80,130,100));
-        p.drawText(QRect(ox+14,oy,ow-14,oh),Qt::AlignLeft|Qt::AlignVCenter,QString("[%1]  %2").arg(i+1).arg(OPTS[i]));
-    }
-    p.setFont(QFont("Courier New",9));p.setPen(QColor(40,70,50));
-    p.drawText(QRect(mx,my+155,260,18),Qt::AlignLeft,"ΓåæΓåô navigate   ENTER confirm");
-    
-    p.setFont(QFont("Courier New",9));p.setPen(QColor(0,100,55));
-    p.drawText(QRect(10,H-14,W/2,14),Qt::AlignLeft,"SCROLL: zoom to see raster pixels   [ ]: pixel block size");
-    p.end();
-}
-
-void MainWindow::renderMapSelect()
-{
-    drawMenuBg();
-    fillRect(0,0,W,44,0xCC000000); for(int x=0;x<W;x++)px(x,43,0xFF004422);
-    QPainter p(&m_buf);
-    p.setFont(QFont("Courier New",16,QFont::Bold));p.setPen(QColor(0,255,140));
-    p.drawText(QRect(0,0,W,42),Qt::AlignCenter,"SELECT DEPLOYMENT ZONE");
-    static const char*DIFF2[]={"ΓÿàΓÿàΓÿå","ΓÿàΓÿàΓÿà","ΓÿàΓÿàΓÿå"};
-    for(int i=0;i<3;i++){
-        bool sel=(m_mapChoice==i); int cx=W/2-280+i*280,cy=60,cw=240,ch=430;
-        p.fillRect(cx-cw/2,cy,cw,ch,QColor(0,sel?20:8,sel?12:5,sel?210:160));
-        p.setPen(QPen(sel?QColor(0,255,140):QColor(0,70,45),sel?2:1));p.drawRect(cx-cw/2,cy,cw,ch);
-        if(sel)for(int x=cx-cw/2;x<cx+cw/2;x++)px(x,cy,0xFF00FF88);
-        const int*mp=ALL_MAPS[i]; int tsize=5,previewX=cx-cw/2+12,previewY=cy+12;
-        for(int my2=0;my2<24;my2++) for(int mx2=0;mx2<24;mx2++){
-            int tile=mp[my2*MAP_W+mx2]; uint32_t col=tile==0?0xFF0A1A0A:tile==1?0xFF606058:tile==2?0xFF704040:0xFF406040;
-            for(int dy=0;dy<tsize-1;dy++) for(int dx=0;dx<tsize-1;dx++){int px3=previewX+mx2*tsize+dx,py3=previewY+my2*tsize+dy;if(px3>=0&&px3<W&&py3>=0&&py3<H)m_pixels[py3*W+px3]=col;}
-        }
-        if(sel){int scanY=previewY+int(fmodf(m_menuFrame*0.4f,24*tsize));for(int x=previewX;x<previewX+24*tsize&&x<W;x++){if(scanY>=0&&scanY<H){uint32_t &pp=m_pixels[scanY*W+x];pp=(0xFF<<24)|((pp>>16&0xFF)/2+10)<<16|((pp>>8&0xFF)/2+60)<<8|((pp&0xFF)/2+20);}}}
-        px(previewX+int(PLAYER_SPAWNS[i][0]*tsize),previewY+int(PLAYER_SPAWNS[i][1]*tsize),0xFF00FFAA);
-        int infoY=cy+24*tsize+18;
-        p.setFont(QFont("Courier New",16,QFont::Bold));p.setPen(sel?QColor(0,255,140):QColor(120,180,140));
-        p.drawText(QRect(cx-cw/2+8,infoY,cw-8,28),Qt::AlignCenter,QString("[%1]  %2").arg(i+1).arg(MAP_NAMES[i]));
-        p.setFont(QFont("Courier New",9));p.setPen(QColor(140,180,150));
-        p.drawText(QRect(cx-cw/2+8,infoY+32,cw-8,40),Qt::AlignCenter|Qt::TextWordWrap,MAP_DESCS[i]);
-        p.setPen(QColor(255,200,80));p.drawText(QRect(cx-cw/2+8,infoY+76,cw-8,18),Qt::AlignCenter,QString("DIFFICULTY: %1").arg(DIFF2[i]));
-    }
-    p.setFont(QFont("Courier New",10));p.setPen(QColor(60,100,70));
-    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[ΓåÉ ΓåÆ] Navigate    [1/2/3] or [ENTER] Select    [ESC] Back");
-    p.end();
-}
-
-void MainWindow::renderDiffSelect()
-{
-    drawMenuBg();
-    fillRect(0,0,W,44,0xCC000000); for(int x=0;x<W;x++)px(x,43,0xFF004422);
-    QPainter p(&m_buf);
-    p.setFont(QFont("Courier New",16,QFont::Bold));p.setPen(QColor(0,255,140));
-    p.drawText(QRect(0,0,W,42),Qt::AlignCenter,QString("SELECT DIFFICULTY  |  Zone: %1").arg(MAP_NAMES[m_mapChoice]));
-
-    static const QColor DIFF_COLORS[3]={QColor(80,200,80),QColor(220,180,0),QColor(220,60,60)};
-    static const char*ICONS[]={"ΓùÅΓùÅΓùï","ΓùÅΓùÅΓùÅ","ΓùÅΓùÅΓùÅ"};
-    for(int i=0;i<3;i++){
-        const DiffConfig &dc=DIFF_CFG[i];
-        bool sel=(m_difficulty==i);
-        int cx=W/2-280+i*280,cy=70,cw=230,ch=380;
-        p.fillRect(cx-cw/2,cy,cw,ch,QColor(0,0,0,sel?200:140));
-        p.setPen(QPen(sel?DIFF_COLORS[i]:QColor(40,40,40),sel?2:1));p.drawRect(cx-cw/2,cy,cw,ch);
-        if(sel)for(int x=cx-cw/2;x<cx+cw/2;x++)px(x,cy,sel?uint32_t((DIFF_COLORS[i].red()<<16)|(DIFF_COLORS[i].green()<<8)|DIFF_COLORS[i].blue()|0xFF000000):0xFF002200);
-
-        // Difficulty icon rings (raster circles)
-        int iconCX=cx, iconCY=cy+80;
-        fillCircle(iconCX,iconCY,55,uint32_t(60<<24)|(i==2?0xFF2200:i==1?0xFF8800:0x00FF44));
-        for(int a=0;a<360;a+=3){float fa=a*3.14159f/180.f;px(iconCX+int(cosf(fa)*55),iconCY+int(sinf(fa)*55),sel?uint32_t(0xFF000000|(DIFF_COLORS[i].red()<<16)|(DIFF_COLORS[i].green()<<8)|DIFF_COLORS[i].blue()):0xFF303030);}
-        // Number inside
-        p.setFont(QFont("Courier New",28,QFont::Black));p.setPen(sel?DIFF_COLORS[i]:QColor(80,80,80));
-        p.drawText(QRect(cx-40,iconCY-22,80,44),Qt::AlignCenter,QString::number(i+1));
-        // Difficulty name
-        p.setFont(QFont("Courier New",18,QFont::Bold));p.setPen(sel?DIFF_COLORS[i]:QColor(100,100,100));
-        p.drawText(QRect(cx-cw/2+8,cy+150,cw-8,32),Qt::AlignCenter,QString("[%1]  %2").arg(i+1).arg(dc.name));
-        // Threat indicator
-        p.setFont(QFont("Courier New",13,QFont::Bold));p.setPen(sel?DIFF_COLORS[i]:QColor(70,70,70));
-        p.drawText(QRect(cx-cw/2+8,cy+185,cw-8,24),Qt::AlignCenter,ICONS[i]);
-        // Stats
-        p.setFont(QFont("Courier New",9));p.setPen(QColor(180,180,180));
-        p.drawText(QRect(cx-cw/2+10,cy+218,cw-10,20),Qt::AlignCenter,dc.desc1);
-        p.drawText(QRect(cx-cw/2+10,cy+238,cw-10,20),Qt::AlignCenter,dc.desc2);
-        p.setPen(i==0?QColor(80,200,80):i==2?QColor(220,80,80):QColor(200,200,200));
-        p.drawText(QRect(cx-cw/2+10,cy+258,cw-10,20),Qt::AlignCenter,dc.desc3);
-        // Multiplier bars
-        auto mbar=[&](int sy,float frac,uint32_t c){fillRect(cx-cw/2+10,sy,cw-20,8,0xFF111111);fillRect(cx-cw/2+10,sy,int((cw-20)*std::min(1.f,frac)),8,c);};
-        p.setFont(QFont("Courier New",8));p.setPen(QColor(120,120,120));
-        p.drawText(QRect(cx-cw/2+10,cy+285,cw-10,14),Qt::AlignLeft,"Enemy Threat:");
-        mbar(cy+300,dc.enemyHPMult/1.6f,i==0?0xFF22CC44:i==1?0xFFCC8800:0xFFCC2200);
-        p.drawText(QRect(cx-cw/2+10,cy+315,cw-10,14),Qt::AlignLeft,"Player Damage Taken:");
-        mbar(cy+330,dc.dmgReceivedMult/1.5f,i==0?0xFF22CC44:i==1?0xFFCC8800:0xFFCC2200);
-    }
-    p.setFont(QFont("Courier New",10));p.setPen(QColor(60,100,70));
-    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[ΓåÉ ΓåÆ] Navigate    [1/2/3] or [ENTER] Select    [ESC] Back");
-    p.end();
-}
-
-void MainWindow::renderCharSelect()
-{
-    drawMenuBg();
-    fillRect(0,0,W,44,0xCC000000); for(int x=0;x<W;x++)px(x,43,0xFF004422);
-    
-    for(int i=0;i<3;i++){
-        const CharProfile &cp=CHAR_PROFILES[i]; bool sel=(m_charChoice==i);
-        int cx=W/2-280+i*280,cy=56,cw=236,ch=450;
-        uint32_t bgCol = sel ? 0xD2050814 : 0x9B050800; // approximation of QColor(0,sel?20:8,sel?12:5,sel?210:155)
-        fillRect(cx-cw/2, cy, cw, ch, bgCol);
-        if(sel)for(int x=cx-cw/2;x<cx+cw/2;x++)px(x,cy,0xFF00FF88);
-        
-        // Raster silhouette
-        int sh=cy+14,sw=cx;
-        uint32_t sl=cp.sleeve,slh=cp.sleeveHi,sk2=cp.skinColor;
-        auto blit=[&](int rx,int ry,int rw,int rh,uint32_t c){for(int ry2=std::max(0,ry);ry2<std::min(H,ry+rh);ry2++)for(int rx2=std::max(0,rx);rx2<std::min(W,rx+rw);rx2++)m_pixels[ry2*W+rx2]=c;};
-        blit(sw-10,sh+2,20,20,sl);blit(sw-7,sh+5,14,14,sk2);blit(sw-5,sh+6,10,2,0xFF223322);
-        blit(sw-18,sh+22,36,42,sl);blit(sw-14,sh+24,28,38,slh);blit(sw-12,sh+27,24,14,0xFF222222);
-        blit(sw-28,sh+22,12,36,slh);blit(sw+16,sh+22,12,36,slh);
-        blit(sw-26,sh+56,10,8,sk2);blit(sw+16,sh+56,10,8,sk2);
-        blit(sw-16,sh+64,14,40,sl);blit(sw+2,sh+64,14,40,sl);
-        blit(sw-14,sh+100,12,6,0xFF222228);blit(sw+4,sh+100,12,6,0xFF222228);
-        blit(sw+14,sh+50,20,4,0xFF333340);
-    }
-    
-    QPainter p(&m_buf);
-    p.setFont(QFont("Courier New",15,QFont::Bold));p.setPen(QColor(0,255,140));
-    p.drawText(QRect(0,0,W,42),Qt::AlignCenter,
-               QString("ZONE: %1  |  DIFF: %2  ΓÇö  SELECT OPERATIVE").arg(MAP_NAMES[m_mapChoice]).arg(DIFF_CFG[m_difficulty].name));
-
-    for(int i=0;i<3;i++){
-        const CharProfile &cp=CHAR_PROFILES[i]; bool sel=(m_charChoice==i);
-        int cx=W/2-280+i*280,cy=56,cw=236,ch=450;
-        p.setPen(QPen(sel?QColor(0,255,140):QColor(0,70,45),sel?2:1));p.drawRect(cx-cw/2,cy,cw,ch);
-        int infoY=cy+130;
-        p.setFont(QFont("Courier New",16,QFont::Bold));p.setPen(sel?QColor(0,255,140):QColor(100,160,120));
-        p.drawText(QRect(cx-cw/2,infoY,cw,28),Qt::AlignCenter,QString("[%1]  %2").arg(i+1).arg(cp.name));
-        auto statBar=[&](int sy,const char*lbl,float frac,uint32_t bc){p.setFont(QFont("Courier New",8));p.setPen(QColor(140,160,150));p.drawText(QRect(cx-cw/2+10,sy,70,14),Qt::AlignLeft,lbl);fillRect(cx-cw/2+80,sy+2,cw-90,10,0xFF0A180A);fillRect(cx-cw/2+80,sy+2,int((cw-90)*std::min(1.f,frac)),10,bc);};
-        statBar(infoY+34,"HP",float(cp.hp)/200.f,cp.hp>100?0xFF22CC55:0xFF44AA22);statBar(infoY+52,"SPD",cp.speedMult/1.5f,0xFF2288FF);
-        statBar(infoY+70,"STA",cp.stamina/150.f,0xFFFFCC22);statBar(infoY+88,"AMMO",float(cp.ammo)/30.f,0xFFFF8822);statBar(infoY+106,"ARM",cp.damageReduction,0xFF8822FF);
-        p.setFont(QFont("Courier New",8));p.setPen(QColor(120,150,130));
-        p.drawText(QRect(cx-cw/2+8,infoY+126,cw-8,16),Qt::AlignCenter,cp.stat1);
-        p.drawText(QRect(cx-cw/2+8,infoY+142,cw-8,16),Qt::AlignCenter,cp.stat2);
-        p.setPen(i==2?QColor(100,160,255):QColor(100,130,110));
-        p.drawText(QRect(cx-cw/2+8,infoY+158,cw-8,16),Qt::AlignCenter,cp.stat3);
-    }
-    p.setFont(QFont("Courier New",10));p.setPen(QColor(60,100,70));
-    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[ΓåÉ ΓåÆ] Browse    [1/2/3] or [ENTER] Deploy    [ESC] Back");
-    p.end();
-}
-
-// =============================================================================
-//  GAME RENDERERS
-// =============================================================================
-
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  1. Floor & Ceiling ΓÇö sky gradient + procedural clouds (all raster)
-//     Clouds are sinusoidal noise computed per pixel. Press [ to see them
-//     as giant blocks ΓÇö proves pure per-pixel raster computation.
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-void MainWindow::renderFloorCeiling()
-{
-    const Player &pl=m_gs.player;
-    int shOff=int(pl.shakeY), hor=H/2+shOff+int(m_jumpZ*70.f)+int(m_pitch);
-    int PS=m_pixelScale;
-    float facing=atan2f(pl.dirY,pl.dirX);
-
-    // ΓöÇΓöÇ Sky / Ceiling ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    for(int y=0;y<hor&&y<H;y+=PS){
-        int sy = std::min(299, std::max(0, y * 300 / std::max(1, hor)));
-        for(int x=0;x<W;x+=PS){
-            float skyU=float(x)/W + facing/(2.f*3.14159f)+0.5f;
-            skyU-=floorf(skyU);
-            int sx = int(skyU * 1024.f) % 1024; if(sx<0) sx+=1024;
-            uint32_t skyCol = m_skybox[sy*1024 + sx];
-            for(int by=0;by<PS&&y+by<hor&&y+by<H;by++)
-                for(int bx=0;bx<PS&&x+bx<W;bx++)
-                    m_pixels[(y+by)*W+(x+bx)]=skyCol;
-        }
-    }
-    // Sun 
-    float angleDiff = 0.f - facing; // Sun is at East
-    while(angleDiff < -3.14159f) angleDiff += 2.f*3.14159f;
-    while(angleDiff > 3.14159f) angleDiff -= 2.f*3.14159f;
-    if(fabsf(angleDiff) < 3.14159f/2.f){
-        int sunX = W/2 + int(angleDiff * (W/2) / (m_adsFOVMult * 0.8f));
-        int sunY = int(hor * 0.35f);
-        for(int dy=-20;dy<=20;dy++) for(int dx=-20;dx<=20;dx++){
-            float d=sqrtf(float(dx*dx+dy*dy));
-            if(d > 20) continue;
-            int sx=sunX+dx,sy=sunY+dy;
-            if(sx>=0&&sx<W&&sy>=0&&sy<hor){
-                if(d < 12){
-                    float t = d/12.f;
-                    uint8_t sr=uint8_t(255*(1.f-t*.2f)),sg=uint8_t(240*(1.f-t*.3f)),sb2=uint8_t(180*(1.f-t*.5f));
-                    m_pixels[sy*W+sx]=(0xFF<<24)|(sr<<16)|(sg<<8)|sb2;
-                } else {
-                    float t=1.f-(d-12.f)/8.f; uint8_t a=uint8_t(t*t*80);
-                    uint32_t &pp=m_pixels[sy*W+sx];
-                    uint8_t r=uint8_t(std::min(255,int((pp>>16&0xFF)+(255-int((pp>>16&0xFF)))*a/255)));
-                    uint8_t g=uint8_t(std::min(255,int((pp>>8&0xFF)+(240-int((pp>>8&0xFF)))*a/255)));
-                    pp=(0xFF<<24)|(r<<16)|(g<<8)|(pp&0xFF);
-                }
-            }
-        }
-    }
-    // Horizon haze line
-    for(int x=0;x<W;x++){int hy=std::max(0,std::min(H-1,hor));m_pixels[hy*W+x]=0xFF202830;}
-
-    // ΓöÇΓöÇ Floor ΓÇö perspective-correct floor cast ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    float rdX0=pl.dirX-pl.planeX*m_adsFOVMult,rdY0=pl.dirY-pl.planeY*m_adsFOVMult;
-    float rdX1=pl.dirX+pl.planeX*m_adsFOVMult,rdY1=pl.dirY+pl.planeY*m_adsFOVMult;
-    for(int y=hor+1;y<H;y+=PS){
-        int p2=y-hor; float rowDist=float(H/2)/float(p2);
-        float sX=rowDist*(rdX1-rdX0)/float(W),sY=rowDist*(rdY1-rdY0)/float(W);
-        float fX=pl.posX+rowDist*rdX0,fY=pl.posY+rowDist*rdY0;
-        float fog=std::max(0.f,1.f-rowDist/14.f);
-        uint32_t fogM = uint32_t(fog*256);
-        for(int x=0;x<W;x+=PS){
-            bool check=((int(fX)+int(fY))&1)==0;
-            uint32_t c_val = check ? 42 : 26;
-            uint8_t r = (c_val * fogM) >> 8;
-            uint8_t g = ((c_val * 220 / 256) * fogM) >> 8;
-            uint8_t b = ((c_val * 160 / 256) * fogM) >> 8;
-            uint32_t fc = (0xFF<<24)|(r<<16)|(g<<8)|b;
-            for(int by=0;by<PS&&y+by<H;by++) for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[(y+by)*W+(x+bx)]=fc;
-            fX+=sX*PS; fY+=sY*PS;
-        }
-    }
-}
-
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  2. Walls
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-void MainWindow::renderWalls()
-{
-    const Player &pl=m_gs.player; int shOff=int(pl.shakeY),hor=H/2+shOff+int(m_jumpZ*70.f)+int(m_pitch); int PS=m_pixelScale;
-    for(int x=0;x<W;x+=PS){
-        float camX=2.f*x/float(W)-1.f,rdX=pl.dirX+pl.planeX*m_adsFOVMult*camX,rdY=pl.dirY+pl.planeY*m_adsFOVMult*camX;
-        int mapX=int(pl.posX),mapY=int(pl.posY);
-        float ddX=std::fabs(rdX)<1e-20f?1e30f:std::fabs(1.f/rdX),ddY=std::fabs(rdY)<1e-20f?1e30f:std::fabs(1.f/rdY);
-        float sdX,sdY; int stX,stY;
-        if(rdX<0){stX=-1;sdX=(pl.posX-mapX)*ddX;}else{stX=1;sdX=(mapX+1.f-pl.posX)*ddX;}
-        if(rdY<0){stY=-1;sdY=(pl.posY-mapY)*ddY;}else{stY=1;sdY=(mapY+1.f-pl.posY)*ddY;}
-        bool hit=false; int side=0;
-        for(int g=0;g<64&&!hit;g++){if(sdX<sdY){sdX+=ddX;mapX+=stX;side=0;}else{sdY+=ddY;mapY+=stY;side=1;}if(mapX<0||mapX>=MAP_W||mapY<0||mapY>=MAP_H)break;if(m_map[mapY][mapX]>0)hit=true;}
-        if(!hit){for(int bx=0;bx<PS&&x+bx<W;bx++)m_zBuf[x+bx]=1e30f;continue;}
-        float dist=(side==0)?(sdX-ddX):(sdY-ddY); for(int bx=0;bx<PS&&x+bx<W;bx++)m_zBuf[x+bx]=dist;
-        float wh;if(side==0)wh=pl.posY+dist*rdY;else wh=pl.posX+dist*rdX;wh-=std::floor(wh);
-        int wt=m_map[mapY][mapX];
-        float hScale=(wt==2)?0.85f:(wt==3)?1.3f:(wt==4)?0.9f:1.0f;
-        int lh=std::max(1,int(float(H)/dist*hScale));
-        int ds=std::max(0,hor-lh/2),de=std::min(H-1,hor+lh/2);
-        
-        float fog=std::max(0.f,1.f-dist/14.f);
-        uint32_t fogM = uint32_t(fog*256);
-        int tx = int(wh*64)&63;
-        int t = (wt>=1 && wt<=4) ? wt : 1;
-        float step = 64.f / float(lh);
-        float texPos = float(ds - (hor - lh/2)) * step;
-        for(int y=ds;y<=de;y++){
-            int ty = int(texPos) & 63;
-            texPos += step;
-            uint32_t c = m_textures[t][ty*64+tx];
-            if(side==1){uint8_t r=(c>>17&0x7F),g=(c>>9&0x7F),b=(c>>1&0x7F);c=(0xFF<<24)|(r<<16)|(g<<8)|b;}
-            uint8_t r=(c>>16&0xFF)*fogM>>8, g=(c>>8&0xFF)*fogM>>8, b=(c&0xFF)*fogM>>8;
-            c = (0xFF<<24)|(r<<16)|(g<<8)|b;
-            for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[y*W+(x+bx)]=c;
-        }
-    }
-}
-
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  3. Sprites ΓÇö enemies + bullets + medkits + enemy HP bars
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-void MainWindow::renderSprites()
-{
-    const Player &pl=m_gs.player;
-    enum SpType{SPR_ENEMY,SPR_PBULLET,SPR_EBULLET,SPR_MEDKIT};
-    struct Sp{float x,y,dx,dy,dist;SpType t;int idx;};
-    std::vector<Sp> sprites;
-
-    for(int i=0;i<int(m_gs.enemies.size());i++){const Enemy &e=m_gs.enemies[i];if(!e.alive)continue;float dx=e.x-pl.posX,dy=e.y-pl.posY;sprites.push_back({e.x,e.y,0,0,dx*dx+dy*dy,SPR_ENEMY,i});}
-    for(int i=0;i<int(m_gs.bullets.size());i++){const Bullet &b=m_gs.bullets[i];if(!b.alive)continue;float dx=b.x-pl.posX,dy=b.y-pl.posY;SpType st=b.owner==PLAYER_SHOT?SPR_PBULLET:SPR_EBULLET;sprites.push_back({b.x,b.y,b.dx,b.dy,dx*dx+dy*dy,st,i});}
-    for(int i=0;i<int(m_gs.healthKits.size());i++){const HealthKit &k=m_gs.healthKits[i];if(!k.active)continue;float dx=k.x-pl.posX,dy=k.y-pl.posY;sprites.push_back({k.x,k.y,0,0,dx*dx+dy*dy,SPR_MEDKIT,i});}
-
-    std::sort(sprites.begin(),sprites.end(),[](const Sp&a,const Sp&b2){return a.dist>b2.dist;});
-    float eplX=pl.planeX*m_adsFOVMult,eplY=pl.planeY*m_adsFOVMult;
-    float invDet=1.f/(eplX*pl.dirY-pl.dirX*eplY);
-    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f)+int(m_pitch);
-
-    // Collect HP bar data for a single QPainter pass at end
-    struct HPBar{int scrX,sprTop,sprH;float frac,alpha;int hp;};
-    std::vector<HPBar> hpBars;
-
-    auto drawAt=[&](float wx,float wy,SpType type,int idx,float bright,float wScale,float bobOff=0.f){
-        float spX=wx-pl.posX,spY=wy-pl.posY;
-        float txX=invDet*(pl.dirY*spX-pl.dirX*spY),txY=invDet*(-eplY*spX+eplX*spY);
-        if(txY<0.05f)return;
-        int scrX=int(float(W/2)*(1.f+txX/txY));
-        int sprH=std::abs(int(float(H)/txY)),sprW=int(sprH*wScale);
-        int sy0=hor-sprH/2+int(bobOff),sy1=hor+sprH/2+int(bobOff);
-        int sx0=scrX-sprW/2,sx1=scrX+sprW/2;
-        for(int sx=sx0;sx<sx1;sx++){
-            if(sx<0||sx>=W||txY>=m_zBuf[sx])continue;
-            float u=float(sx-sx0)/float(std::max(1,sprW));
-            for(int sy=std::max(0,sy0);sy<std::min(H,sy1);sy++){
-                float v=float(sy-sy0)/float(std::max(1,sprH));
-                uint32_t c=0;
-                switch(type){
-                case SPR_ENEMY:   c=sampleImp(u,v,idx<int(m_gs.enemies.size())&&m_gs.enemies[idx].hitFlash>0);break;
-                case SPR_PBULLET: c=samplePlayerBullet(u,v);break;
-                case SPR_EBULLET: c=sampleEnemyBullet(u,v);break;
-                case SPR_MEDKIT:  c=sampleMedkit(u,v);break;
-                }
-                if((c>>24)==0)continue;
-                m_pixels[sy*W+sx]=fogBlend(dimColor(c,bright),txY);
-            }
-        }
-        // Collect HP bar info for enemies that were recently hit
-        if(type==SPR_ENEMY&&idx<12&&m_enemyHPDisplay[idx]>0&&txY<m_zBuf[std::max(0,std::min(W-1,scrX))]){
-            const Enemy &e=m_gs.enemies[idx];
-            int maxHP=std::max(1,int(float(LEVEL_CFG[std::min(m_gs.level,5)].enemyHP+
-                                          (m_gs.level>5?(m_gs.level-5)*2:0))*DIFF_CFG[m_difficulty].enemyHPMult));
-            float frac=float(e.hp)/float(maxHP);
-            float alpha=std::min(1.f,m_enemyHPDisplay[idx]/0.4f);
-            hpBars.push_back({scrX,sy0,sprH,frac,alpha,e.hp});
-        }
-    };
-
-    for(const Sp &sp:sprites){
-        if(sp.t==SPR_ENEMY){drawAt(sp.x,sp.y,sp.t,sp.idx,1.f,1.f);}
-        else if(sp.t==SPR_MEDKIT){
-            float bob=sinf(m_gs.healthKits[sp.idx].bobPhase)*10.f;
-            drawAt(sp.x,sp.y,sp.t,sp.idx,1.f,0.7f,bob);
-            // Glow ring around medkit
-            float spX=sp.x-pl.posX,spY=sp.y-pl.posY;
-            float txX=invDet*(pl.dirY*spX-pl.dirX*spY),txY=invDet*(-eplY*spX+eplX*spY);
-            if(txY>0.05f&&txY<6.f){
-                int scrX=int(float(W/2)*(1.f+txX/txY));
-                int sprH2=std::abs(int(float(H)/txY));
-                int glowY=hor+sprH2/2+int(sinf(m_gs.healthKits[sp.idx].bobPhase)*10.f);
-                float pulseA=0.5f+0.5f*sinf(m_gs.healthKits[sp.idx].bobPhase*3.f);
-                for(int a=0;a<360;a+=8){float fa=a*3.14159f/180.f;int gx=scrX+int(cosf(fa)*(sprH2/4)),gy=glowY-sprH2/8+int(sinf(fa)*(sprH2/8));if(gx>=0&&gx<W&&gy>=0&&gy<H)m_pixels[gy*W+gx]=uint32_t(uint8_t(200*pulseA))<<24|0x22FF44;}
-            }
-        }
-        else{for(int pass=0;pass<3;pass++)drawAt(sp.x-sp.dx*pass*0.055f,sp.y-sp.dy*pass*0.055f,sp.t,sp.idx,1.f-pass*0.35f,0.45f-pass*0.1f);}
-    }
-
-    // Draw HP bars (raster bars + QPainter text in one pass)
-    if(!hpBars.empty()){
-        QPainter p2(&m_buf);
-        for(const auto &hb:hpBars){
-            int barW=64,barH=8,bx=hb.scrX-barW/2,by=hb.sprTop-barH-8;
-            if(by<44) by=44;
-            uint8_t a=uint8_t(200*hb.alpha);
-            // Background
-            fillRect(bx-1,by-14,barW+2,barH+16,uint32_t(a/2)<<24);
-            // Bar bg
-            fillRect(bx,by,barW,barH,uint32_t(a)<<24|0x111111);
-            // Bar fill
-            uint32_t bc=hb.frac>0.5f?0xFF00CC55:hb.frac>0.25f?0xFFCC8800:0xFFCC2200;
-            int fill=int(barW*hb.frac); if(fill>0) fillRect(bx,by,fill,barH,uint32_t(a)<<24|(bc&0xFFFFFF));
-            // HP text
-            p2.setFont(QFont("Courier New",8,QFont::Bold));
-            p2.setPen(QColor(255,255,255,int(255*hb.alpha)));
-            p2.drawText(QRect(bx,by-12,barW,12),Qt::AlignCenter,
-                        QString("HP  %1  (%2%)").arg(hb.hp).arg(int(hb.frac*100)));
-        }
-        p2.end();
-    }
-}
-
-void MainWindow::renderParticles()
-{
-    const Player &pl=m_gs.player;
-    float eplX=pl.planeX*m_adsFOVMult,eplY=pl.planeY*m_adsFOVMult;
-    float invDet=1.f/(eplX*pl.dirY-pl.dirX*eplY);
-    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f)+int(m_pitch);
-    for(const Particle &pt:m_gs.particles){
-        if(pt.life<=0)continue;
-        float spX=pt.x-pl.posX,spY=pt.y-pl.posY;
-        float txX=invDet*(pl.dirY*spX-pl.dirX*spY),txY=invDet*(-eplY*spX+eplX*spY);
-        if(txY<0.05f)continue;
-        int scrX=int(float(W/2)*(1.f+txX/txY));
-        int floorY=hor+int(float(H)*0.5f/txY),scrY=floorY-int(pt.z*float(H)/txY);
-        if(scrX<1||scrX>=W-1||scrY<1||scrY>=H-1||txY>=m_zBuf[scrX])continue;
-        uint32_t c=dimColor(fogBlend(pt.color,txY),pt.life); if((c>>24)==0)continue;
-        for(int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) px(scrX+dx,scrY+dy,c);
-    }
-}
-
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-//  5. Weapon & Arms  ΓÇö realistic tactical pistol + gloved arms
-//     All drawing uses fillRect/fillCircle/drawLine (pure raster)
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-void MainWindow::renderWeaponAndArms()
-{
-    Player &pl=m_gs.player;
-    const CharProfile &cp=CHAR_PROFILES[m_charChoice];
-    bool ads=pl.adsMode;
-    float bobX=sinf(pl.bobPhase)*(pl.sprinting?9.f:5.f);
-    float bobY=fabsf(cosf(pl.bobPhase*.5f))*(pl.sprinting?12.f:7.f);
-    float breathe=sinf(m_gs.frameNum*.018f)*1.5f;
-    // ADS: weapon centers; normal: weapon at bottom-right
-    int rx=ads?W/2+int(bobX*.25f):W/2+68+int(bobX);
-    int ry=ads?H-25+int(bobY*.35f+breathe*.4f):H-5+int(bobY+breathe);
-    int GS=ads?80:100;  // global scale
-    auto g=[&](int v)->int{return v*GS/100;};
-
-    // ΓöÇΓöÇ SUPPORT HAND / LEFT ARM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    if(!ads){
-        int lx=W/2-105+int(bobX*.4f),ly=ry-88;
-        // Forearm (tapers toward wrist ΓÇö 3 segments)
-        fillRect(lx-24,ly+30,48,H-(ly+30),cp.sleeve);   // upper sleeve
-        fillRect(lx-22,ly+26,44,H-(ly+26),cp.sleeveHi); // sleeve detail
-        // Forearm muscle definition (lighter stripe along top)
-        fillRect(lx-20,ly+26,6,60,uint32_t(cp.sleeveHi+0x080808));
-        // Wrist + tactical glove (very dark, tactical)
-        uint32_t glove=0xFF1A1A20, gloveHi=0xFF252530;
-        fillRect(lx-18,ly+12,36,20,glove);   // glove back
-        fillRect(lx-16,ly+10,32,12,gloveHi); // glove top highlight
-        // Knuckle definition
-        for(int k=0;k<4;k++) fillRect(lx-10+k*7,ly+8,5,6,uint32_t(gloveHi+0x101010));
-        // Fingers wrapped around frame
-        for(int f=0;f<4;f++) fillRect(lx-12+f*7,ly-2,5,12,glove);
-        fillRect(lx-14,ly-5,5,8,glove); // thumb
-    }
-
-    // ΓöÇΓöÇ PISTOL ΓÇö high-detail tactical model ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    // Drawing from bottom to top (barrel tip is at top)
-
-    // --- Magazine (extends below grip) ---
-    fillRect(rx-g(7), ry+g(48), g(14), H-(ry+g(48))+5, 0xFF1A1A24);
-    fillRect(rx-g(5), ry+g(50), g(4), g(12), 0xFF252530);  // mag release button
-
-    // --- Grip ---
-    fillRect(rx-g(10), ry+g(0), g(20), g(50), 0xFF1C1C28); // grip body
-    fillRect(rx-g(10), ry+g(0), g(20), g(2), 0xFF2A2A38);  // top of grip
-    // Stippling texture (grip pattern ΓÇö individual dots, proves raster)
-    for(int row=0;row<5;row++) for(int col=0;col<3;col++)
-        fillCircle(rx-g(6)+col*g(5), ry+g(8)+row*g(8), g(1), 0xFF0A0A14);
-    // Right side panel
-    fillRect(rx+g(8), ry+g(5), g(3), g(38), 0xFF161622);
-    // Backstrap
-    fillRect(rx-g(11), ry+g(5), g(3), g(38), 0xFF161622);
-
-    // --- Trigger guard ---
-    fillRect(rx-g(12), ry-g(10), g(2), g(22), 0xFF252530); // left bar
-    fillRect(rx+g(10), ry-g(10), g(2), g(22), 0xFF252530); // right bar
-    fillRect(rx-g(12), ry-g(11), g(24), g(3), 0xFF252530); // bottom bar
-    // Trigger (visible through guard)
-    fillRect(rx-g(2), ry-g(8), g(4), g(14), 0xFF2E2E3C);
-    fillRect(rx-g(1), ry-g(5), g(2), g(8), 0xFF3C3C4A);
-
-    // --- Frame (lower receiver) ---
-    fillRect(rx-g(13), ry-g(32), g(26), g(23), 0xFF28282E); // frame body
-    fillRect(rx-g(13), ry-g(32), g(26), g(2), 0xFF383848); // top edge
-    // Picatinny rail (bottom of frame, forward)
-    fillRect(rx-g(13), ry-g(34), g(20), g(4), 0xFF1E1E28);
-    for(int s=0;s<4;s++) fillRect(rx-g(13)+s*g(5), ry-g(34), g(4), g(4), 0xFF2A2A36); // rail slots
-
-    // --- Slide (upper receiver) ΓÇö main body ---
-    fillRect(rx-g(13), ry-g(110), g(26), g(80), 0xFF373740); // slide main
-    fillRect(rx-g(13), ry-g(110), g(2), g(80), 0xFF454550); // left edge highlight
-    fillRect(rx+g(11), ry-g(110), g(2), g(80), 0xFF202028); // right edge shadow
-    fillRect(rx-g(12), ry-g(109), g(24), g(2), 0xFF454550); // top highlight
-    // Slide mid-body detail
-    fillRect(rx-g(11), ry-g(55), g(22), g(2), 0xFF2A2A34); // slide seam
-
-    // --- Ejector port (cutout in slide right side) ---
-    fillRect(rx+g(6), ry-g(90), g(8), g(22), 0xFF0A0A12); // port opening
-    fillRect(rx+g(7), ry-g(89), g(4), g(6), 0xFF8A7040); // brass case peek (ejected round)
-    fillRect(rx+g(8), ry-g(88), g(2), g(4), 0xFFA08030);
-
-    // --- Rear serrations (8 diagonal cuts on back of slide) ---
-    for(int s=0;s<8;s++){
-        int sy=ry-g(107)+s*g(4);
-        fillRect(rx-g(13), sy, g(26), g(2), 0xFF2A2A34);
-        fillRect(rx-g(11), sy, g(22), g(1), 0xFF202028);
-    }
-
-    // --- Rear sight (U-shaped notch) ---
-    fillRect(rx-g(12), ry-g(113), g(8), g(5), 0xFF484852); // left post
-    fillRect(rx+g(4), ry-g(113), g(8), g(5), 0xFF484852);  // right post
-    fillRect(rx-g(3), ry-g(112), g(6), g(2), 0xFF202028);  // notch gap
-    // Sight dots (white dot sights)
-    fillCircle(rx-g(8), ry-g(111), g(2), 0xFFEEEEFF);  // left dot
-    fillCircle(rx+g(8), ry-g(111), g(2), 0xFFEEEEFF);  // right dot
-
-    // --- Barrel (protruding slightly from slide front) ---
-    fillRect(rx-g(5), ry-g(115), g(10), g(8), 0xFF404048); // barrel body
-    fillRect(rx-g(4), ry-g(118), g(8), g(6), 0xFF505058); // crown
-    fillCircle(rx, ry-g(116), g(3), 0xFF0A0A14); // bore (muzzle hole)
-    // Front sight post (tall blade)
-    fillRect(rx-g(2), ry-g(118), g(4), g(7), 0xFF484850);
-    fillCircle(rx, ry-g(115), g(1), 0xFFEEEEFF); // front dot
-
-    // --- Thumb safety ---
-    fillRect(rx-g(13), ry-g(38), g(5), g(6), 0xFF3A3A48);
-
-    // --- Hammer ---
-    fillRect(rx-g(4), ry-g(34), g(8), g(4), 0xFF404050);
-    fillRect(rx-g(2), ry-g(37), g(4), g(5), 0xFF303040);
-
-    // ΓöÇΓöÇ FIRING HAND / RIGHT ARM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    uint32_t glove=0xFF1A1A20, gloveHi=0xFF252530;
-    // Upper forearm / sleeve
-    fillRect(rx-g(22), ry+g(45), g(44), H-(ry+g(45)), cp.sleeve);
-    fillRect(rx-g(20), ry+g(48), g(40), H-(ry+g(48)), cp.sleeveHi);
-    // Forearm muscle stripe
-    fillRect(rx-g(18), ry+g(48), g(5), 60, uint32_t(cp.sleeveHi+0x080808));
-    // Wrist
-    fillRect(rx-g(18), ry+g(36), g(36), g(14), glove);
-    fillRect(rx-g(16), ry+g(34), g(32), g(8), gloveHi);
-    // Palm on grip
-    fillRect(rx-g(16), ry+g(2), g(20), g(36), glove);
-    fillRect(rx-g(14), ry+g(2), g(16), g(34), gloveHi);
-    // Thumb wrap around grip
-    fillRect(rx+g(5), ry-g(15), g(8), g(30), glove);
-    // Finger definition
-    for(int f=0;f<4;f++) fillRect(rx-g(10)+f*g(5), ry-g(2), g(4), g(5), gloveHi);
-    // Knuckle highlight
-    for(int k=0;k<4;k++) fillCircle(rx-g(8)+k*g(5), ry-g(2), g(2), uint32_t(gloveHi+0x080808));
-    // Watch detail (left wrist)
-    fillRect(rx-g(19), ry+g(38), g(7), g(8), 0xFF202020); // watch body
-    fillRect(rx-g(18), ry+g(39), g(5), g(6), 0xFF001828); // watch face
-    fillRect(rx-g(17), ry+g(40), g(3), g(1), 0xFF00FFAA); // digital readout
-
-    // ΓöÇΓöÇ ADS scope ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    if(ads&&m_adsFOVMult<0.7f){
-        int sCx=W/2,sCy=H/2;
-        fillCircle(sCx,sCy,62,0xFF000000);
-        for(int a=0;a<360;a+=2){float fa=a*3.14159f/180.f;px(sCx+int(cosf(fa)*60),sCy+int(sinf(fa)*60),0xFF88AA88);}
-        for(int a=0;a<360;a+=8){float fa=a*3.14159f/180.f;px(sCx+int(cosf(fa)*55),sCy+int(sinf(fa)*55),0xFF446644);}
-        drawLine(sCx-55,sCy,sCx-10,sCy,0xFF88CC88);drawLine(sCx+10,sCy,sCx+55,sCy,0xFF88CC88);
-        drawLine(sCx,sCy-55,sCx,sCy-10,0xFF88CC88);drawLine(sCx,sCy+10,sCx,sCy+55,0xFF88CC88);
-        // Stadia marks
-        for(int s=1;s<=3;s++){drawLine(sCx-30,sCy+s*10,sCx-20,sCy+s*10,0xFF446644);drawLine(sCx+20,sCy+s*10,sCx+30,sCy+s*10,0xFF446644);}
-        fillCircle(sCx,sCy,2,0xFFFF4444);
-        for(int y=0;y<H;y++) for(int x=0;x<W;x++){float ddx=float(x-sCx),ddy=float(y-sCy);if(ddx*ddx+ddy*ddy>60.f*60.f){uint32_t &pp=m_pixels[y*W+x];uint8_t r=(pp>>16&0xFF)/5,g2=(pp>>8&0xFF)/5,b2=(pp&0xFF)/5;pp=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}}
-    }
-
-    // Casing ejection
-    if(m_casingTimer>0){
-        m_casingTimer-=m_dt;
-        m_casingX+=m_casingVX*m_dt;
-        m_casingY+=m_casingVY*m_dt;
-        m_casingVY+=400.f*m_dt; // gravity
-        int cx2=int(m_casingX), cy2=int(m_casingY);
-        if(cx2>0&&cx2<W-4&&cy2>0&&cy2<H-2){
-            fillRect(cx2,cy2,5,2,0xFFD4A000); // brass casing
-            fillRect(cx2+1,cy2,3,1,0xFFFFCC44);
-        }
-    }
-
-    // ΓöÇΓöÇ Muzzle flash ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    if(pl.flashTimer>0){
-        float t=pl.flashTimer/0.14f;
-        int fx=rx, fy=ry-g(118);
-        if(t>0.7f){
-            // Phase 1: big expanding flash + 12 rays
-            int fr=int((16+rand()%8)*t);
-            for(int ray=0;ray<12;ray++){float fa=ray*3.14159f/6.f+(1.f-t)*0.8f;int rl=fr+10+rand()%8;drawLine(fx,fy,fx+int(cosf(fa)*rl),fy+int(sinf(fa)*rl),0xAAFF6600);}
-            fillCircle(fx,fy,fr+8,0x55FFAA00);
-            fillCircle(fx,fy,fr+4,0xAAFFCC00);
-            fillCircle(fx,fy,fr,0xFFFFDD00);
-            fillCircle(fx,fy,fr/2,0xFFFFFFFF);
-            // Screen flash
-            int addR=int(48*t),addG=int(24*t);
-            for(int i=0;i<W*H;i++){uint32_t pp=m_pixels[i];uint8_t r2=uint8_t(std::min(255,int((pp>>16&0xFF)+addR))),g2=uint8_t(std::min(255,int((pp>>8&0xFF)+addG)));m_pixels[i]=(0xFF<<24)|(r2<<16)|(g2<<8)|(pp&0xFF);}
-        } else if(t>0.3f){
-            // Phase 2: medium flash + smoke particles
-            int fr=int(8*t);
-            for(int ray=0;ray<6;ray++){float fa=ray*3.14159f/3.f;int rl=fr+6;drawLine(fx,fy,fx+int(cosf(fa)*rl),fy+int(sinf(fa)*rl),0x66FF8800);}
-            fillCircle(fx,fy,fr+3,0x44885500);
-            fillCircle(fx,fy,fr,0x88FFCC00);
-            fillCircle(fx,fy,fr/2,0xFFFFDD80);
-            // Smoke puffs (dark grey pixels scattered)
-            for(int s=0;s<8;s++){int sx=fx+(rand()%20-10),sy=fy+(rand()%20-10);if(sx>=0&&sx<W&&sy>=0&&sy<H)m_pixels[sy*W+sx]=0xFF404040;}
+    // Weapon / ammo pickups
+    for (auto &wp : m_gs.weaponPickups) {
+        if (!wp.active) continue;
+        wp.bobPhase += dt * 2.8f;
+        float dx = pl.posX - wp.x, dy = pl.posY - wp.y;
+        if (dx * dx + dy * dy >= 0.35f || std::fabs(m_footZ - floorH(wp.x, wp.y)) > 0.6f) continue;
+        wp.active = false;
+        if (wp.type == PICKUP_INTEL) {
+            for (int w = 0; w < WPN_COUNT; w++) if (pl.owned[w]) pl.reserve[w] = WEAPONS[w].maxReserve;
+            pl.hp = CHAR_PROFILES[m_charChoice].hp;
+            m_gs.score += 1000;
+            pushFeed("INTEL RECOVERED  +1000", 4.5f, true);
+        } else if (wp.type == PICKUP_AMMO) {
+            for (int w = 0; w < WPN_COUNT; w++) if (pl.owned[w])
+                pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize, WEAPONS[w].maxReserve);
+            pushFeed("+ AMMO", 3.f);
         } else {
-            // Phase 3: remnant glow
-            fillCircle(fx,fy,3,0x66FF8800);
-            fillCircle(fx,fy,1,0xAAFFDD00);
-            for(int s=0;s<4;s++){int sx=fx+(rand()%24-12),sy=fy+(rand()%24-12);if(sx>=0&&sx<W&&sy>=0&&sy<H)m_pixels[sy*W+sx]=uint32_t(0x33505050);}
+            int w = wp.type == PICKUP_SHOTGUN ? WPN_SHOTGUN : WPN_RIFLE;
+            bool had = pl.owned[w];
+            pl.owned[w] = true;
+            if (!had) pl.mag[w] = WEAPONS[w].magSize;
+            pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize * 2, WEAPONS[w].maxReserve);
+            pushFeed(QString(had ? "+ AMMO  %1" : "NEW WEAPON  %1").arg(WEAPONS[w].name), 4.f);
+            if (!had) switchWeapon(w);
         }
     }
-}
 
-void MainWindow::renderDamageVignette()
-{
-    if(m_gs.player.damageFlash<=0)return;
-    float t=m_gs.player.damageFlash/0.45f; int depth=int(90*t);
-    for(int y=0;y<H;y++) for(int x=0;x<W;x++){int d=std::min({x,y,W-1-x,H-1-y});if(d<depth){float s=(1.f-float(d)/float(depth))*t;uint32_t &pp=m_pixels[y*W+x];uint8_t r=uint8_t(std::min(255,int((pp>>16&0xFF)+int(190*s))));pp=(0xFF<<24)|(r<<16)|(pp&0x00FFFF);}}
-}
+    updateEnemies(dt);
 
-// =============================================================================
-//  HUD
-// =============================================================================
-void MainWindow::renderTopBar()
-{
-    for(int y=0;y<40;y++) for(int x=0;x<W;x++){uint32_t &pp=m_pixels[y*W+x];uint8_t r=(pp>>16&0xFF)/5,g2=(pp>>8&0xFF)/5+2,b2=(pp&0xFF)/5+4;m_pixels[y*W+x]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
-    for(int x=0;x<W;x++)px(x,40,0xFF004422);
-    QPainter p(&m_buf);
-    // Left
-    p.setFont(QFont("Courier New",10,QFont::Bold));p.setPen(QColor(0,220,130));
-    const char*diffChars[]={"EASY","MED","HARD"};
-    p.drawText(8,26,QString("[%1] %2  LV%3  KILL %4/%5").arg(MAP_NAMES[m_gs.mapChoice]).arg(diffChars[m_difficulty]).arg(m_gs.level).arg(m_gs.killsThisLevel).arg(m_gs.killsNeeded));
-    // Compass
-    {
-        float heading=atan2f(-m_gs.player.dirY,m_gs.player.dirX)*180.f/3.14159f;if(heading<0)heading+=360.f;
-        float dh=fmodf(360.f-(heading-90.f)+360.f,360.f);
-        const int cw=280; float ppd=float(cw)/90.f;
-        static const struct{float deg;const char*lbl;}DIRS[]={{0,"N"},{45,"NE"},{90,"E"},{135,"SE"},{180,"S"},{225,"SW"},{270,"W"},{315,"NW"}};
-        for(auto &d:DIRS)for(int wrap=-1;wrap<=1;wrap++){float delta=fmodf(d.deg+wrap*360.f-dh+360.f,360.f);if(delta>180)delta-=360.f;if(fabs(delta)>100)continue;int lx=W/2+int(delta*ppd);bool isCard=(int(d.deg)%90==0);p.setFont(QFont("Courier New",isCard?11:8,isCard?QFont::Bold:QFont::Normal));p.setPen(isCard?QColor(0,255,140):QColor(80,150,100));p.drawText(QRect(lx-16,4,32,18),Qt::AlignCenter,d.lbl);}
-        p.setPen(QColor(255,80,80));p.setFont(QFont("Courier New",10,QFont::Bold));p.drawText(QRect(W/2-8,21,16,16),Qt::AlignCenter,"Γû╝");
-        static const char*CARD8[]={"N","NE","E","SE","S","SW","W","NW"};int ci=int((dh+22.5f)/45.f)%8;
-        p.setFont(QFont("Courier New",9));p.setPen(QColor(180,180,180));p.drawText(QRect(W/2+140,8,60,22),Qt::AlignLeft,QString("%1┬░ %2").arg(int(dh)).arg(CARD8[ci]));
-    }
-    p.setFont(QFont("Courier New",10,QFont::Bold));p.setPen(QColor(255,190,60));
-    p.drawText(QRect(W-200,0,190,40),Qt::AlignRight|Qt::AlignVCenter,QString("SCORE %1  |  %2 FPS").arg(m_gs.score).arg(int(m_fps)));
-    p.end();
-}
-
-void MainWindow::renderRadar()
-{
-    const int RX=76,RY=76+42,RD=60; const Player &pl=m_gs.player;
-    for(int dy=-RD;dy<=RD;dy++) for(int dx=-RD;dx<=RD;dx++){if(dx*dx+dy*dy>RD*RD)continue;int px2=RX+dx,py2=RY+dy;if(px2<0||px2>=W||py2<0||py2>=H)continue;uint32_t &pp=m_pixels[py2*W+px2];uint8_t r=(pp>>16&0xFF)/7,g2=(pp>>8&0xFF)/7,b2=uint8_t((pp&0xFF)/7+10);m_pixels[py2*W+px2]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
-    for(int a=0;a<360;a++){float fa=a*3.14159f/180.f;px(RX+int(cosf(fa)*RD),RY+int(sinf(fa)*RD),0xFF00CC66);}
-    for(int r2=RD/3;r2<RD;r2+=RD/3) for(int a=0;a<360;a+=4){float fa=a*3.14159f/180.f;px(RX+int(cosf(fa)*r2),RY+int(sinf(fa)*r2),0x1A003311);}
-    drawLine(RX-RD+8,RY,RX+RD-8,RY,0x22004422);drawLine(RX,RY-RD+8,RX,RY+RD-8,0x22004422);
-    float sweepA=fmodf(m_gs.frameNum*0.04f,3.14159f*2);
-    for(int r=0;r<RD;r++)px(RX+int(cosf(sweepA)*r),RY+int(sinf(sweepA)*r),0x4400FF44);
-    fillCircle(RX,RY,3,0xFFFFFFFF);
-    for(int r=4;r<20;r++)px(RX+int(pl.dirX*r),RY+int(pl.dirY*r),r<10?0xFFFFFFFF:0x88FFFFFF);
-    bool blink=(m_gs.frameNum/8)%2==0;
-    auto clampRadar = [&](float &rx, float &ry){
-        float d2 = rx*rx + ry*ry;
-        float maxD = RD - 4.f;
-        if(d2 > maxD*maxD){
-            float d = sqrtf(d2);
-            rx = rx / d * maxD;
-            ry = ry / d * maxD;
+    // Enemy projectiles
+    const DiffConfig &dc = DIFF_CFG[m_difficulty];
+    for (auto &b : m_gs.bullets) {
+        if (!b.alive) continue;
+        b.px = b.x; b.py = b.y; b.pz = b.z;
+        b.x += b.dx * dt; b.y += b.dy * dt; b.z += b.dz * dt;
+        int bx = int(std::floor(b.x)), by = int(std::floor(b.y));
+        if (bx < 0 || bx >= MAP_W || by < 0 || by >= MAP_H || b.z < groundAt(b.x, b.y)) {
+            b.alive = false; spawnImpact(b.px, b.py, b.pz, !solidCell(bx, by)); continue;
         }
-    };
-    for(const auto &e:m_gs.enemies){
-        if(!e.alive)continue;
-        float relX=e.x-pl.posX,relY=e.y-pl.posY,fwd=relX*pl.dirX+relY*pl.dirY,rgt=relY*pl.dirX-relX*pl.dirY;
-        float pxOff = rgt*float(RD)/12.f, pyOff = -fwd*float(RD)/12.f;
-        clampRadar(pxOff, pyOff);
-        int ex2=RX+int(pxOff),ey2=RY+int(pyOff);
-        fillCircle(ex2,ey2,blink?4:3,blink?0xFFFF2200:0xFFFF6600);
-    }
-    for(const auto &k:m_gs.healthKits){
-        if(!k.active)continue;
-        float relX=k.x-pl.posX,relY=k.y-pl.posY,fwd=relX*pl.dirX+relY*pl.dirY,rgt=relY*pl.dirX-relX*pl.dirY;
-        float pxOff = rgt*float(RD)/12.f, pyOff = -fwd*float(RD)/12.f;
-        clampRadar(pxOff, pyOff);
-        int kx=RX+int(pxOff),ky=RY+int(pyOff);
-        fillCircle(kx,ky,3,0xFF22FF66);
-    }
-    QPainter p2(&m_buf);p2.setFont(QFont("Courier New",7,QFont::Bold));p2.setPen(QColor(0,150,70));p2.drawText(QRect(RX-30,RY+RD+2,60,13),Qt::AlignCenter,"RADAR");p2.end();
-}
-
-void MainWindow::renderHealthPanel()
-{
-    const Player &pl=m_gs.player; const CharProfile &cp=CHAR_PROFILES[m_charChoice];
-    const int PX=8,PY=H-80,PW=215,PH=72;
-    for(int y=PY;y<PY+PH;y++) for(int x=PX-2;x<PX+PW+2;x++){if(x<0||x>=W||y<0||y>=H)continue;uint32_t &pp=m_pixels[y*W+x];uint8_t r=(pp>>16&0xFF)/6,g2=(pp>>8&0xFF)/6+4,b2=(pp&0xFF)/6+6;m_pixels[y*W+x]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
-    for(int x=PX-2;x<PX+PW+2&&x<W;x++)px(x,PY-1,0xFF004422);
-    int segs=10,segW=(PW-30)/segs;
-    for(int s=0;s<segs;s++){float fill=float(pl.hp)/float(cp.hp);bool filled=(s+1)<=int(fill*segs+0.5f);uint32_t c=filled?(pl.hp>40?0xFF00CC55:pl.hp>20?0xFFCC8800:0xFFCC2200):0xFF0A180A;fillRect(PX+30+s*(segW+2),PY+18,segW,14,c);}
-    int staDots=12; float staF=pl.stamina/cp.stamina;
-    for(int d=0;d<staDots;d++){bool filled=float(d)/staDots<staF;fillCircle(PX+8+d*14,PY+52,5,filled?(pl.sprinting?0xFFFFCC00:0xFF2288FF):0xFF0A1018);}
-    QPainter p2(&m_buf);p2.setFont(QFont("Courier New",10,QFont::Bold));p2.setPen(QColor(0,255,140));
-    p2.drawText(PX+2,PY+14,QString("ΓÖÑ  %1 / %2").arg(pl.hp).arg(cp.hp));
-    p2.setPen(pl.sprinting?QColor(255,200,0):QColor(60,140,255));
-    p2.drawText(PX+2,PY+68,QString("ΓÜí  %1%%").arg(int(100.f*pl.stamina/cp.stamina)));p2.end();
-}
-
-void MainWindow::renderAmmoPanel()
-{
-    const Player &pl=m_gs.player; const CharProfile &cp=CHAR_PROFILES[m_charChoice];
-    const int PW=190,PH=72,PX=W-PW-8,PY=H-80;
-    for(int y=PY;y<PY+PH;y++) for(int x=PX-2;x<PX+PW+2;x++){if(x<0||x>=W||y<0||y>=H)continue;uint32_t &pp=m_pixels[y*W+x];uint8_t r=(pp>>16&0xFF)/6+5,g2=(pp>>8&0xFF)/6+3,b2=(pp&0xFF)/6;m_pixels[y*W+x]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
-    for(int x=PX-2;x<PX+PW+2&&x<W;x++)px(x,PY-1,0xFF442200);
-    int dotsPerRow=std::min(cp.ammo,15);
-    for(int i=0;i<cp.ammo;i++){bool loaded=i<pl.ammo;int col2=i%dotsPerRow,row=i/dotsPerRow;fillRect(PX+6+col2*12,PY+22+row*14,8,10,loaded?0xFFFFCC44:0xFF332211);if(loaded)fillRect(PX+7+col2*12,PY+22+row*14,6,3,0xFFFFEE88);}
-    int kitsLeft=0;for(const auto &k:m_gs.healthKits)if(k.active)kitsLeft++;
-    QPainter p2(&m_buf);p2.setFont(QFont("Courier New",11,QFont::Bold));p2.setPen(QColor(255,180,60));
-    p2.drawText(QRect(PX,PY+2,PW-4,18),Qt::AlignRight,QString("%1 / %2  Γùë").arg(pl.ammo).arg(cp.ammo));
-    p2.setFont(QFont("Courier New",8));p2.setPen(QColor(160,110,50));
-    p2.drawText(QRect(PX,PY+PH-14,PW-4,14),Qt::AlignRight,
-                QString("PISTOL MK.II   Γ£Ü%1 kits").arg(kitsLeft));
-    p2.end();
-}
-
-void MainWindow::renderCrosshair()
-{
-    const Player &pl=m_gs.player; if(pl.adsMode&&m_adsFOVMult<0.8f)return;
-    int cx=W/2,cy=H/2;
-    bool moving=m_keys.count(Qt::Key_W)||m_keys.count(Qt::Key_S)||m_keys.count(Qt::Key_A)||m_keys.count(Qt::Key_D);
-    float spread=5.f+(moving?5.f:0.f)+(pl.sprinting?6.f:0.f)+(pl.flashTimer>0?8.f*(pl.flashTimer/0.14f):0.f);
-    int sp=int(spread),arm=10;
-    uint32_t col=m_hitMarker>0?0xFFFF5544:0xAAFFFFFF;
-    for(int th=0;th<2;th++){drawLine(cx-arm-sp,cy+th,cx-sp-1,cy+th,col);drawLine(cx+sp+1,cy+th,cx+arm+sp,cy+th,col);drawLine(cx+th,cy-arm-sp,cx+th,cy-sp-1,col);drawLine(cx+th,cy+sp+1,cx+th,cy+arm+sp,col);}
-    px(cx,cy,0xFFFF4444);
-    if(m_hitMarker>0){float t=m_hitMarker/0.35f;uint32_t hc=(uint32_t(uint8_t(255*t))<<24)|0xFFFFFF;int sz=int(10+(1-t)*6);drawLine(cx-sz,cy-sz,cx+sz,cy+sz,hc);drawLine(cx+sz,cy-sz,cx-sz,cy+sz,hc);}
-}
-
-void MainWindow::renderDamageDirection()
-{
-    if(m_damageDirTimer<=0)return;
-    float t=std::min(1.f,m_damageDirTimer/2.f);
-    const Player &pl=m_gs.player;
-    float playerFacing=atan2f(pl.dirY,pl.dirX),relAngle=m_damageAngle-playerFacing;
-    float sa=sinf(relAngle),ca=cosf(relAngle);
-    int R=int(std::min(W,H)*0.34f);
-    int icx=std::max(20,std::min(W-20,W/2+int(sa*R))),icy=std::max(20,std::min(H-20,H/2-int(ca*R)));
-    float pulse=0.6f+0.4f*sinf(m_menuFrame*0.35f);
-    fillCircle(icx,icy,int(22*t*pulse),uint32_t(uint8_t(120*t*pulse))<<24|0xFF2000);
-    fillCircle(icx,icy,int(12*t),uint32_t(uint8_t(200*t))<<24|0xFF5533);
-    fillCircle(icx,icy,int(5*t),uint32_t(uint8_t(255*t))<<24|0xFFFFFF);
-}
-
-void MainWindow::renderTargetBar()
-{
-    const Player &pl=m_gs.player;float bestDot=-1;int bestIdx=-1;float cosThr=cosf(20.f*3.14159f/180.f);
-    for(int i=0;i<int(m_gs.enemies.size());i++){
-        const Enemy &e=m_gs.enemies[i];
-        if(!e.alive)continue;
-        float dx=e.x-pl.posX,dy=e.y-pl.posY,d=sqrtf(dx*dx+dy*dy);
-        if(d>10)continue;
-        float dot=(dx*pl.dirX+dy*pl.dirY)/d;
-        if(dot>cosThr&&dot>bestDot && hasLOS(pl.posX,pl.posY,e.x,e.y)){
-            bestDot=dot;bestIdx=i;
+        float dx = b.x - pl.posX, dy = b.y - pl.posY;
+        if (dx * dx + dy * dy < 0.15f && b.z > m_footZ - 0.1f && b.z < m_footZ + 0.95f) {
+            b.alive = false;
+            int dmg = int((10 + 4 * (m_gs.level - 1)) * (1.f - pl.damageReduction) * dc.dmgReceivedMult);
+            pl.hp -= dmg; pl.damageFlash = 0.45f; pl.shakeY = -9.f;
+            m_damageAngle = std::atan2(-b.dy, -b.dx); m_damageDirTimer = 2.0f;
+            if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
         }
     }
-    if(bestIdx<0)return;
-    const Enemy &te=m_gs.enemies[bestIdx];
-    int maxHP=std::max(1,int(float(LEVEL_CFG[std::min(m_gs.level,5)].enemyHP+(m_gs.level>5?(m_gs.level-5)*2:0))*DIFF_CFG[m_difficulty].enemyHPMult));
-    float frac=float(te.hp)/float(maxHP);
-    int bx=W/2-110,by=H-96,bw=220,bh=14;
-    fillRect(bx-6,by-18,bw+12,bh+26,0x99000000);fillRect(bx,by,bw,bh,0xFF0A0A0A);
-    uint32_t bc=frac>0.5f?0xFF00CC55:frac>0.25f?0xFFCC8800:0xFFCC2200;
-    fillRect(bx,by,int(bw*frac),bh,bc);
-    QPainter p2(&m_buf);p2.setFont(QFont("Courier New",9,QFont::Bold));p2.setPen(QColor(200,200,200));
-    p2.drawText(QRect(bx-6,by-16,bw+12,16),Qt::AlignCenter,QString("TARGET  %1%%  HP %2").arg(int(frac*100)).arg(te.hp));p2.end();
-}
+    m_gs.bullets.erase(std::remove_if(m_gs.bullets.begin(), m_gs.bullets.end(), [](const Bullet &b) { return !b.alive; }), m_gs.bullets.end());
 
-void MainWindow::renderComboDisplay()
-{
-    if(m_combo<2||m_comboDisplay<=0)return; float t=std::min(1.f,m_comboDisplay/0.5f);
-    QPainter p2(&m_buf);p2.setFont(QFont("Courier New",int(20+4*(1-t)),QFont::Black));p2.setPen(QColor(255,200,0,int(255*t)));
-    p2.drawText(QRect(0,H/2-120,W,44),Qt::AlignCenter,QString("x%1  KILL STREAK").arg(m_combo));p2.end();
-}
+    // Tracers
+    for (auto &t : m_gs.tracers) t.t += 95.f * dt;
+    m_gs.tracers.erase(std::remove_if(m_gs.tracers.begin(), m_gs.tracers.end(), [](const Tracer &t) { return t.t - 2.f > t.len; }), m_gs.tracers.end());
 
-void MainWindow::renderKillFeed()
-{
-    if(m_killFeed.empty())return; QPainter p2(&m_buf); int y=48;
-    for(const auto &kf:m_killFeed){
-        float t=std::min(1.f,kf.life/0.5f);int alpha=int(200*t);
-        p2.fillRect(W-195,y,190,20,QColor(0,0,0,int(140*t)));
-        p2.fillRect(W-195,y,3,20,QColor(0,int(255*t),int(140*t),alpha));
-        p2.setFont(QFont("Courier New",10,QFont::Bold));p2.setPen(QColor(0,int(255*t),int(140*t),alpha));
-        p2.drawText(QRect(W-190,y,185,20),Qt::AlignLeft|Qt::AlignVCenter," Γû╕ "+kf.text);y+=22;
+    // Particles
+    for (auto &pt : m_gs.particles) {
+        if (pt.life <= 0) continue;
+        float grav = pt.type == PT_DUST ? -0.15f : pt.type == PT_SMOKE ? -0.35f : pt.type == PT_SPARK ? 11.f : 9.f;
+        pt.vz -= grav * dt;
+        float drag = (pt.type == PT_DUST || pt.type == PT_SMOKE) ? std::exp(-dt * 3.f) : 1.f;
+        pt.vx *= drag; pt.vy *= drag; pt.vz *= drag;
+        pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.z += pt.vz * dt;
+        if (pt.type == PT_DUST || pt.type == PT_SMOKE) pt.size += dt * 0.12f;
+        float gz = groundAt(pt.x, pt.y);
+        if (pt.z < gz) {
+            int cx = int(std::floor(pt.x)), cy = int(std::floor(pt.y));
+            if (solidCell(cx, cy) && pt.z < gz - 0.05f) {           // hit a wall side: bounce back
+                pt.vx = -pt.vx * 0.3f; pt.vy = -pt.vy * 0.3f; pt.x += pt.vx * dt * 2; pt.y += pt.vy * dt * 2;
+            } else {
+                if (pt.type == PT_BLOOD && pt.vz < -0.5f) addDecal(m_blood, pt.x, pt.y, 0.05f, 90);
+                pt.z = gz; pt.vz *= -0.25f; pt.vx *= 0.5f; pt.vy *= 0.5f;
+            }
+        }
+        if (false) { pt.vx = -pt.vx * 0.3f; pt.vy = -pt.vy * 0.3f; pt.x += pt.vx * dt * 2; pt.y += pt.vy * dt * 2; }
+        pt.life -= dt;
     }
-    p2.end();
-}
+    m_gs.particles.erase(std::remove_if(m_gs.particles.begin(), m_gs.particles.end(), [](const Particle &p) { return p.life <= 0; }), m_gs.particles.end());
 
-void MainWindow::renderHUD()
-{
-    renderTopBar();renderRadar();renderKillFeed();
-    renderHealthPanel();renderAmmoPanel();
-    renderCrosshair();renderDamageDirection();renderTargetBar();renderComboDisplay();
-    const Player &pl=m_gs.player;
-    QPainter p(&m_buf);
-    if(pl.ammo<=3&&pl.ammo>0){p.setFont(QFont("Courier New",13,QFont::Bold));p.setPen(QColor(255,80,0,int(200+55*sinf(m_gs.frameNum*.25f))));p.drawText(QRect(0,H-50,W,20),Qt::AlignCenter,"LOW AMMO");}
-    else if(pl.ammo==0){p.setFont(QFont("Courier New",13,QFont::Bold));p.setPen(QColor(255,30,30));p.drawText(QRect(0,H-50,W,20),Qt::AlignCenter,"NO AMMO");}
-    if(pl.hp<=20&&!m_gs.gameOver){p.setFont(QFont("Courier New",11,QFont::Bold));p.setPen(QColor(255,0,0,int(140+115*sinf(m_gs.frameNum*.3f))));p.drawText(QRect(0,H-66,W,20),Qt::AlignCenter,"CRITICAL HEALTH");}
-    if(m_pixelScale>1){p.setFont(QFont("Courier New",9));p.setPen(QColor(0,120,60,160));p.drawText(QRect(0,H-14,W,12),Qt::AlignCenter,QString("BLOCK: %1├ù%1 px  |  ZOOM %2├ù").arg(m_pixelScale).arg(m_zoomFactor,0,'f',1));}
-    if(m_gs.frameNum<300&&m_gs.level==1){p.fillRect(0,H-26,W,26,QColor(0,0,0,160));p.setFont(QFont("Courier New",9));p.setPen(QColor(0,140,70));p.drawText(QRect(0,H-13,W,12),Qt::AlignCenter,"WASD:move  SHIFT:sprint  RMB:ADS  Space/LMB:fire  Q/E:turn  M:menu  ESC:pause  [ ]:pixelblocks  SCROLL:zoom");}
-    p.end();
-}
+    for (auto &d : m_gs.damageNums) { d.life -= dt; d.z += dt * 0.5f; }
+    m_gs.damageNums.erase(std::remove_if(m_gs.damageNums.begin(), m_gs.damageNums.end(), [](const DamageNum &d) { return d.life <= 0; }), m_gs.damageNums.end());
 
-void MainWindow::renderLevelBanner()
-{
-    if(!m_gs.levelComplete)return;
-    float t=m_gs.levelTransTimer/3.5f,dark=0.38f*(1-t)+0.14f*t;
-    for(int i=0;i<W*H;i++){uint32_t c=m_pixels[i];uint8_t r=uint8_t(((c>>16)&0xFF)*dark),g2=uint8_t(((c>>8)&0xFF)*dark),b2=uint8_t((c&0xFF)*dark);m_pixels[i]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
-    QPainter p(&m_buf);p.fillRect(W/2-270,H/2-90,540,180,QColor(0,10,20,225));for(int x=W/2-270;x<W/2+270;x++)px(x,H/2-90,0xFF00FF88);
-    p.setFont(QFont("Courier New",32,QFont::Black));p.setPen(QColor(0,255,140));p.drawText(QRect(W/2-270,H/2-82,540,60),Qt::AlignCenter,"OBJECTIVE COMPLETE");
-    p.setFont(QFont("Courier New",14));p.setPen(QColor(255,200,60));p.drawText(QRect(W/2-270,H/2-8,540,32),Qt::AlignCenter,QString("BONUS  +%1 PTS      TOTAL  %2").arg(500*m_gs.level).arg(m_gs.score));
-    p.setPen(QColor(140,190,255));p.drawText(QRect(W/2-270,H/2+32,540,30),Qt::AlignCenter,QString("Deploying to zone %1...   T-%2s").arg(m_gs.level+1).arg(int(m_gs.levelTransTimer)+1));
-    p.end();
-}
-
-void MainWindow::renderPauseMenu()
-{
-    if(!m_paused)return;
-    for(int i=0;i<W*H;i++){uint32_t c=m_pixels[i];uint8_t r=(c>>16&0xFF)/2,g2=(c>>8&0xFF)/2,b2=(c&0xFF)/2;m_pixels[i]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
-    QPainter p(&m_buf);p.fillRect(W/2-200,H/2-145,400,295,QColor(2,8,16,240));p.setPen(QPen(QColor(0,200,140),2));p.drawRect(W/2-200,H/2-145,400,295);for(int x=W/2-200;x<W/2+200;x++)px(x,H/2-145,0xFF00FF88);
-    p.setFont(QFont("Courier New",28,QFont::Black));p.setPen(QColor(0,255,140));p.drawText(QRect(W/2-200,H/2-132,400,52),Qt::AlignCenter,"MISSION PAUSED");
-    p.setPen(QColor(0,100,60));p.drawLine(W/2-160,H/2-74,W/2+160,H/2-74);
-    p.setFont(QFont("Courier New",14,QFont::Bold));
-    p.setPen(QColor(200,230,210));p.drawText(QRect(W/2-200,H/2-62,400,46),Qt::AlignCenter,"[R]  RESUME");
-    p.setPen(QColor(140,190,255));p.drawText(QRect(W/2-200,H/2-4,400,46),Qt::AlignCenter,"[M]  MAIN MENU");
-    p.setPen(QColor(255,220,100));p.drawText(QRect(W/2-200,H/2+54,400,46),Qt::AlignCenter,"[Q]  QUIT TO DESKTOP");
-    p.setPen(QColor(255,60,60));p.drawText(QRect(W/2-200,H/2+112,400,30),Qt::AlignCenter,"[ESC]  FORCE QUIT");
-    p.setFont(QFont("Courier New",8));p.setPen(QColor(0,70,40));
-    p.drawText(QRect(W/2-200,H/2+144,400,24),Qt::AlignCenter,"SCROLL=zoom  |  [ ]=pixel blocks  |  Sky+Clouds: raster noise");
-    p.end();
-}
-
-static void drawGameOver(QImage &buf, const GameState &gs, int charChoice, int diff)
-{
-    uint32_t *pix=reinterpret_cast<uint32_t*>(buf.bits());
-    for(int i=0;i<W*H;i++){uint32_t c=pix[i];uint8_t r=(c>>16&0xFF)/5,g2=(c>>8&0xFF)/5,b2=(c&0xFF)/5;pix[i]=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}
-    QPainter p(&buf);
-    p.fillRect(W/2-250,H/2-135,500,290,QColor(8,2,2,235));p.setPen(QPen(QColor(180,20,20),2));p.drawRect(W/2-250,H/2-135,500,290);
-    p.setFont(QFont("Courier New",40,QFont::Black));p.setPen(QColor(255,30,30));
-    p.drawText(QRect(W/2-250,H/2-120,500,70),Qt::AlignCenter,"MISSION FAILED");
-    p.setPen(QColor(0,100,60));p.drawLine(W/2-200,H/2-42,W/2+200,H/2-42);
-    p.setFont(QFont("Courier New",11));p.setPen(QColor(180,160,160));
-    p.drawText(QRect(W/2-240,H/2-32,480,24),Qt::AlignCenter,
-               QString("Zone: %1  |  Diff: %2  |  Class: %3  |  LV%4  |  Kills: %5  |  Score: %6")
-               .arg(MAP_NAMES[gs.mapChoice]).arg(DIFF_CFG[diff].name).arg(CHAR_PROFILES[charChoice].name).arg(gs.level).arg(gs.kills).arg(gs.score));
-    p.setFont(QFont("Courier New",13,QFont::Bold));
-    p.setPen(QColor(80,210,120));p.drawText(QRect(W/2-250,H/2+8,500,38),Qt::AlignCenter,"[R]  REDEPLOY (same settings)");
-    p.setPen(QColor(140,180,255));p.drawText(QRect(W/2-250,H/2+52,500,38),Qt::AlignCenter,"[M]  MAIN MENU");
-    p.setPen(QColor(255,160,60));p.drawText(QRect(W/2-250,H/2+96,500,38),Qt::AlignCenter,"[Q]  QUIT");p.end();
-}
-
-void MainWindow::render()
-{
-    switch(m_screen){
-    case SCR_MENU:        renderMenu();       return;
-    case SCR_MAP_SELECT:  renderMapSelect();  return;
-    case SCR_DIFF_SELECT: renderDiffSelect(); return;
-    case SCR_CHAR_SELECT: renderCharSelect(); return;
-    case SCR_PLAYING:     break;
+    if (!m_gs.levelComplete && m_gs.killsThisLevel >= m_gs.killsNeeded) {
+        m_gs.levelComplete = true; m_gs.levelTransTimer = 4.f; m_gs.score += 500 * m_gs.level;
     }
-    renderFloorCeiling();renderWalls();renderSprites();renderPickupSprites();renderParticles();
-    renderWeaponAndArms();renderDamageVignette();renderHUD();
-    renderLevelBanner();renderPauseMenu();
-    if(m_gs.gameOver) drawGameOver(m_buf,m_gs,m_charChoice,m_difficulty);
 }
 
-// Nearest-neighbor scaling ΓÇö chunky pixels when zoomed = raster proof
-void MainWindow::paintEvent(QPaintEvent *)
+void MainWindow::updateEnemies(float dt)
 {
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing,false);
-    p.setRenderHint(QPainter::SmoothPixmapTransform,false);
-    p.drawImage(rect(),m_buf,m_buf.rect());
+    Player &pl = m_gs.player;
+    const DiffConfig &dc = DIFF_CFG[m_difficulty];
+    for (size_t i = 0; i < m_gs.enemies.size(); i++) {
+        Enemy &e = m_gs.enemies[i];
+        if (!e.alive) {
+            e.deathTime += dt;
+            if (e.deathTime > 7.f) e.corpseFade = std::max(0.f, e.corpseFade - dt * 0.5f);
+            continue;
+        }
+        if (e.hitFlash > 0) e.hitFlash -= dt;
+        if (e.shootAnim > 0) e.shootAnim -= dt;
+        e.fireCooldown -= dt;
+
+        float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
+        float ez = floorH(e.x, e.y) + 0.62f;
+        bool los = d < 18.f && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, m_footZ + 0.5f);
+        if (los && d < e.aggroRange * 1.5f) e.state = ES_ALERT;
+
+        // Pick a movement vector
+        float vx = 0, vy = 0, spd = 0;
+        if (e.state == ES_ALERT) {
+            float ux = d > 0.01f ? dx / d : 0, uy = d > 0.01f ? dy / d : 0;
+            e.strafeTimer -= dt;
+            if (e.strafeTimer <= 0) { e.strafeTimer = frand(0.8f, 2.2f); e.moveX = frand() < 0.5f ? -1.f : 1.f; }
+            if (!los || d > 5.5f)      { vx = ux; vy = uy; spd = 1.35f; }
+            else if (d < 2.2f)         { vx = -ux; vy = -uy; spd = 1.0f; }
+            else                       { vx = -uy * e.moveX; vy = ux * e.moveX; spd = 0.9f; }
+            if (e.hitFlash > 0) spd *= 0.3f;            // staggered
+            if (e.shootAnim > 0) spd = 0;
+        } else {
+            e.wanderTimer -= dt;
+            if (e.wanderTimer <= 0) {
+                e.wanderTimer = frand(1.5f, 3.5f);
+                if (frand() < 0.45f) { e.moveX = 0; e.moveY = 0; }
+                else { float a = frand(0, 6.2831853f); e.moveX = std::cos(a); e.moveY = std::sin(a); }
+            }
+            vx = e.moveX; vy = e.moveY; spd = (vx != 0 || vy != 0) ? 0.55f : 0.f;
+        }
+        // Separation from other enemies
+        for (size_t j = 0; j < m_gs.enemies.size(); j++) {
+            if (j == i || !m_gs.enemies[j].alive) continue;
+            float ox = e.x - m_gs.enemies[j].x, oy = e.y - m_gs.enemies[j].y, o2 = ox * ox + oy * oy;
+            if (o2 < 0.5f && o2 > 1e-4f) { float o = std::sqrt(o2); vx += ox / o * 0.8f; vy += oy / o * 0.8f; spd = std::max(spd, 0.6f); }
+        }
+        float vl = std::sqrt(vx * vx + vy * vy);
+        float ox = e.x, oy = e.y;
+        if (vl > 0.01f && spd > 0) {
+            float stepX = vx / vl * spd * dt, stepY = vy / vl * spd * dt;
+            float hz = floorH(e.x, e.y);
+            auto ok = [&](float x, float y) {
+                int cx = int(x), cy = int(y);
+                return canStep(x, y, hz, 0.3f, 0.25f) && floorH(x, y) > hz - 0.3f && !m_acid[cy][cx];
+            };
+            if (ok(e.x + stepX, e.y)) e.x += stepX; else if (e.state == ES_IDLE) e.wanderTimer = 0;
+            if (ok(e.x, e.y + stepY)) e.y += stepY; else if (e.state == ES_IDLE) e.wanderTimer = 0;
+        }
+        float moved = std::sqrt((e.x - ox) * (e.x - ox) + (e.y - oy) * (e.y - oy));
+        e.moving = moved > 0.0005f;
+        if (e.moving) e.walkPhase += moved * 1.3f;
+
+        // Fire
+        if (e.state == ES_ALERT && los && d < e.aggroRange && e.fireCooldown <= 0 && e.hitFlash <= 0) {
+            enemyFire(e);
+            e.shootAnim = 0.2f;
+            e.fireCooldown = m_gs.enemyFireRate * frand(0.7f, 1.3f) * (e.elite ? 0.6f : 1.f);
+        }
+        (void)dc;
+    }
 }
 
-void MainWindow::spawnPickup(float x, float y){
+int MainWindow::enemyFrame(const Enemy &e) const
+{
+    if (!e.alive) return EF_DEATH0 + std::min(3, int(e.deathTime / 0.11f));
+    if (e.hitFlash > 0.06f) return EF_HIT;
+    if (e.shootAnim > 0) return EF_SHOOT;
+    if (e.moving) return EF_WALK0 + (int(e.walkPhase * 4.f) & 3);
+    return e.state == ES_ALERT ? EF_AIM : EF_WALK0;
+}
+
+void MainWindow::tryFire()
+{
+    Player &pl = m_gs.player;
+    if (pl.reloadTimer > 0 || pl.switchTimer > 0 || pl.attackCooldown > 0 || pl.sprinting) return;
+    if (pl.mag[pl.curWeapon] <= 0) {
+        if (pl.reserve[pl.curWeapon] > 0) startReload();
+        else { pl.attackCooldown = 0.3f; pushFeed("OUT OF AMMO", 1.5f); }
+        return;
+    }
+    fireWeapon();
+}
+
+void MainWindow::fireWeapon()
+{
+    Player &pl = m_gs.player;
+    const WeaponDef &wd = WEAPONS[pl.curWeapon];
+    pl.mag[pl.curWeapon]--;
+    pl.attackCooldown = wd.fireDelay;
+    pl.flashTimer = pl.curWeapon == WPN_SHOTGUN ? 0.09f : 0.06f;
+    m_flashLight = 1.f; m_flashSeed = rand();
+    m_kick = std::min(1.8f, m_kick + 0.55f + 0.25f * wd.recoil);
+    m_actionT = 1.f;
+    m_camKick += 2.5f * wd.recoil;
+    float climb = 0.012f * wd.recoil * (m_adsT > 0.5f ? 0.6f : 1.f);
+    m_pitch = rs::clampf(m_pitch + climb, -0.75f, 0.75f);
+    m_recoilPitch += climb * 0.85f;
+    turn(frand(-1.f, 1.f) * 0.004f * wd.recoil);
+    m_gs.shotsFired++;
+
+    computeView();
+    float ax, ay; aimPoint(ax, ay);
+    bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
+    float spread = wd.spread * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f);
+    spread *= 1.f - 0.8f * m_adsT;
+    if (wd.pellets > 1) spread = std::max(spread, wd.spread * 0.6f);
+    float spreadPx = spread * W;
+
+    // Tracer origin: the on-screen muzzle unprojected 0.6 units into the world
+    const float startD = 0.6f;
+    float mcx = 2.f * m_muzzleX / W - 1.f;
+    float sX = pl.posX + (pl.dirX + pl.planeX * m_adsFOVMult * mcx) * startD;
+    float sY = pl.posY + (pl.dirY + pl.planeY * m_adsFOVMult * mcx) * startD;
+    float sZ = m_eye + (m_hor - m_muzzleY) / m_K * startD;
+    if (WEAPONS[pl.curWeapon].scope && m_adsT > 0.85f) { sX = pl.posX + pl.dirX * startD; sY = pl.posY + pl.dirY * startD; sZ = m_eye - 0.08f; }
+
+    bool anyHit = false;
+    for (int p = 0; p < wd.pellets; p++) {
+        float r = spreadPx * std::sqrt(frand()), a = frand(0, 6.2831853f);
+        float px = ax + std::cos(a) * r, py = ay + std::sin(a) * r;
+        HitResult h = hitscan(px, py);
+        float ex = h.x, ey = h.y, ez = h.z;
+        if (h.sky) { ex = pl.posX + (ex - pl.posX) * 0.5f; ey = pl.posY + (ey - pl.posY) * 0.5f; ez = sZ + (ez - sZ) * 0.5f; }
+        Tracer t; t.x0 = sX; t.y0 = sY; t.z0 = sZ; t.x1 = ex; t.y1 = ey; t.z1 = ez;
+        t.len = std::sqrt((ex - sX) * (ex - sX) + (ey - sY) * (ey - sY) + (ez - sZ) * (ez - sZ));
+        t.t = 0.f;
+        if (p < 3) m_gs.tracers.push_back(t);
+        if (h.enemy >= 0) {
+            anyHit = true;
+            float mult = h.part == PART_HEAD ? wd.headMult : h.part == PART_LIMB ? wd.limbMult : 1.f;
+            float falloff = wd.pellets > 1 ? std::max(0.35f, 1.f - h.depth / 12.f) : 1.f;
+            int dmg = std::max(1, int(wd.damage * mult * falloff * frand(0.9f, 1.1f) + 0.5f));
+            damageEnemy(h.enemy, dmg, h.part, h.x, h.y, h.z);
+        } else if (!h.sky) {
+            float bx = h.x - (h.x - pl.posX) / std::max(0.1f, h.depth) * 0.04f;
+            float by = h.y - (h.y - pl.posY) / std::max(0.1f, h.depth) * 0.04f;
+            spawnImpact(bx, by, h.z, h.floor);
+            if (h.floor) addDecal(m_scorch, h.x, h.y, 0.03f, 160);
+            if (h.wall) stampWallDecal(h.cx, h.cy, h.face, h.u, h.v, wd.pellets > 1);
+        }
+    }
+    if (anyHit) m_gs.shotsHit++;
+
+    // Brass
+    Casing c; c.x = m_ejectX; c.y = m_ejectY; c.vx = frand(260, 380); c.vy = frand(-420, -300);
+    c.a = frand(0, 6.28f); c.va = frand(14, 24); c.life = 1.0f; c.shell = pl.curWeapon == WPN_SHOTGUN;
+    if (!(WEAPONS[pl.curWeapon].scope && m_adsT > 0.85f)) m_casings.push_back(c);
+
+    if (pl.mag[pl.curWeapon] == 0 && pl.reserve[pl.curWeapon] > 0) startReload();
+}
+
+void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy, float hz)
+{
+    Enemy &e = m_gs.enemies[idx];
+    if (!e.alive) return;
+    bool head = part == PART_HEAD;
+    e.hp -= dmg; e.hitFlash = 0.16f; e.state = ES_ALERT;
+    m_hitMarker = 0.25f;
+    if (head) m_headMarker = 0.35f;
+    if (idx < 12) m_enemyHPDisplay[idx] = 2.2f;
+    m_gs.damageNums.push_back(DamageNum{hx, hy, hz + 0.05f, dmg, head, 0.9f});
+    spawnBlood(hx, hy, hz, head ? 22 : 9, head ? 1.7f : 1.f);
+
+    if (e.hp <= 0) {
+        e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0; e.killedByHeadshot = head;
+        m_gs.kills++; m_gs.killsThisLevel++;
+        m_gs.score += 100 * m_gs.level + (head ? 50 * m_gs.level : 0);
+        if (head) { m_gs.headshots++; m_headshotBanner = 1.3f; }
+        m_killMarker = 0.5f;
+        m_combo++; m_comboTimer = 3.5f; m_comboDisplay = 1.8f;
+        pushFeed((m_combo > 1 ? QString("x%1  ").arg(m_combo) : QString()) + (head ? "HEADSHOT KILL" : "ENEMY DOWN"), 4.5f, head);
+        addDecal(m_blood, e.x, e.y, 0.42f, 170);
+        if (rand() % 3 == 0) spawnPickup(e.x, e.y);
+    }
+}
+
+void MainWindow::startReload()
+{
+    Player &pl = m_gs.player;
+    int w = pl.curWeapon;
+    if (pl.reloadTimer > 0 || pl.switchTimer > 0 || pl.mag[w] >= WEAPONS[w].magSize || pl.reserve[w] <= 0) return;
+    float t = WEAPONS[w].reloadTime;
+    if (w == WPN_SHOTGUN) t = 0.5f + 0.32f * std::min(WEAPONS[w].magSize - pl.mag[w], pl.reserve[w]);
+    pl.reloadTimer = t;
+    m_reloadTotal = t;
+    pl.adsMode = false;
+}
+
+void MainWindow::switchWeapon(int w)
+{
+    Player &pl = m_gs.player;
+    if (w < 0 || w >= WPN_COUNT || !pl.owned[w] || (w == pl.curWeapon && m_pendingWeapon < 0)) return;
+    pl.reloadTimer = 0;
+    pl.switchTimer = 0.4f;
+    m_pendingWeapon = w;
+}
+
+void MainWindow::enemyFire(Enemy &e)
+{
+    const Player &pl = m_gs.player;
+    float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
+    if (d < 0.1f) return;
+    float acc = DIFF_CFG[m_difficulty].enemyAccuracy;
+    float a = std::atan2(dy, dx) + frand(-1.f, 1.f) * (1.f - acc) * 0.22f;
+    if (e.elite) acc = std::min(0.97f, acc + 0.1f);
+    float z0 = floorH(e.x, e.y) + 0.62f, z1 = m_footZ + 0.45f;
+    float spd = m_gs.enemyBulletSpeed * (e.elite ? 1.25f : 1.f);
+    Bullet b; b.x = e.x + std::cos(a) * 0.3f; b.y = e.y + std::sin(a) * 0.3f; b.z = z0;
+    b.px = b.x; b.py = b.y; b.pz = b.z;
+    b.dx = std::cos(a) * spd; b.dy = std::sin(a) * spd;
+    b.dz = (z1 - z0) / (d / spd) + frand(-1.f, 1.f) * (1.f - acc) * 0.6f;
+    b.owner = ENEMY_SHOT; b.alive = true;
+    m_gs.bullets.push_back(b);
+}
+
+void MainWindow::spawnBlood(float wx, float wy, float wz, int count, float force)
+{
+    const Player &pl = m_gs.player;
+    float dx = wx - pl.posX, dy = wy - pl.posY, d = std::max(0.1f, std::sqrt(dx * dx + dy * dy));
+    dx /= d; dy /= d;
+    for (int i = 0; i < count; i++) {
+        Particle p;
+        p.type = PT_BLOOD;
+        p.x = wx; p.y = wy; p.z = wz;
+        p.vx = dx * frand(0.4f, 1.8f) * force + frand(-0.8f, 0.8f);
+        p.vy = dy * frand(0.4f, 1.8f) * force + frand(-0.8f, 0.8f);
+        p.vz = frand(-0.2f, 1.6f) * force;
+        p.life = p.maxLife = frand(0.5f, 1.1f);
+        p.size = frand(0.012f, 0.03f);
+        int r = 120 + rand() % 70;
+        p.color = rs::rgb(r, rand() % 12, rand() % 14);
+        m_gs.particles.push_back(p);
+    }
+    // a short-lived mist puff
+    Particle m; m.type = PT_SMOKE; m.x = wx; m.y = wy; m.z = wz; m.vx = dx * 0.3f; m.vy = dy * 0.3f; m.vz = 0;
+    m.life = m.maxLife = 0.3f; m.size = 0.07f * force; m.color = rs::rgb(140, 12, 10);
+    m_gs.particles.push_back(m);
+}
+
+void MainWindow::spawnImpact(float wx, float wy, float wz, bool floor)
+{
+    for (int i = 0; i < 7; i++) {
+        Particle p; p.type = PT_SPARK; p.x = wx; p.y = wy; p.z = std::max(0.01f, wz);
+        p.vx = frand(-2.5f, 2.5f); p.vy = frand(-2.5f, 2.5f); p.vz = frand(0.5f, 3.f);
+        p.life = p.maxLife = frand(0.12f, 0.3f); p.size = 0.012f;
+        p.color = rs::rgb(255, 200 + rand() % 55, 90 + rand() % 80);
+        m_gs.particles.push_back(p);
+    }
+    for (int i = 0; i < 4; i++) {
+        Particle p; p.type = PT_DEBRIS; p.x = wx; p.y = wy; p.z = std::max(0.01f, wz);
+        p.vx = frand(-1.2f, 1.2f); p.vy = frand(-1.2f, 1.2f); p.vz = frand(0.5f, 2.f);
+        p.life = p.maxLife = frand(0.4f, 0.8f); p.size = 0.015f;
+        int v = 50 + rand() % 50; p.color = rs::rgb(v, v - 4, v - 8);
+        m_gs.particles.push_back(p);
+    }
+    for (int i = 0; i < 3; i++) {
+        Particle p; p.type = PT_DUST; p.x = wx; p.y = wy; p.z = std::max(0.02f, wz);
+        p.vx = frand(-0.4f, 0.4f); p.vy = frand(-0.4f, 0.4f); p.vz = frand(0.05f, 0.4f);
+        p.life = p.maxLife = frand(0.6f, 1.1f); p.size = floor ? 0.07f : 0.05f;
+        p.color = floor ? rs::rgb(140, 120, 96) : rs::rgb(150, 146, 140);
+        m_gs.particles.push_back(p);
+    }
+}
+
+void MainWindow::spawnPickup(float x, float y)
+{
     WeaponPickup wp;
-    wp.x = x + (rand()%10-5)*0.1f;
-    wp.y = y + (rand()%10-5)*0.1f;
-    wp.bobPhase = float(rand()%628)/100.f;
-    wp.active = true;
-    int r=rand()%10;
-    if(r<5) wp.type=PICKUP_AMMO;
-    else if(r<8) wp.type=PICKUP_SHOTGUN;
-    else wp.type=PICKUP_RIFLE;
+    wp.x = x + (rand() % 10 - 5) * 0.06f;
+    wp.y = y + (rand() % 10 - 5) * 0.06f;
+    if (!posValid(wp.x, wp.y, 0.1f)) { wp.x = x; wp.y = y; }
+    wp.bobPhase = frand(0, 6.28f);
+    int r = rand() % 10;
+    wp.type = r < 5 ? PICKUP_AMMO : r < 8 ? PICKUP_SHOTGUN : PICKUP_RIFLE;
     m_gs.weaponPickups.push_back(wp);
 }
 
-void MainWindow::tryOpenDoor(){
-    Player &pl=m_gs.player;
-    int px2=int(pl.posX), py2=int(pl.posY);
-    int dx2[]={0,0,1,-1}; int dy2[]={1,-1,0,0};
-    for(int d=0;d<4;d++){
-        int nx=px2+dx2[d], ny=py2+dy2[d];
-        if(nx>=0&&nx<MAP_W&&ny>=0&&ny<MAP_H&&m_map[ny][nx]==4){
-            m_map[ny][nx]=0;
-            KFEntry kf; kf.text="DOOR OPENED"; kf.life=2.5f;
-            m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
-            return;
-        }
+// ─────────────────────────────────────────────────────────────────────────────
+//  Camera helpers
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::turn(float a)
+{
+    Player &pl = m_gs.player;
+    float c = std::cos(a), s = std::sin(a);
+    float dx = pl.dirX, px = pl.planeX;
+    pl.dirX = dx * c - pl.dirY * s;   pl.dirY = dx * s + pl.dirY * c;
+    pl.planeX = px * c - pl.planeY * s; pl.planeY = px * s + pl.planeY * c;
+}
+
+void MainWindow::computeView()
+{
+    const Player &pl = m_gs.player;
+    m_K = float(H) / m_adsFOVMult;
+    bool moving = m_screen == SCR_PLAYING && (m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D));
+    float bobZ = moving ? std::sin(pl.bobPhase * 2.f) * (pl.sprinting ? 0.018f : 0.01f) * (1.f - m_adsT * 0.8f) : 0.f;
+    m_eye = m_footZ + 0.5f + bobZ;
+    m_hor = int(H / 2.f + m_pitch * m_K + pl.shakeY + m_camKick);
+}
+
+bool MainWindow::project(float wx, float wy, float wz, float &sx, float &sy, float &depth) const
+{
+    const Player &pl = m_gs.player;
+    float eplX = pl.planeX * m_adsFOVMult, eplY = pl.planeY * m_adsFOVMult;
+    float invDet = 1.f / (eplX * pl.dirY - pl.dirX * eplY);
+    float spX = wx - pl.posX, spY = wy - pl.posY;
+    float txX = invDet * (pl.dirY * spX - pl.dirX * spY), txY = invDet * (-eplY * spX + eplX * spY);
+    depth = txY;
+    if (txY < 0.05f) return false;
+    sx = W / 2.f * (1.f + txX / txY);
+    sy = m_hor + (m_eye - wz) * m_K / txY;
+    return true;
+}
+
+void MainWindow::aimPoint(float &ax, float &ay) const
+{
+    if (WEAPONS[m_gs.player.curWeapon].scope && m_adsT > 0.85f) { ax = W / 2.f + m_scopeSwayX; ay = H / 2.f + m_scopeSwayY; }
+    else { ax = m_aimX; ay = m_aimY; }
+}
+
+// Free aim: the crosshair moves inside a dead-zone box; pushing past its edge
+// turns the camera (yaw) or tilts it (pitch). With free aim off — or while
+// aiming down sights — mouse motion drives the camera directly.
+void MainWindow::applyAimDelta(float dx, float dy)
+{
+    float sens = std::max(0.25f, m_adsFOVMult);
+    dx *= sens; dy *= sens;
+    m_mouseDX += dx; m_mouseDY += dy;
+    auto yaw = [&](float px) { turn(std::atan(2.f * px / W * 0.66f * m_adsFOVMult)); };
+    if (!m_freeAim || m_gs.player.adsMode) {
+        yaw(dx);
+        m_pitch = rs::clampf(m_pitch - dy / m_K, -0.75f, 0.75f);
+        return;
+    }
+    const float DZX = 170.f, DZY = 120.f;
+    m_aimX += dx; m_aimY += dy;
+    float ex = m_aimX - W / 2.f;
+    if (ex > DZX)  { yaw(ex - DZX); m_aimX = W / 2.f + DZX; }
+    if (ex < -DZX) { yaw(ex + DZX); m_aimX = W / 2.f - DZX; }
+    float ey = m_aimY - H / 2.f;
+    if (std::fabs(ey) > DZY) {
+        float over = ey > 0 ? ey - DZY : ey + DZY;
+        float np = rs::clampf(m_pitch - over / m_K, -0.75f, 0.75f);
+        float used = (m_pitch - np) * m_K;           // pixels absorbed by pitch
+        m_pitch = np;
+        m_aimY -= used;
+        m_aimY = rs::clampf(m_aimY, 24.f, H - 24.f);
     }
 }
 
-void MainWindow::renderPickupSprites()
+// ─────────────────────────────────────────────────────────────────────────────
+//  Input
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::menuConfirm()
 {
-    const Player &pl=m_gs.player;
-    float eplX=pl.dirX,eplY=pl.dirY;
-    float invDet=1.f/(pl.planeX*pl.dirY-pl.dirX*pl.planeY);
-    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f)+int(m_pitch);
-    for(auto &wp : m_gs.weaponPickups){
-        if(!wp.active) continue;
-        float bob=sinf(wp.bobPhase)*0.08f;
-        float spX=wp.x-pl.posX, spY=wp.y-pl.posY;
-        float txX=invDet*(pl.dirY*spX-pl.dirX*spY);
-        float txY=invDet*(-eplY*spX+eplX*spY);
-        if(txY<0.1f) continue;
-        int scrX=int(float(W/2)*(1.f+txX/txY));
-        int sprH=std::min(H, std::abs(int(float(H)*0.3f/txY)));
-        int drawStart=std::max(0, hor-sprH/2-int(bob*H/txY));
-        int drawEnd=std::min(H-1, hor+sprH/2-int(bob*H/txY));
-        int sprW=sprH;
-        int startX=std::max(0,scrX-sprW/2);
-        int endX=std::min(W-1,scrX+sprW/2);
-        // Pick color based on type
-        uint32_t col1=wp.type==PICKUP_AMMO?0xFFDDAA00:wp.type==PICKUP_SHOTGUN?0xFF888888:0xFF4488FF;
-        uint32_t col2=wp.type==PICKUP_AMMO?0xFFFFCC44:wp.type==PICKUP_SHOTGUN?0xFFCCCCCC:0xFF88CCFF;
-        float fog=std::max(0.f,1.f-txY/14.f);
-        for(int sx=startX;sx<=endX;sx++){
-            if(txY>=m_zBuf[sx]) continue;
-            float u=float(sx-(scrX-sprW/2))/float(std::max(1,sprW));
-            for(int sy=drawStart;sy<=drawEnd;sy++){
-                float v=float(sy-drawStart)/float(std::max(1,drawEnd-drawStart));
-                // Simple gun-icon shape: rectangular body with handle
-                uint32_t c=0;
-                float fu=u*3.f-1.5f, fv=v*3.f-1.5f;
-                // Barrel
-                if(fv>-0.2f&&fv<0.2f&&fu>-1.2f&&fu<0.8f) c=col1;
-                // Handle
-                else if(fu>-0.2f&&fu<0.4f&&fv>0.1f&&fv<0.8f) c=col2;
-                // Ammo box override
-                if(wp.type==PICKUP_AMMO){
-                    c=0;
-                    if(fabsf(fu)<0.7f&&fabsf(fv)<0.55f) c=col1;
-                    if(fabsf(fu)<0.5f&&fabsf(fv)<0.35f) c=col2;
-                }
-                if(c==0) continue;
-                uint8_t fr=uint8_t((c>>16&0xFF)*fog);
-                uint8_t fg2=uint8_t((c>>8&0xFF)*fog);
-                uint8_t fb=uint8_t((c&0xFF)*fog);
-                m_pixels[sy*W+sx]=(0xFF<<24)|(fr<<16)|(fg2<<8)|fb;
-            }
+    switch (m_screen) {
+    case SCR_MENU:        if (m_menuCursor == 0) m_screen = SCR_MAP_SELECT; else QApplication::quit(); break;
+    case SCR_MAP_SELECT:  m_screen = SCR_DIFF_SELECT; break;
+    case SCR_DIFF_SELECT: m_screen = SCR_CHAR_SELECT; break;
+    case SCR_CHAR_SELECT: initGame(); m_screen = SCR_PLAYING; break;
+    default: break;
+    }
+}
+void MainWindow::menuBack()
+{
+    switch (m_screen) {
+    case SCR_MENU:        QApplication::quit(); break;
+    case SCR_MAP_SELECT:  m_screen = SCR_MENU; m_menuCursor = 0; break;
+    case SCR_DIFF_SELECT: m_screen = SCR_MAP_SELECT; break;
+    case SCR_CHAR_SELECT: m_screen = SCR_DIFF_SELECT; break;
+    default: break;
+    }
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *e)
+{
+    int k = e->key();
+    m_keys.insert(k);
+    if (m_screen != SCR_PLAYING) {
+        int *sel = m_screen == SCR_MAP_SELECT ? &m_mapChoice : m_screen == SCR_DIFF_SELECT ? &m_difficulty :
+                   m_screen == SCR_CHAR_SELECT ? &m_charChoice : nullptr;
+        if (m_screen == SCR_MENU) {
+            if (k == Qt::Key_Up)   m_menuCursor = 0;
+            if (k == Qt::Key_Down) m_menuCursor = 1;
+            if (k == Qt::Key_1) { m_menuCursor = 0; menuConfirm(); return; }
+        } else if (sel) {
+            if (k == Qt::Key_Left)  *sel = std::max(0, *sel - 1);
+            if (k == Qt::Key_Right) *sel = std::min(2, *sel + 1);
+            if (k >= Qt::Key_1 && k <= Qt::Key_3) { *sel = k - Qt::Key_1; menuConfirm(); return; }
+        }
+        if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) menuConfirm();
+        else if (k == Qt::Key_Escape || (k == Qt::Key_Q && m_screen == SCR_MENU)) menuBack();
+        return;
+    }
+    if (e->isAutoRepeat()) return;
+    Player &pl = m_gs.player;
+    bool live = !m_paused && !m_gs.gameOver;
+    if (live) {
+        if (k == Qt::Key_Space && m_onGround) { m_velZ = 5.5f; m_onGround = false; }
+        if (k == Qt::Key_F) tryFire();
+        if (k == Qt::Key_E) tryOpenDoor();
+        if (k == Qt::Key_C) { m_pitch = 0.f; m_aimX = W / 2.f; m_aimY = H / 2.f; }
+        if (k == Qt::Key_V) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
+        if (k == Qt::Key_Tab) pl.adsMode = !pl.adsMode;
+        if (k >= Qt::Key_1 && k <= Qt::Key_3) switchWeapon(k - Qt::Key_1);
+        if (k == Qt::Key_R) startReload();
+    }
+    if (k == Qt::Key_Escape) { if (m_paused) QApplication::quit(); else if (!m_gs.gameOver) { m_paused = true; pl.adsMode = false; m_lmb = false; } }
+    if (k == Qt::Key_R) { if (m_paused) m_paused = false; else if (m_gs.gameOver) { initGame(); m_paused = false; } }
+    if (k == Qt::Key_Q && (m_paused || m_gs.gameOver)) QApplication::quit();
+    if (k == Qt::Key_M && (m_paused || m_gs.gameOver)) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; }
+    if (k == Qt::Key_BracketLeft)  m_pixelScale = std::min(m_pixelScale * 2, 8);
+    if (k == Qt::Key_BracketRight) m_pixelScale = std::max(m_pixelScale / 2, 1);
+}
+void MainWindow::keyReleaseEvent(QKeyEvent *e) { if (!e->isAutoRepeat()) m_keys.erase(e->key()); }
+void MainWindow::focusOutEvent(QFocusEvent *) { m_keys.clear(); m_lmb = false; }
+
+void MainWindow::mousePressEvent(QMouseEvent *e)
+{
+    if (m_screen != SCR_PLAYING) {
+        if (e->button() == Qt::RightButton) { menuBack(); return; }
+        QPointF f = widgetToFrame(e->position());
+        for (const HitRect &r : m_menuRects) {
+            if (f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
+            if (r.id == 10) { menuBack(); return; }
+            if (m_screen == SCR_MENU) m_menuCursor = r.id;
+            if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
+            if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
+            if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
+            menuConfirm();
+            return;
+        }
+        return;
+    }
+    if (m_paused || m_gs.gameOver) return;
+    if (e->button() == Qt::LeftButton) { m_lmb = true; tryFire(); }
+    if (e->button() == Qt::RightButton) m_gs.player.adsMode = true;
+}
+void MainWindow::mouseReleaseEvent(QMouseEvent *e)
+{
+    if (e->button() == Qt::LeftButton) m_lmb = false;
+    if (e->button() == Qt::RightButton) m_gs.player.adsMode = false;
+}
+void MainWindow::mouseMoveEvent(QMouseEvent *e)
+{
+    m_mouseWidget = e->position();
+    if (m_screen != SCR_PLAYING) {
+        QPointF f = widgetToFrame(e->position());
+        for (const HitRect &r : m_menuRects) {
+            if (r.id == 10 || f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
+            if (m_screen == SCR_MENU) m_menuCursor = r.id;
+            if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
+            if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
+            if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
+        }
+        return;
+    }
+    if (m_paused || m_gs.gameOver || !hasFocus()) return;
+    QPoint c(width() / 2, height() / 2);
+    float dx = float(e->position().x() - c.x()), dy = float(e->position().y() - c.y());
+    if (std::fabs(dx) < 0.5f && std::fabs(dy) < 0.5f) return;
+    float toFb = float(W) / std::max(1, width());
+    applyAimDelta(dx * toFb, dy * toFb);
+    QCursor::setPos(mapToGlobal(c));
+}
+void MainWindow::wheelEvent(QWheelEvent *e)
+{
+    int steps = e->angleDelta().y() / 120;
+    if (!steps) return;
+    bool live = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver;
+    if (live && WEAPONS[m_gs.player.curWeapon].scope && m_adsT > 0.5f) {
+        m_scopeMag = rs::clampf(m_scopeMag + steps, 2.f, 8.f);
+        return;
+    }
+    // Raster magnifier: keep the framebuffer pixel under the anchor fixed on screen.
+    // Anchor = mouse cursor in menus, crosshair while playing.
+    float ax, ay;
+    if (live) aimPoint(ax, ay);
+    else { ax = float(m_mouseWidget.x()) * W / std::max(1, width()); ay = float(m_mouseWidget.y()) * H / std::max(1, height()); }
+    float x0, y0; zoomOrigin(x0, y0);
+    float srcX = x0 + ax / m_rasterZoom, srcY = y0 + ay / m_rasterZoom;
+    m_rasterZoom = steps > 0 ? std::min(32, m_rasterZoom * 2) : std::max(1, m_rasterZoom / 2);
+    m_zoomCX = srcX - ax / m_rasterZoom + W / (2.f * m_rasterZoom);
+    m_zoomCY = srcY - ay / m_rasterZoom + H / (2.f * m_rasterZoom);
+    update();
+}
+
+void MainWindow::zoomOrigin(float &x0, float &y0) const
+{
+    float vw = float(W) / m_rasterZoom, vh = float(H) / m_rasterZoom;
+    x0 = rs::clampf(m_zoomCX - vw / 2, 0.f, W - vw);
+    y0 = rs::clampf(m_zoomCY - vh / 2, 0.f, H - vh);
+}
+
+QPointF MainWindow::widgetToFrame(const QPointF &p) const
+{
+    float x0, y0; zoomOrigin(x0, y0);
+    float fx = float(p.x()) * W / std::max(1, width()), fy = float(p.y()) * H / std::max(1, height());
+    return QPointF(x0 + fx / m_rasterZoom, y0 + fy / m_rasterZoom);
+}
+
+// Output stage - pure raster. The framebuffer is upscaled to the window with
+// our own nearest-neighbour loop: every framebuffer pixel becomes a solid box.
+// With the magnifier at 6+ screen pixels per box, a 1-pixel grid is drawn
+// between boxes and the pixel under the cursor/crosshair is outlined with its
+// coordinates and colour. QPainter only copies the finished image 1:1.
+void MainWindow::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    if (m_rasterZoom == 1 && width() == W && height() == H) { p.drawImage(0, 0, m_buf); return; }
+    p.drawImage(0, 0, composeDisplay(width(), height()));
+}
+
+const QImage &MainWindow::composeDisplay(int ww, int wh)
+{
+    if (m_display.width() != ww || m_display.height() != wh) m_display = QImage(ww, wh, QImage::Format_ARGB32);
+    uint32_t *dst = reinterpret_cast<uint32_t *>(m_display.bits());
+    float x0, y0; zoomOrigin(x0, y0);
+    const float pxX = float(ww) / W * m_rasterZoom, pxY = float(wh) / H * m_rasterZoom;   // screen px per fb px
+    static std::vector<int> srcX, srcY;
+    static std::vector<uint8_t> edgeX, edgeY;
+    srcX.resize(ww); edgeX.resize(ww); srcY.resize(wh); edgeY.resize(wh);
+    for (int x = 0; x < ww; x++) { srcX[x] = rs::clampi(int(x0 + (x + 0.5f) / pxX), 0, W - 1); edgeX[x] = x > 0 && srcX[x] != srcX[x - 1]; }
+    for (int y = 0; y < wh; y++) { srcY[y] = rs::clampi(int(y0 + (y + 0.5f) / pxY), 0, H - 1); edgeY[y] = y > 0 && srcY[y] != srcY[y - 1]; }
+    const bool grid = std::min(pxX, pxY) >= 6.f;
+    for (int y = 0; y < wh; y++) {
+        const uint32_t *srow = m_pixels + srcY[y] * W;
+        uint32_t *drow = dst + y * ww;
+        if (grid && edgeY[y]) { for (int x = 0; x < ww; x++) drow[x] = 0xFF000000 | ((srow[srcX[x]] >> 1) & 0x7F7F7F); continue; }
+        for (int x = 0; x < ww; x++) {
+            uint32_t c = srow[srcX[x]];
+            drow[x] = (grid && edgeX[x]) ? (0xFF000000 | ((c >> 1) & 0x7F7F7F)) : c;
         }
     }
+    if (m_rasterZoom > 1) {
+        rs::Canvas dc{dst, ww, wh};
+        // Probe pixel: under the crosshair while playing, under the mouse otherwise
+        float fx, fy;
+        if (m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver) aimPoint(fx, fy);
+        else { QPointF f = widgetToFrame(m_mouseWidget); fx = float(f.x()); fy = float(f.y()); }
+        int px = rs::clampi(int(fx), 0, W - 1), py = rs::clampi(int(fy), 0, H - 1);
+        int bx = int((px - x0) * pxX), by = int((py - y0) * pxY);
+        if (pxX >= 4.f) dc.rectOutline(bx - 1, by - 1, int(pxX) + 3, int(pxY) + 3, 0xFFFFD040, 2);
+        uint32_t c = m_pixels[py * W + px];
+        char buf[200];
+        std::snprintf(buf, sizeof(buf), "RASTER ZOOM %dX   1 FRAMEBUFFER PIXEL = %dx%d SCREEN PX   PIXEL (%d,%d) = #%02X%02X%02X",
+                      m_rasterZoom, int(pxX + 0.5f), int(pxY + 0.5f), px, py, rs::R(c), rs::G(c), rs::B(c));
+        std::string line(buf);
+        int tw = pf::width(line, 1) + 52, th = 24;
+        dc.blendRect(8, wh - th - 8, tw, th, rs::argb(200, 10, 12, 16));
+        dc.fillRect(8, wh - th - 8, 3, th, 0xFFFFB43C);
+        dc.fillRect(18, wh - th, 14, 9, 0xFF000000 | c);
+        dc.rectOutline(17, wh - th - 1, 16, 11, 0xFFFFFFFF);
+        pf::drawLine(dc, 40, wh - th, line, 0xFFFFFFFF, 1);
+        pf::drawLine(dc, 8, 8, "SCROLL: ZOOM IN / OUT", 0xC0FFFFFF, 1);
+    }
+    return m_display;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Snapshot mode (developer aid): fps_game --snapshot <dir>
+//  Renders scripted scenes to PNG and writes a small test log.
+// ─────────────────────────────────────────────────────────────────────────────
+bool MainWindow::snapshot(const QString &dir)
+{
+    m_timer.stop();
+    QDir().mkpath(dir);
+    QFile logf(dir + "/log.txt");
+    if (!logf.open(QIODevice::WriteOnly)) return false;
+    auto log = [&](const QString &s) { logf.write((s + "\n").toUtf8()); };
+    auto run = [&](int frames) { for (int i = 0; i < frames; i++) advance(1.f / 60.f); render(); };
+    auto save = [&](const QString &name) { m_buf.save(dir + "/" + name + ".png"); };
+    auto place = [&](float x, float y, float ang) {
+        Player &pl = m_gs.player;
+        pl.posX = x; pl.posY = y;
+        pl.dirX = std::cos(ang); pl.dirY = std::sin(ang);
+        pl.planeX = -pl.dirY * 0.66f; pl.planeY = pl.dirX * 0.66f;
+        m_footZ = floorH(x, y); m_velZ = 0; m_onGround = true;
+        m_pitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f;
+    };
+    auto start = [&](int map) {
+        m_mapChoice = map; m_charChoice = 0; m_difficulty = 1;
+        initGame(); m_screen = SCR_PLAYING;
+        for (auto &e : m_gs.enemies) e.fireCooldown = 999.f;     // keep the photographer alive
+        m_gs.player.hp = 9999;
+    };
+
+    m_screen = SCR_MENU; run(30); save("01_menu");
+    // Raster magnifier on the menu title: 8x and 32x around the "R" of RASTER
+    m_mouseWidget = QPointF(110, 140);
+    for (int z = 0; z < 3; z++) { QWheelEvent we(m_mouseWidget, m_mouseWidget, QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false); wheelEvent(&we); }
+    run(1); composeDisplay(W, H).save(dir + "/05_zoom8_menu.png");
+    for (int z = 0; z < 2; z++) { QWheelEvent we(m_mouseWidget, m_mouseWidget, QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false); wheelEvent(&we); }
+    composeDisplay(W, H).save(dir + "/06_zoom32_menu.png");
+    log(QString("menu zoom level: %1").arg(m_rasterZoom));
+    m_rasterZoom = 1;
+    m_screen = SCR_MAP_SELECT; m_mapChoice = 1; run(10); save("02_maps");
+    m_screen = SCR_CHAR_SELECT; run(5); save("04_char");
+
+    // --- Arena: rolling hills + the mesa -------------------------------------------
+    start(1);
+    place(m_parsed[1].camX, m_parsed[1].camY, std::atan2(18.5f - m_parsed[1].camY, 16.5f - m_parsed[1].camX));
+    run(10); save("10_arena_hills");
+    place(16.5f, 25.f, -1.5708f); m_pitch = 0.05f; run(10); save("11_arena_mesa");
+
+    // --- Bullet holes: rifle + shotgun into a wall --------------------------------
+    {
+        Player &pl = m_gs.player;
+        place(10.5f, 13.6f, -1.5708f);                          // ~2 units from the brick bunker's south wall
+        for (auto &e : m_gs.enemies) { e.alive = false; e.corpseFade = 0; }
+        pl.owned[WPN_RIFLE] = true; pl.mag[WPN_RIFLE] = 30; pl.reserve[WPN_RIFLE] = 90;
+        pl.curWeapon = WPN_RIFLE; run(2);
+        for (int i = 0; i < 9; i++) {
+            m_aimX = W / 2.f - 60 + (i % 3) * 60; m_aimY = H / 2.f - 30 + (i / 3) * 30;
+            pl.attackCooldown = 0; m_recoilPitch = 0; m_pitch = 0; tryFire(); run(6);
+        }
+        pl.owned[WPN_SHOTGUN] = true; pl.mag[WPN_SHOTGUN] = 6; pl.curWeapon = WPN_SHOTGUN;
+        m_aimX = W / 2.f + 120; m_aimY = H / 2.f; pl.attackCooldown = 0; m_pitch = 0; tryFire();
+        run(30); m_aimX = W / 2.f; m_aimY = H / 2.f; m_pitch = 0; run(1);
+        save("12_bullet_holes");
+        log(QString("wall decal faces: %1").arg(m_wallDecals.size()));
+    }
+
+    // --- Ledge test: a 0.5 ledge blocks walking, jumping gets you up --------------
+    {
+        // arena mesa: '-' ring at row 21 (0.25), '^' ring at row 20 (0.5)
+        place(16.5f, 22.5f, -1.5708f);
+        m_keys.insert(Qt::Key_W);
+        for (int i = 0; i < 90; i++) advance(1.f / 60.f);
+        float yWalk = m_gs.player.posY, zWalk = m_footZ;
+        m_keys.clear();
+        place(16.5f, 20.5f, -1.5708f);                          // standing on the 0.5 ledge ring
+        m_velZ = 5.5f; m_onGround = false; m_keys.insert(Qt::Key_W);
+        for (int i = 0; i < 40; i++) advance(1.f / 60.f);
+        m_keys.clear();
+        for (int i = 0; i < 30; i++) advance(1.f / 60.f);
+        log(QString("walk up the steps: stopped at y=%1 z=%2 (high ledge starts at y<20)").arg(yWalk).arg(zWalk));
+        log(QString("jump from ledge: y=%1 z=%2 plat=%3 (1.0 = on the high ledge)").arg(m_gs.player.posY).arg(m_footZ).arg(m_plat[int(m_gs.player.posY)][16]));
+        place(13.5f, 34.5f, 3.1416f);                           // arena: walk west into the pit (sunken -0.6)
+        m_keys.insert(Qt::Key_W); for (int i = 0; i < 120; i++) advance(1.f / 60.f); m_keys.clear();
+        float pitX = m_gs.player.posX;
+        m_keys.insert(Qt::Key_D); for (int i = 0; i < 60; i++) advance(1.f / 60.f); m_keys.clear();   // try to walk out north
+        log(QString("pit: fell to z=%1 at x=%2; walking out without jumping -> y=%3 (pit spans y 33..36)").arg(m_footZ).arg(pitX).arg(m_gs.player.posY));
+    }
+
+    // --- Dungeon: secret wall opens onto a guarded vault ------------------------------
+    start(0);
+    place(15.5f, 6.5f, 0.f); run(5); save("20_dungeon_secret_wall");
+    tryOpenDoor(); run(70); save("21_dungeon_vault_open");
+    log(QString("secrets found: %1 / %2, cell(16,6)=%3").arg(m_gs.secretsFound).arg(m_gs.secretsTotal).arg(m_map[6][16]));
+    // Door into the acid vault
+    place(20.5f, 17.3f, 1.5708f); run(3); save("22_dungeon_door");
+    tryOpenDoor(); run(80);
+    place(20.5f, 18.4f, 1.5708f); m_pitch = -0.15f; run(10); save("23_dungeon_acid_vault");
+
+    // --- Crypt: altar ledge and dusk shadows -----------------------------------------
+    start(2);
+    place(m_parsed[2].camX, m_parsed[2].camY, 1.2f); run(10); save("30_crypt");
+    place(7.5f, 26.5f, -0.6f); run(10); save("31_crypt_altar");
+
+    // --- Combat frame on hills + perf ------------------------------------------------
+    start(1);
+    place(28.5f, 6.5f, 3.1416f);
+    m_gs.enemies[0].x = 25.0f; m_gs.enemies[0].y = 6.3f; m_gs.enemies[0].alive = true; m_gs.enemies[0].state = ES_ALERT;
+    run(5);
+    {
+        float sx, sy, d; computeView();
+        if (project(m_gs.enemies[0].x, m_gs.enemies[0].y, floorH(m_gs.enemies[0].x, m_gs.enemies[0].y) + 0.86f, sx, sy, d)) { m_aimX = sx; m_aimY = sy; }
+        run(1); save("40_aim_head");
+        for (int z = 0; z < 4; z++) { QWheelEvent we(QPointF(400, 300), QPointF(400, 300), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false); wheelEvent(&we); }
+        composeDisplay(W, H).save(dir + "/42_zoom16_head.png");
+        m_rasterZoom = 1;
+        HitResult h = hitscan(m_aimX, m_aimY);
+        log(QString("probe at head: enemy=%1 part=%2").arg(h.enemy).arg(int(h.part)));
+        tryFire(); for (int i = 0; i < 3; i++) advance(1.f / 60.f); render(); save("41_fire");
+    }
+    QElapsedTimer tm; tm.start();
+    for (int i = 0; i < 120; i++) { advance(1.f / 60.f); render(); }
+    log(QString("%1 ms/frame (arena)").arg(tm.elapsed() / 120.0));
+    {
+        auto timeIt = [&](const char *name, auto fn) {
+            QElapsedTimer t2; t2.start();
+            for (int i = 0; i < 60; i++) fn();
+            log(QString("  %1: %2 ms").arg(name).arg(t2.nsecsElapsed() / 60.0 / 1e6, 0, 'f', 2));
+        };
+        computeView();
+        timeIt("terrain", [&] { renderTerrain(); });
+        timeIt("sky", [&] { renderSky(); });
+        timeIt("sprites", [&] { renderSprites(); });
+        timeIt("viewmodel", [&] { renderViewModel(); });
+        timeIt("postfx", [&] { renderPostFX(); });
+        timeIt("hud", [&] { renderHUD(); flushText(); });
+        timeIt("advance", [&] { advance(1.f / 60.f); });
+    }
+    start(0); place(5.5f, 30.5f, 0.f);
+    tm.restart();
+    for (int i = 0; i < 120; i++) { advance(1.f / 60.f); render(); }
+    log(QString("%1 ms/frame (dungeon)").arg(tm.elapsed() / 120.0));
+    m_gs.player.hp = 0; m_gs.gameOver = true; run(2); save("50_gameover");
+    return true;
 }
