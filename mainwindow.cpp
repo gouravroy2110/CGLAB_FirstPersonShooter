@@ -31,7 +31,7 @@ MainWindow::MainWindow(QWidget *parent)
     std::memset(m_enemyHPDisplay, 0, sizeof(m_enemyHPDisplay));
 
     // Precalculate textures
-    for(int t=1; t<=3; t++){
+    for(int t=1; t<=4; t++){
         for(int ty=0; ty<64; ty++){
             for(int tx=0; tx<64; tx++){
                 uint32_t c = 0xFF888888;
@@ -39,6 +39,14 @@ MainWindow::MainWindow(QWidget *parent)
                 case 1:{bool m=(ty%16<2)||((ty/16)%2==0?(tx%32<2):((tx+16)%32<2));if(m){c=0xFF555555;break;}int n=((tx*7+ty*13)^tx)&7;uint8_t v=uint8_t(125+n);c=(0xFF<<24)|(v<<16)|(v<<8)|v;break;}
                 case 2:{bool m=(ty%8<1)||((ty/8)%2==0?(tx%20<2):((tx+10)%20<2));if(m){c=0xFF777766;break;}int n=((tx*5+ty*11)^ty)&15;c=(0xFF<<24)|(uint8_t(155+n)<<16)|(uint8_t(72+n/3)<<8)|uint8_t(55+n/3);break;}
                 case 3:{int n=((tx*3+ty*7)^(tx+ty))&31;uint8_t v=uint8_t(90+n);c=(0xFF<<24)|(uint8_t(v*.75f)<<16)|(uint8_t(v*.85f)<<8)|v;break;}
+                case 4:{ // Door — dark wood planks
+                    bool plank=(ty%10<2);
+                    if(plank){c=0xFF2A1A0A;break;}
+                    int n=((tx*3+ty*7)^tx)&15;
+                    uint8_t r=uint8_t(100+n*4),g2=uint8_t(62+n*2),b2=uint8_t(30+n);
+                    c=(0xFF<<24)|(r<<16)|(g2<<8)|b2;
+                    break;
+                }
                 }
                 m_textures[t][ty*64+tx] = c;
             }
@@ -113,6 +121,7 @@ void MainWindow::initGame()
     m_gs.player.stamina         = cp.stamina;
     m_gs.player.speedMult       = cp.speedMult + dc.speedBonus;
     m_gs.player.damageReduction = cp.damageReduction;
+    m_gs.player.weaponTier = 0;
 
     m_combo=0; m_comboTimer=0; m_comboDisplay=0;
     m_hitMarker=0; m_damageDirTimer=0;
@@ -131,6 +140,7 @@ void MainWindow::loadLevel(int lv)
     m_gs.level=lv; m_gs.killsThisLevel=0; m_gs.killsNeeded=cfg.killsNeeded;
     m_gs.levelComplete=false; m_gs.levelTransTimer=0;
     m_gs.bullets.clear(); m_gs.particles.clear(); m_gs.healthKits.clear();
+    m_gs.weaponPickups.clear();
     m_gs.enemyBulletSpeed = cfg.bulletSpeed  * dc.bulletSpeedMult;
     m_gs.enemyFireRate    = cfg.fireCooldown * dc.fireCoolMult;
 
@@ -208,11 +218,19 @@ void MainWindow::gameStep(float dt)
     if(pl.flashTimer>0)    pl.flashTimer    -=dt;
     if(pl.damageFlash>0)   pl.damageFlash   -=dt;
 
+    // Jump physics
+    if(m_jumpVelZ != 0.f || m_jumpZ > 0.f){
+        m_jumpVelZ -= 20.f * dt;
+        m_jumpZ += m_jumpVelZ * dt;
+        if(m_jumpZ <= 0.f){ m_jumpZ = 0.f; m_jumpVelZ = 0.f; }
+        if(m_jumpZ > 1.5f){ m_jumpZ = 1.5f; m_jumpVelZ = 0.f; }
+    }
+
     // Rotation
     float rotSpd=2.2f*dt*(pl.adsMode?0.55f:1.f);
     auto rot=[&](float a){float ox=pl.dirX,op=pl.planeX;pl.dirX=pl.dirX*cosf(a)+pl.dirY*sinf(a);pl.dirY=-ox*sinf(a)+pl.dirY*cosf(a);pl.planeX=pl.planeX*cosf(a)+pl.planeY*sinf(a);pl.planeY=-op*sinf(a)+pl.planeY*cosf(a);};
     if(m_keys.count(Qt::Key_Left)||m_keys.count(Qt::Key_Q))  rot( rotSpd);
-    if(m_keys.count(Qt::Key_Right)||m_keys.count(Qt::Key_E)) rot(-rotSpd);
+    if(m_keys.count(Qt::Key_Right)) rot(-rotSpd);
 
     // Sprint + stamina
     bool moving=m_keys.count(Qt::Key_W)||m_keys.count(Qt::Key_S)||m_keys.count(Qt::Key_A)||m_keys.count(Qt::Key_D);
@@ -248,6 +266,29 @@ void MainWindow::gameStep(float dt)
         }
     }
 
+    // Weapon pickup
+    for(auto &wp : m_gs.weaponPickups){
+        if(!wp.active) continue;
+        wp.bobPhase += dt * 2.8f;
+        float dx=pl.posX-wp.x, dy=pl.posY-wp.y;
+        if(dx*dx+dy*dy < 0.35f){
+            wp.active = false;
+            if(wp.type==PICKUP_AMMO){
+                pl.ammo = std::min(pl.ammo+20, 60);
+                KFEntry kf; kf.text="+ AMMO CRATE  +20 ROUNDS"; kf.life=3.f;
+                m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
+            } else if(wp.type==PICKUP_SHOTGUN && pl.weaponTier < 1){
+                pl.weaponTier=1; pl.ammo=std::min(pl.ammo+15,60);
+                KFEntry kf; kf.text="WEAPON UPGRADE: SHOTGUN"; kf.life=4.f;
+                m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
+            } else if(wp.type==PICKUP_RIFLE && pl.weaponTier < 2){
+                pl.weaponTier=2; pl.ammo=std::min(pl.ammo+25,60);
+                KFEntry kf; kf.text="WEAPON UPGRADE: ASSAULT RIFLE"; kf.life=4.f;
+                m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
+            }
+        }
+    }
+
     // Enemy AI
     for(auto &e:m_gs.enemies){
         if(!e.alive) continue;
@@ -277,6 +318,7 @@ void MainWindow::gameStep(float dt)
                         m_combo++; m_comboTimer=3.5f; m_comboDisplay=1.8f;
                         KFEntry kf; kf.text=(m_combo>1?QString("x%1 ").arg(m_combo):"")+QString("ENEMY DOWN"); kf.life=4.5f;
                         m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
+                        if(rand()%3==0) spawnPickup(e.x, e.y);
                     }
                     break;
                 }
@@ -326,6 +368,10 @@ void MainWindow::fireBullet(){
     pl.ammo--; pl.attackCooldown=0.45f; pl.flashTimer=0.14f; pl.shakeY=-11.f;
     Bullet b; b.x=pl.posX+pl.dirX*0.4f; b.y=pl.posY+pl.dirY*0.4f; b.dx=pl.dirX*9.f; b.dy=pl.dirY*9.f; b.owner=PLAYER_SHOT; b.alive=true;
     m_gs.bullets.push_back(b);
+    // Start casing ejection
+    m_casingTimer=0.55f;
+    m_casingX=float(W/2+100); m_casingY=float(H-80);
+    m_casingVX=200.f+rand()%60; m_casingVY=-300.f-rand()%80;
 }
 void MainWindow::enemyFire(Enemy &e){
     float dx=m_gs.player.posX-e.x,dy=m_gs.player.posY-e.y,d=sqrtf(dx*dx+dy*dy); if(d<0.1f)return;
@@ -384,7 +430,9 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         return;
     }
     // In-game
-    if(e->key()==Qt::Key_Space) fireBullet();
+    if(e->key()==Qt::Key_Space && m_jumpZ<=0.001f) m_jumpVelZ=5.5f;
+    if(e->key()==Qt::Key_F) fireBullet();
+    if(e->key()==Qt::Key_E) tryOpenDoor();
     if(e->key()==Qt::Key_Escape){if(m_paused)QApplication::quit();else m_paused=true;}
     if(e->key()==Qt::Key_R){if(m_paused)m_paused=false;if(m_gs.gameOver){initGame();m_paused=false;}}
     if(e->key()==Qt::Key_Q&&(m_paused||m_gs.gameOver)) QApplication::quit();
@@ -429,8 +477,22 @@ uint32_t MainWindow::wallPixel(int t,float wx,float wy,int side,float dist){
     if(side==1){uint8_t r=(c>>16&0xFF)/2,g=(c>>8&0xFF)/2,b=(c&0xFF)/2;c=(0xFF<<24)|(r<<16)|(g<<8)|b;}
     return fogBlend(c,dist);
 }
-uint32_t MainWindow::sampleImp(float u,float v,bool flash){int tx=std::min(15,std::max(0,int(u*16))),ty=std::min(15,std::max(0,int(v*16)));uint32_t c=IMP_SPRITE[ty][tx];if((c>>24)==0)return 0;return flash?0xFFFFFFFF:c;}
-uint32_t MainWindow::samplePlayerBullet(float u,float v){float du=u-.5f,dv=v-.5f,d=du*du+dv*dv;if(d>.22f)return 0;float t=1.f-d*4.5f;return(0xFF<<24)|(0xFF<<16)|(uint8_t(180*t+75)<<8)|uint8_t(10*t);}
+uint32_t MainWindow::sampleImp(float u,float v,bool flash){
+    int col=std::min(23,std::max(0,int(u*24)));
+    int row=std::min(23,std::max(0,int(v*24)));
+    uint32_t c=ENEMY_SPRITE[row][col];
+    if((c>>24)==0) return 0;
+    if(flash){uint8_t r=std::min(255,int((c>>16&0xFF)+120));return(0xFF<<24)|(r<<16)|(c&0x00FFFF);}
+    return c;
+}
+uint32_t MainWindow::samplePlayerBullet(float u,float v){
+    float cx=u-0.5f, cy=v-0.5f;
+    float d=cx*cx*6.f+cy*cy*2.f;
+    if(d>0.25f) return 0;
+    float t=1.f-d*4.f;
+    if(d<0.05f) return (0xFF<<24)|(0xFF<<16)|(0xFF<<8)|0xEE;
+    return (0xFF<<24)|(0xFF<<16)|uint8_t(200*t)<<8|0;
+}
 uint32_t MainWindow::sampleEnemyBullet(float u,float v){float du=u-.5f,dv=v-.5f,d=du*du+dv*dv;if(d>.22f)return 0;float t=1.f-d*4.5f;return(0xFF<<24)|(uint8_t(220*t+35)<<16)|(uint8_t(30*t)<<8)|uint8_t(180*t);}
 uint32_t MainWindow::sampleMedkit(float u,float v){int tx=std::min(15,std::max(0,int(u*16))),ty=std::min(15,std::max(0,int(v*16)));return MEDKIT_SPRITE[ty][tx];}
 
@@ -682,7 +744,7 @@ void MainWindow::renderCharSelect()
 void MainWindow::renderFloorCeiling()
 {
     const Player &pl=m_gs.player;
-    int shOff=int(pl.shakeY), hor=H/2+shOff;
+    int shOff=int(pl.shakeY), hor=H/2+shOff+int(m_jumpZ*70.f);
     int PS=m_pixelScale;
     float facing=atan2f(pl.dirY,pl.dirX);
 
@@ -755,7 +817,7 @@ void MainWindow::renderFloorCeiling()
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::renderWalls()
 {
-    const Player &pl=m_gs.player; int shOff=int(pl.shakeY),hor=H/2+shOff; int PS=m_pixelScale;
+    const Player &pl=m_gs.player; int shOff=int(pl.shakeY),hor=H/2+shOff+int(m_jumpZ*70.f); int PS=m_pixelScale;
     for(int x=0;x<W;x+=PS){
         float camX=2.f*x/float(W)-1.f,rdX=pl.dirX+pl.planeX*m_adsFOVMult*camX,rdY=pl.dirY+pl.planeY*m_adsFOVMult*camX;
         int mapX=int(pl.posX),mapY=int(pl.posY);
@@ -768,12 +830,15 @@ void MainWindow::renderWalls()
         if(!hit){for(int bx=0;bx<PS&&x+bx<W;bx++)m_zBuf[x+bx]=1e30f;continue;}
         float dist=(side==0)?(sdX-ddX):(sdY-ddY); for(int bx=0;bx<PS&&x+bx<W;bx++)m_zBuf[x+bx]=dist;
         float wh;if(side==0)wh=pl.posY+dist*rdY;else wh=pl.posX+dist*rdX;wh-=std::floor(wh);
-        int lh=std::max(1,int(float(H)/dist)),ds=std::max(0,hor-lh/2),de=std::min(H-1,hor+lh/2),wt=m_map[mapY][mapX];
+        int wt=m_map[mapY][mapX];
+        float hScale=(wt==2)?0.85f:(wt==3)?1.3f:(wt==4)?0.9f:1.0f;
+        int lh=std::max(1,int(float(H)/dist*hScale));
+        int ds=std::max(0,hor-lh/2),de=std::min(H-1,hor+lh/2);
         
         float fog=std::max(0.f,1.f-dist/14.f);
         uint32_t fogM = uint32_t(fog*256);
         int tx = int(wh*64)&63;
-        int t = (wt>=1 && wt<=3) ? wt : 1;
+        int t = (wt>=1 && wt<=4) ? wt : 1;
         float step = 64.f / float(lh);
         float texPos = float(ds - (hor - lh/2)) * step;
         for(int y=ds;y<=de;y++){
@@ -805,7 +870,7 @@ void MainWindow::renderSprites()
     std::sort(sprites.begin(),sprites.end(),[](const Sp&a,const Sp&b2){return a.dist>b2.dist;});
     float eplX=pl.planeX*m_adsFOVMult,eplY=pl.planeY*m_adsFOVMult;
     float invDet=1.f/(eplX*pl.dirY-pl.dirX*eplY);
-    int hor=H/2+int(pl.shakeY);
+    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f);
 
     // Collect HP bar data for a single QPainter pass at end
     struct HPBar{int scrX,sprTop,sprH;float frac,alpha;int hp;};
@@ -824,7 +889,7 @@ void MainWindow::renderSprites()
             float u=float(sx-sx0)/float(std::max(1,sprW));
             for(int sy=std::max(0,sy0);sy<std::min(H,sy1);sy++){
                 float v=float(sy-sy0)/float(std::max(1,sprH));
-                uint32_t c;
+                uint32_t c=0;
                 switch(type){
                 case SPR_ENEMY:   c=sampleImp(u,v,idx<int(m_gs.enemies.size())&&m_gs.enemies[idx].hitFlash>0);break;
                 case SPR_PBULLET: c=samplePlayerBullet(u,v);break;
@@ -894,7 +959,7 @@ void MainWindow::renderParticles()
     const Player &pl=m_gs.player;
     float eplX=pl.planeX*m_adsFOVMult,eplY=pl.planeY*m_adsFOVMult;
     float invDet=1.f/(eplX*pl.dirY-pl.dirX*eplY);
-    int hor=H/2+int(pl.shakeY);
+    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f);
     for(const Particle &pt:m_gs.particles){
         if(pt.life<=0)continue;
         float spX=pt.x-pl.posX,spY=pt.y-pl.posY;
@@ -1059,15 +1124,48 @@ void MainWindow::renderWeaponAndArms()
         for(int y=0;y<H;y++) for(int x=0;x<W;x++){float ddx=float(x-sCx),ddy=float(y-sCy);if(ddx*ddx+ddy*ddy>60.f*60.f){uint32_t &pp=m_pixels[y*W+x];uint8_t r=(pp>>16&0xFF)/5,g2=(pp>>8&0xFF)/5,b2=(pp&0xFF)/5;pp=(0xFF<<24)|(r<<16)|(g2<<8)|b2;}}
     }
 
+    // Casing ejection
+    if(m_casingTimer>0){
+        m_casingTimer-=m_dt;
+        m_casingX+=m_casingVX*m_dt;
+        m_casingY+=m_casingVY*m_dt;
+        m_casingVY+=400.f*m_dt; // gravity
+        int cx2=int(m_casingX), cy2=int(m_casingY);
+        if(cx2>0&&cx2<W-4&&cy2>0&&cy2<H-2){
+            fillRect(cx2,cy2,5,2,0xFFD4A000); // brass casing
+            fillRect(cx2+1,cy2,3,1,0xFFFFCC44);
+        }
+    }
+
     // ── Muzzle flash ──────────────────────────────────────────────────────────
     if(pl.flashTimer>0){
-        float t=pl.flashTimer/0.14f; int fr=int((12+rand()%6)*t);
-        if(fr>0){
-            int fx=rx,fy=ry-g(118);
-            for(int ray=0;ray<8;ray++){float fa=ray*3.14159f/4.f+t*.5f;int rl=fr+8+rand()%6;drawLine(fx,fy,fx+int(cosf(fa)*rl),fy+int(sinf(fa)*rl),0x99FF5500);}
-            fillCircle(fx,fy,fr+6,0x44FF8800);fillCircle(fx,fy,fr+3,0xAAFFAA00);fillCircle(fx,fy,fr,0xFFFFDD00);fillCircle(fx,fy,fr/2,0xFFFFFFFF);
-            int addR=int(36*t),addG=int(18*t);
-            for(int i=0;i<W*H;i++){uint32_t pp=m_pixels[i];uint8_t r=uint8_t(std::min(255,int((pp>>16&0xFF)+addR))),g2=uint8_t(std::min(255,int((pp>>8&0xFF)+addG)));m_pixels[i]=(0xFF<<24)|(r<<16)|(g2<<8)|(pp&0xFF);}
+        float t=pl.flashTimer/0.14f;
+        int fx=rx, fy=ry-g(118);
+        if(t>0.7f){
+            // Phase 1: big expanding flash + 12 rays
+            int fr=int((16+rand()%8)*t);
+            for(int ray=0;ray<12;ray++){float fa=ray*3.14159f/6.f+(1.f-t)*0.8f;int rl=fr+10+rand()%8;drawLine(fx,fy,fx+int(cosf(fa)*rl),fy+int(sinf(fa)*rl),0xAAFF6600);}
+            fillCircle(fx,fy,fr+8,0x55FFAA00);
+            fillCircle(fx,fy,fr+4,0xAAFFCC00);
+            fillCircle(fx,fy,fr,0xFFFFDD00);
+            fillCircle(fx,fy,fr/2,0xFFFFFFFF);
+            // Screen flash
+            int addR=int(48*t),addG=int(24*t);
+            for(int i=0;i<W*H;i++){uint32_t pp=m_pixels[i];uint8_t r2=uint8_t(std::min(255,int((pp>>16&0xFF)+addR))),g2=uint8_t(std::min(255,int((pp>>8&0xFF)+addG)));m_pixels[i]=(0xFF<<24)|(r2<<16)|(g2<<8)|(pp&0xFF);}
+        } else if(t>0.3f){
+            // Phase 2: medium flash + smoke particles
+            int fr=int(8*t);
+            for(int ray=0;ray<6;ray++){float fa=ray*3.14159f/3.f;int rl=fr+6;drawLine(fx,fy,fx+int(cosf(fa)*rl),fy+int(sinf(fa)*rl),0x66FF8800);}
+            fillCircle(fx,fy,fr+3,0x44885500);
+            fillCircle(fx,fy,fr,0x88FFCC00);
+            fillCircle(fx,fy,fr/2,0xFFFFDD80);
+            // Smoke puffs (dark grey pixels scattered)
+            for(int s=0;s<8;s++){int sx=fx+(rand()%20-10),sy=fy+(rand()%20-10);if(sx>=0&&sx<W&&sy>=0&&sy<H)m_pixels[sy*W+sx]=0xFF404040;}
+        } else {
+            // Phase 3: remnant glow
+            fillCircle(fx,fy,3,0x66FF8800);
+            fillCircle(fx,fy,1,0xAAFFDD00);
+            for(int s=0;s<4;s++){int sx=fx+(rand()%24-12),sy=fy+(rand()%24-12);if(sx>=0&&sx<W&&sy>=0&&sy<H)m_pixels[sy*W+sx]=uint32_t(0x33505050);}
         }
     }
 }
@@ -1325,7 +1423,7 @@ void MainWindow::render()
     case SCR_CHAR_SELECT: renderCharSelect(); return;
     case SCR_PLAYING:     break;
     }
-    renderFloorCeiling();renderWalls();renderSprites();renderParticles();
+    renderFloorCeiling();renderWalls();renderSprites();renderPickupSprites();renderParticles();
     renderWeaponAndArms();renderDamageVignette();renderHUD();
     renderLevelBanner();renderPauseMenu();
     if(m_gs.gameOver) drawGameOver(m_buf,m_gs,m_charChoice,m_difficulty);
@@ -1338,4 +1436,84 @@ void MainWindow::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::Antialiasing,false);
     p.setRenderHint(QPainter::SmoothPixmapTransform,false);
     p.drawImage(rect(),m_buf,m_buf.rect());
+}
+
+void MainWindow::spawnPickup(float x, float y){
+    WeaponPickup wp;
+    wp.x = x + (rand()%10-5)*0.1f;
+    wp.y = y + (rand()%10-5)*0.1f;
+    wp.bobPhase = float(rand()%628)/100.f;
+    wp.active = true;
+    int r=rand()%10;
+    if(r<5) wp.type=PICKUP_AMMO;
+    else if(r<8) wp.type=PICKUP_SHOTGUN;
+    else wp.type=PICKUP_RIFLE;
+    m_gs.weaponPickups.push_back(wp);
+}
+
+void MainWindow::tryOpenDoor(){
+    Player &pl=m_gs.player;
+    int px2=int(pl.posX), py2=int(pl.posY);
+    int dx2[]={0,0,1,-1}; int dy2[]={1,-1,0,0};
+    for(int d=0;d<4;d++){
+        int nx=px2+dx2[d], ny=py2+dy2[d];
+        if(nx>=0&&nx<MAP_W&&ny>=0&&ny<MAP_H&&m_map[ny][nx]==4){
+            m_map[ny][nx]=0;
+            KFEntry kf; kf.text="DOOR OPENED"; kf.life=2.5f;
+            m_killFeed.insert(m_killFeed.begin(),kf); if(int(m_killFeed.size())>4)m_killFeed.pop_back();
+            return;
+        }
+    }
+}
+
+void MainWindow::renderPickupSprites()
+{
+    const Player &pl=m_gs.player;
+    float eplX=pl.dirX,eplY=pl.dirY;
+    float invDet=1.f/(pl.planeX*pl.dirY-pl.dirX*pl.planeY);
+    int hor=H/2+int(pl.shakeY)+int(m_jumpZ*70.f);
+    for(auto &wp : m_gs.weaponPickups){
+        if(!wp.active) continue;
+        float bob=sinf(wp.bobPhase)*0.08f;
+        float spX=wp.x-pl.posX, spY=wp.y-pl.posY;
+        float txX=invDet*(pl.dirY*spX-pl.dirX*spY);
+        float txY=invDet*(-eplY*spX+eplX*spY);
+        if(txY<0.1f) continue;
+        int scrX=int(float(W/2)*(1.f+txX/txY));
+        int sprH=std::min(H, std::abs(int(float(H)*0.3f/txY)));
+        int drawStart=std::max(0, hor-sprH/2-int(bob*H/txY));
+        int drawEnd=std::min(H-1, hor+sprH/2-int(bob*H/txY));
+        int sprW=sprH;
+        int startX=std::max(0,scrX-sprW/2);
+        int endX=std::min(W-1,scrX+sprW/2);
+        // Pick color based on type
+        uint32_t col1=wp.type==PICKUP_AMMO?0xFFDDAA00:wp.type==PICKUP_SHOTGUN?0xFF888888:0xFF4488FF;
+        uint32_t col2=wp.type==PICKUP_AMMO?0xFFFFCC44:wp.type==PICKUP_SHOTGUN?0xFFCCCCCC:0xFF88CCFF;
+        float fog=std::max(0.f,1.f-txY/14.f);
+        for(int sx=startX;sx<=endX;sx++){
+            if(txY>=m_zBuf[sx]) continue;
+            float u=float(sx-(scrX-sprW/2))/float(std::max(1,sprW));
+            for(int sy=drawStart;sy<=drawEnd;sy++){
+                float v=float(sy-drawStart)/float(std::max(1,drawEnd-drawStart));
+                // Simple gun-icon shape: rectangular body with handle
+                uint32_t c=0;
+                float fu=u*3.f-1.5f, fv=v*3.f-1.5f;
+                // Barrel
+                if(fv>-0.2f&&fv<0.2f&&fu>-1.2f&&fu<0.8f) c=col1;
+                // Handle
+                else if(fu>-0.2f&&fu<0.4f&&fv>0.1f&&fv<0.8f) c=col2;
+                // Ammo box override
+                if(wp.type==PICKUP_AMMO){
+                    c=0;
+                    if(fabsf(fu)<0.7f&&fabsf(fv)<0.55f) c=col1;
+                    if(fabsf(fu)<0.5f&&fabsf(fv)<0.35f) c=col2;
+                }
+                if(c==0) continue;
+                uint8_t fr=uint8_t((c>>16&0xFF)*fog);
+                uint8_t fg2=uint8_t((c>>8&0xFF)*fog);
+                uint8_t fb=uint8_t((c&0xFF)*fog);
+                m_pixels[sy*W+sx]=(0xFF<<24)|(fr<<16)|(fg2<<8)|fb;
+            }
+        }
+    }
 }

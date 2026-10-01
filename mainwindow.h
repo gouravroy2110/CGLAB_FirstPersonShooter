@@ -42,7 +42,7 @@ private:
 
     // Precomputed assets for high FPS
     uint32_t  m_skybox[1024 * 300];
-    uint32_t  m_textures[4][64*64];
+    uint32_t  m_textures[5][64*64];
     uint8_t   m_vignette[H][W];
 
     // ── Zoom / pixel-scale (raster proof for professor) ───────────────────────
@@ -51,6 +51,13 @@ private:
 
     // ── ADS smooth lerp ───────────────────────────────────────────────────────
     float m_adsFOVMult = 1.f;
+    // Jump state
+    float m_jumpZ    = 0.f;
+    float m_jumpVelZ = 0.f;
+    // Casing ejection
+    float m_casingTimer = 0.f;
+    float m_casingX = 0.f, m_casingY = 0.f;
+    float m_casingVX = 0.f, m_casingVY = 0.f;
 
     // ── Loop ─────────────────────────────────────────────────────────────────
     QTimer        m_timer;
@@ -97,6 +104,9 @@ private:
     void spawnBlood(float wx, float wy, int count);
     bool posValid(float x, float y) const;
     bool hasLOS(float x0, float y0, float x1, float y1) const;
+    void tryOpenDoor();
+    void spawnPickup(float x, float y);
+    void renderPickupSprites();
 
     // ── Screens ───────────────────────────────────────────────────────────────
     void drawMenuBg();

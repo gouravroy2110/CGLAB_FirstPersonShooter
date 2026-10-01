@@ -14,8 +14,8 @@ static const int DUNGEON_MAP[MAP_H][MAP_W] = {
     {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
     {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},{1,0,0,2,2,2,2,0,0,0,0,0,0,0,0,0,0,2,2,2,2,0,0,1},
     {1,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,1},{1,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,1},
-    {1,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0,0,2,2,2,2,0,0,1},{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,1},{1,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,2,2,4,0,0,0,0,0,0,0,0,0,0,0,2,2,2,2,0,0,1},{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,1},{1,0,0,0,0,0,0,0,0,0,1,1,1,4,0,0,0,0,0,0,0,0,0,1},
     {1,0,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,0,0,0,1},
     {1,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
     {1,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,1},{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
@@ -76,29 +76,47 @@ static const int MAX_KITS = 6;
 // Player spawn positions per map
 static const float PLAYER_SPAWNS[3][2] = { {2.5f, 2.5f}, {2.5f, 2.5f}, {1.5f, 1.5f} };
 
-// ─── Imp sprite 16×16 ────────────────────────────────────────────────────────
-#define _X 0x00000000
-#define SK 0xFF9B6B3D
-#define RE 0xFFFF3300
-#define MT 0xFF660000
-#define BD 0xFF5E3A1A
-#define LG 0xFF3B2010
-static const uint32_t IMP_SPRITE[16][16] = {
-    {_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X},{_X,_X,_X,_X,_X,SK,SK,SK,SK,SK,SK,_X,_X,_X,_X,_X},
-    {_X,_X,_X,_X,SK,SK,SK,SK,SK,SK,SK,SK,_X,_X,_X,_X},{_X,_X,_X,_X,SK,RE,SK,SK,SK,SK,RE,SK,_X,_X,_X,_X},
-    {_X,_X,_X,_X,SK,SK,SK,SK,SK,SK,SK,SK,_X,_X,_X,_X},{_X,_X,_X,_X,SK,SK,MT,SK,SK,MT,SK,SK,_X,_X,_X,_X},
-    {_X,_X,_X,_X,_X,SK,SK,SK,SK,SK,SK,_X,_X,_X,_X,_X},{_X,_X,_X,BD,BD,BD,BD,BD,BD,BD,BD,BD,BD,_X,_X,_X},
-    {_X,_X,_X,BD,BD,BD,BD,BD,BD,BD,BD,BD,BD,_X,_X,_X},{_X,_X,_X,BD,BD,BD,BD,BD,BD,BD,BD,BD,BD,_X,_X,_X},
-    {_X,_X,_X,_X,BD,BD,BD,BD,BD,BD,BD,BD,_X,_X,_X,_X},{_X,_X,_X,_X,BD,BD,BD,BD,BD,BD,BD,BD,_X,_X,_X,_X},
-    {_X,_X,_X,_X,LG,LG,LG,_X,_X,LG,LG,LG,_X,_X,_X,_X},{_X,_X,_X,_X,LG,LG,_X,_X,_X,_X,LG,LG,_X,_X,_X,_X},
-    {_X,_X,_X,_X,LG,LG,_X,_X,_X,_X,LG,LG,_X,_X,_X,_X},{_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X,_X},
+// ─── Enemy Soldier sprite 24×24 ─────────────────────────────────────────────
+#define EH 0xFF4A4A55
+#define EF 0xFF9B7A4A
+#define EG 0xFF3A4228
+#define EGH 0xFF4A5238
+#define EB 0xFF1E1E28
+#define EE 0xFFFF3300
+#define _0 0x00000000
+static const uint32_t ENEMY_SPRITE[24][24] = {
+    {_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,_0,_0,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,_0,_0,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,_0,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,_0,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,EH,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,EF,EE,EF,EF,EF,EF,EF,EF,EF,EF,EF,EE,EF,EF,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,EF,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,EF,EF,EB,EF,EF,EF,EF,EF,EF,EF,EF,EB,EF,EF,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,EG,EG,EG,EG,EG,EG,EG,EG,EG,EG,EG,EG,EG,EG,EG,EG,_0,_0,_0,_0},
+    {_0,_0,_0,_0,EG,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EG,_0,_0,_0,_0},
+    {_0,_0,_0,_0,EG,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EG,_0,_0,_0,_0},
+    {_0,_0,_0,_0,EG,EGH,EB,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EB,EGH,EGH,EG,_0,_0,_0,_0},
+    {_0,_0,_0,_0,EG,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EGH,EG,_0,_0,_0,_0},
+    {_0,_0,_0,_0,EG,EG,EG,EG,EB,EB,EB,EB,EB,EB,EB,EG,EG,EG,EG,EG,_0,_0,_0,_0},
+    {_0,_0,_0,EG,EG,EG,_0,_0,EG,EGH,EGH,EGH,EGH,EGH,EG,_0,_0,EG,EG,EG,_0,_0,_0,_0},
+    {_0,_0,_0,EG,EGH,EG,_0,_0,EG,EGH,EGH,EGH,EGH,EGH,EG,_0,_0,EG,EGH,EG,_0,_0,_0,_0},
+    {_0,_0,_0,EG,EGH,EG,_0,_0,EG,EGH,EGH,EGH,EGH,EGH,EG,_0,_0,EG,EGH,EG,_0,_0,_0,_0},
+    {_0,_0,_0,EG,EG,EG,_0,_0,EB,EB,EG,EGH,EG,EB,EB,_0,_0,EG,EG,EG,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,_0,_0,_0,EB,EB,EB,EB,EB,EB,EB,EB,_0,_0,_0,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,_0,_0,_0,EB,EG,EB,EB,EB,EB,EG,EB,_0,_0,_0,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,_0,_0,_0,EB,EG,EB,EB,EB,EB,EG,EB,_0,_0,_0,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,_0,_0,_0,EB,EB,_0,_0,_0,_0,EB,EB,_0,_0,_0,_0,_0,_0,_0,_0},
+    {_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0,_0},
 };
-#undef _X
-#undef SK
-#undef RE
-#undef MT
-#undef BD
-#undef LG
+#undef EH
+#undef EF
+#undef EG
+#undef EGH
+#undef EB
+#undef EE
+#undef _0
 
 // ─── Med-kit sprite 16×16 ────────────────────────────────────────────────────
 #define _T 0x00000000
@@ -170,6 +188,10 @@ struct Particle { float x,y,z,vx,vy,vz,life; uint32_t color; };
 // ─── Health kit ───────────────────────────────────────────────────────────────
 struct HealthKit { float x, y, bobPhase=0; bool active=true; };
 
+// ─── Weapon pickup ────────────────────────────────────────────────────────────
+enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE };
+struct WeaponPickup { float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; };
+
 // ─── Player ───────────────────────────────────────────────────────────────────
 struct Player {
     float posX=2.5f,posY=2.5f,dirX=1.f,dirY=0.f,planeX=0.f,planeY=0.66f;
@@ -177,6 +199,7 @@ struct Player {
     float stamina=100.f,speedMult=1.f,damageReduction=0.f;
     float bobPhase=0,attackCooldown=0,flashTimer=0,damageFlash=0;
     bool  adsMode=false,sprinting=false;
+    int   weaponTier=0;  // 0=pistol 1=shotgun 2=assault rifle
     float shakeY=0;
 };
 
@@ -200,6 +223,7 @@ struct GameState {
     std::vector<Bullet>    bullets;
     std::vector<Particle>  particles;
     std::vector<HealthKit> healthKits;
+    std::vector<WeaponPickup> weaponPickups;
     int   kills=0,killsThisLevel=0,killsNeeded=4,level=1,score=0,frameNum=0;
     float levelTransTimer=0,enemyBulletSpeed=4.5f,enemyFireRate=3.f;
     bool  levelComplete=false,gameOver=false;
