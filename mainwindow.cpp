@@ -1,11 +1,11 @@
-// =============================================================================
-//  mainwindow.cpp  —  Raster FPS  |  Full feature set
+﻿// =============================================================================
+//  mainwindow.cpp  ΓÇö  Raster FPS  |  Full feature set
 //
-//  ★ RASTER PROOF:
-//    • Sky + clouds are computed PER PIXEL each frame — sinusoidal noise,
-//      no textures, no images. Scroll wheel or [ key zooms in → chunky blocks.
-//    • All game/HUD geometry: raw uint32_t* writes (fillRect/fillCircle/drawLine).
-//    • QPainter used ONLY for drawText (Qt's QRasterPaintEngine — no GPU).
+//  Γÿà RASTER PROOF:
+//    ΓÇó Sky + clouds are computed PER PIXEL each frame ΓÇö sinusoidal noise,
+//      no textures, no images. Scroll wheel or [ key zooms in ΓåÆ chunky blocks.
+//    ΓÇó All game/HUD geometry: raw uint32_t* writes (fillRect/fillCircle/drawLine).
+//    ΓÇó QPainter used ONLY for drawText (Qt's QRasterPaintEngine ΓÇö no GPU).
 // =============================================================================
 #include "mainwindow.h"
 #include <QPainter>
@@ -14,9 +14,9 @@
 #include <algorithm>
 #include <cstdlib>
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  Constructor
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 MainWindow::MainWindow(QWidget *parent)
     : QWidget(parent), m_buf(W, H, QImage::Format_ARGB32)
 {
@@ -39,43 +39,11 @@ MainWindow::MainWindow(QWidget *parent)
                 case 1:{bool m=(ty%16<2)||((ty/16)%2==0?(tx%32<2):((tx+16)%32<2));if(m){c=0xFF555555;break;}int n=((tx*7+ty*13)^tx)&7;uint8_t v=uint8_t(125+n);c=(0xFF<<24)|(v<<16)|(v<<8)|v;break;}
                 case 2:{bool m=(ty%8<1)||((ty/8)%2==0?(tx%20<2):((tx+10)%20<2));if(m){c=0xFF777766;break;}int n=((tx*5+ty*11)^ty)&15;c=(0xFF<<24)|(uint8_t(155+n)<<16)|(uint8_t(72+n/3)<<8)|uint8_t(55+n/3);break;}
                 case 3:{int n=((tx*3+ty*7)^(tx+ty))&31;uint8_t v=uint8_t(90+n);c=(0xFF<<24)|(uint8_t(v*.75f)<<16)|(uint8_t(v*.85f)<<8)|v;break;}
-                case 4:{ // Door — detailed realistic door texture
-                    // Outer frame (4px border)
-                    bool frame = (tx<4||tx>59||ty<4||ty>59);
-                    if(frame){c=0xFF2A1E10;break;}
-                    // Inner frame shadow
-                    bool frameIn = (tx<6||tx>57||ty<6||ty>57);
-                    if(frameIn){c=0xFF1A1208;break;}
-                    // Door panels: two recessed panels (top half and bottom half)
-                    // Each panel has an inset and sunken area
-                    int px2=tx-6, py2=ty-6, pw=52, ph=53;
-                    int midY=ph/2+4;
-                    // Top panel  (ty 6..32), Bottom panel (ty 34..57)
-                    bool topPanelBorder   = (ty>=6 &&ty<=32)&&(px2<2||px2>=pw-2||py2<2||py2>=midY-8);
-                    bool botPanelBorder   = (ty>=34&&ty<=57)&&(px2<2||px2>=pw-2||(ty-34)<2||(ty-34)>=pw-12);
-                    if(topPanelBorder||botPanelBorder){c=0xFF1E1508;break;}
-                    bool topPanelInner = (ty>=8&&ty<=30)&&(px2>=2&&px2<pw-2);
-                    bool botPanelInner = (ty>=36&&ty<=55)&&(px2>=2&&px2<pw-2);
-                    if(topPanelInner||botPanelInner){
-                        // Sunken panel — slightly lighter than frame
-                        int n=((tx*5+ty*11)^ty)&7;
-                        uint8_t r=uint8_t(88+n*3),g2=uint8_t(55+n*2),b2=uint8_t(28+n);
-                        c=(0xFF<<24)|(r<<16)|(g2<<8)|b2; break;
-                    }
-                    // Centre divider strip between panels
-                    if(ty>=31&&ty<=35){c=0xFF221800;break;}
-                    // Door handle: small circle on right side, middle height
-                    int hcx=52,hcy=32;
-                    int hdx=tx-hcx,hdy=ty-hcy;
-                    if(hdx*hdx+hdy*hdy<9){c=0xFFD4AA00;break;} // gold knob
-                    if(hdx*hdx+hdy*hdy<16){c=0xFF8A6A00;break;}// knob shadow
-                    // Keyhole below handle
-                    int kcx=52,kcy=38;
-                    int kdx=tx-kcx,kdy=ty-kcy;
-                    if(kdx*kdx+kdy*kdy<4){c=0xFF101008;break;}
-                    // Main wood grain
+                case 4:{ // Door ΓÇö dark wood planks
+                    bool plank=(ty%10<2);
+                    if(plank){c=0xFF2A1A0A;break;}
                     int n=((tx*3+ty*7)^tx)&15;
-                    uint8_t r=uint8_t(110+n*4),g2=uint8_t(68+n*2),b2=uint8_t(32+n);
+                    uint8_t r=uint8_t(100+n*4),g2=uint8_t(62+n*2),b2=uint8_t(30+n);
                     c=(0xFF<<24)|(r<<16)|(g2<<8)|b2;
                     break;
                 }
@@ -136,9 +104,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_clock.start();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  initGame / loadLevel
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::initGame()
 {
     m_gs = GameState{};
@@ -155,9 +123,8 @@ void MainWindow::initGame()
     m_gs.player.damageReduction = cp.damageReduction;
     m_gs.player.weaponTier = 0;
 
-    m_combo=0; m_comboTimer=0; m_comboDisplay=0;
+    m_combo=0; m_comboTimer=0; m_comboDisplay=0; m_pitch=0.f;
     m_hitMarker=0; m_damageDirTimer=0;
-    m_pitch=0.f; m_jumpZ=0.f; m_jumpVelZ=0.f;
     m_killFeed.clear();
     std::memset(m_enemyHPDisplay, 0, sizeof(m_enemyHPDisplay));
     loadLevel(1);
@@ -213,9 +180,9 @@ void MainWindow::loadLevel(int lv)
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  Tick
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::tick()
 {
     double now=m_clock.elapsed();
@@ -240,9 +207,9 @@ void MainWindow::tick()
     QWidget::update();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  Game logic
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::gameStep(float dt)
 {
     Player &pl=m_gs.player;
@@ -272,7 +239,7 @@ void MainWindow::gameStep(float dt)
     pl.stamina+=wantSprint?(-45.f*dt):(28.f*dt);
     pl.stamina=std::max(0.f,std::min(CHAR_PROFILES[m_charChoice].stamina,pl.stamina));
 
-    // Movement — normalised so diagonal isn't faster
+    // Movement ΓÇö normalised so diagonal isn't faster
     float SPD=pl.speedMult*(pl.sprinting?5.8f:pl.adsMode?2.2f:3.5f)*dt;
     float mx=0,my=0;
     if(m_keys.count(Qt::Key_W)){mx+=pl.dirX;my+=pl.dirY;}
@@ -280,9 +247,8 @@ void MainWindow::gameStep(float dt)
     if(m_keys.count(Qt::Key_A)){mx+=pl.dirY;my-=pl.dirX;}
     if(m_keys.count(Qt::Key_D)){mx-=pl.dirY;my+=pl.dirX;}
     float len=sqrtf(mx*mx+my*my); if(len>0.001f){mx/=len;my/=len;}
-    float nx=pl.posX+mx*SPD, ny=pl.posY+my*SPD;
-    if(posValid(nx,pl.posY)) pl.posX=nx;
-    if(posValid(pl.posX,ny)) pl.posY=ny;
+    float nx=pl.posX+mx*SPD,ny=pl.posY+my*SPD;
+    if(posValid(nx,pl.posY))pl.posX=nx; if(posValid(pl.posX,ny))pl.posY=ny;
     if(moving)pl.bobPhase+=dt*(pl.sprinting?8.f:4.f); else pl.bobPhase*=0.85f;
 
     // Health kit pickup
@@ -384,9 +350,9 @@ void MainWindow::gameStep(float dt)
     m_gs.frameNum++;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 bool MainWindow::posValid(float x,float y) const {
     const float R=0.28f;
     auto ok=[&](float tx,float ty){int mx=int(tx),my=int(ty);return mx>=0&&mx<MAP_W&&my>=0&&my<MAP_H&&m_map[my][mx]==0;};
@@ -420,9 +386,9 @@ void MainWindow::spawnBlood(float wx,float wy,int count){
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  Input
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
     m_keys.insert(e->key());
@@ -467,7 +433,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if(e->key()==Qt::Key_Space && m_jumpZ<=0.001f) m_jumpVelZ=5.5f;
     if(e->key()==Qt::Key_F) fireBullet();
     if(e->key()==Qt::Key_E) tryOpenDoor();
-    if(e->key()==Qt::Key_C) m_pitch=0.f;  // centre look
+    if(e->key()==Qt::Key_C) m_pitch=0.f;
     if(e->key()==Qt::Key_Escape){if(m_paused)QApplication::quit();else m_paused=true;}
     if(e->key()==Qt::Key_R){if(m_paused)m_paused=false;if(m_gs.gameOver){initGame();m_paused=false;}}
     if(e->key()==Qt::Key_Q&&(m_paused||m_gs.gameOver)) QApplication::quit();
@@ -484,27 +450,12 @@ void MainWindow::mousePressEvent(QMouseEvent *e){
 void MainWindow::mouseReleaseEvent(QMouseEvent *e){if(e->button()==Qt::RightButton)m_gs.player.adsMode=false;}
 void MainWindow::mouseMoveEvent(QMouseEvent *e){
     if(m_screen!=SCR_PLAYING||m_paused||m_gs.gameOver)return;
-    int cx=width()/2, cy=height()/2;
-    float dxf=float(e->x()-cx), dyf=float(e->y()-cy);
-    // Dead zone: skip only when BOTH axes are essentially zero
-    if(std::fabs(dxf)<0.5f && std::fabs(dyf)<0.5f) return;
-    // Horizontal rotation
-    float sens = m_gs.player.adsMode ? 0.0008f : 0.0015f;
-    if(std::fabs(dxf)>=0.5f){
-        float rot2 = dxf * -sens;
-        Player &pl=m_gs.player; float ox=pl.dirX,op=pl.planeX;
-        pl.dirX=pl.dirX*cosf(rot2)+pl.dirY*sinf(rot2);
-        pl.dirY=-ox*sinf(rot2)+pl.dirY*cosf(rot2);
-        pl.planeX=pl.planeX*cosf(rot2)+pl.planeY*sinf(rot2);
-        pl.planeY=-op*sinf(rot2)+pl.planeY*cosf(rot2);
-    }
-    // Vertical look (pitch) — fully free up/down
-    if(std::fabs(dyf)>=0.5f){
-        float pitchSens = m_gs.player.adsMode ? 0.4f : 0.65f;
-        m_pitch += dyf * pitchSens;
-        m_pitch = std::max(-240.f, std::min(240.f, m_pitch));
-    }
-    QCursor::setPos(mapToGlobal(QPoint(cx, cy)));
+    int cx=width()/2; float dx=float(e->x()-cx); if(std::fabs(dx)<1.f)return;
+    float rot2=dx*-(m_gs.player.adsMode?0.0008f:0.0015f);
+    Player &pl=m_gs.player; float ox=pl.dirX,op=pl.planeX;
+    pl.dirX=pl.dirX*cosf(rot2)+pl.dirY*sinf(rot2);pl.dirY=-ox*sinf(rot2)+pl.dirY*cosf(rot2);
+    pl.planeX=pl.planeX*cosf(rot2)+pl.planeY*sinf(rot2);pl.planeY=-op*sinf(rot2)+pl.planeY*cosf(rot2);
+    QCursor::setPos(mapToGlobal(QPoint(cx,height()/2)));
 }
 void MainWindow::wheelEvent(QWheelEvent *e){
     int steps=e->angleDelta().y()/120;
@@ -512,9 +463,9 @@ void MainWindow::wheelEvent(QWheelEvent *e){
     resize(int(W*m_zoomFactor),int(H*m_zoomFactor));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  Color helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 uint32_t MainWindow::fogBlend(uint32_t c,float dist){float f=std::max(0.f,1.f-dist/14.f);return(0xFF<<24)|(uint8_t(((c>>16)&0xFF)*f)<<16)|(uint8_t(((c>>8)&0xFF)*f)<<8)|uint8_t((c&0xFF)*f);}
 uint32_t MainWindow::dimColor(uint32_t c,float b){if(b>=1.f)return c;uint8_t a=c>>24;return(a<<24)|(uint8_t(((c>>16)&0xFF)*b)<<16)|(uint8_t(((c>>8)&0xFF)*b)<<8)|uint8_t((c&0xFF)*b);}
 uint32_t MainWindow::wallPixel(int t,float wx,float wy,int side,float dist){
@@ -546,9 +497,9 @@ uint32_t MainWindow::samplePlayerBullet(float u,float v){
 uint32_t MainWindow::sampleEnemyBullet(float u,float v){float du=u-.5f,dv=v-.5f,d=du*du+dv*dv;if(d>.22f)return 0;float t=1.f-d*4.5f;return(0xFF<<24)|(uint8_t(220*t+35)<<16)|(uint8_t(30*t)<<8)|uint8_t(180*t);}
 uint32_t MainWindow::sampleMedkit(float u,float v){int tx=std::min(15,std::max(0,int(u*16))),ty=std::min(15,std::max(0,int(v*16)));return MEDKIT_SPRITE[ty][tx];}
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  Pixel helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 inline void MainWindow::px(int x,int y,uint32_t c){if((unsigned)x<(unsigned)W&&(unsigned)y<(unsigned)H)m_pixels[y*W+x]=c;}
 void MainWindow::fillRect(int x,int y,int w,int h,uint32_t c){int x0=std::max(x,0),x1=std::min(x+w,W),y0=std::max(y,0),y1=std::min(y+h,H);for(int r=y0;r<y1;r++)for(int col=x0;col<x1;col++)m_pixels[r*W+col]=c;}
 void MainWindow::fillCircle(int cx,int cy,int r,uint32_t c){for(int dy=-r;dy<=r;dy++)for(int dx=-r;dx<=r;dx++)if(dx*dx+dy*dy<=r*r)px(cx+dx,cy+dy,c);}
@@ -630,8 +581,8 @@ void MainWindow::renderMenu()
     p.drawText(QRect(28,195,W*2/5-28,36),Qt::AlignLeft,"TACTICAL SHOOTER");
     
     p.setFont(QFont("Courier New",9));p.setPen(QColor(40,100,70));
-    p.drawText(QRect(28,250,W*2/5-28,20),Qt::AlignLeft,"Computer Graphics Lab  •  Semester 5");
-    p.drawText(QRect(28,264,W*2/5-28,20),Qt::AlignLeft,"Pure software rasterization — no GPU");
+    p.drawText(QRect(28,250,W*2/5-28,20),Qt::AlignLeft,"Computer Graphics Lab  ΓÇó  Semester 5");
+    p.drawText(QRect(28,264,W*2/5-28,20),Qt::AlignLeft,"Pure software rasterization ΓÇö no GPU");
     
     static const char*OPTS[]={"NEW GAME","EXIT"};
     for(int i=0;i<2;i++){
@@ -642,7 +593,7 @@ void MainWindow::renderMenu()
         p.drawText(QRect(ox+14,oy,ow-14,oh),Qt::AlignLeft|Qt::AlignVCenter,QString("[%1]  %2").arg(i+1).arg(OPTS[i]));
     }
     p.setFont(QFont("Courier New",9));p.setPen(QColor(40,70,50));
-    p.drawText(QRect(mx,my+155,260,18),Qt::AlignLeft,"↑↓ navigate   ENTER confirm");
+    p.drawText(QRect(mx,my+155,260,18),Qt::AlignLeft,"ΓåæΓåô navigate   ENTER confirm");
     
     p.setFont(QFont("Courier New",9));p.setPen(QColor(0,100,55));
     p.drawText(QRect(10,H-14,W/2,14),Qt::AlignLeft,"SCROLL: zoom to see raster pixels   [ ]: pixel block size");
@@ -656,7 +607,7 @@ void MainWindow::renderMapSelect()
     QPainter p(&m_buf);
     p.setFont(QFont("Courier New",16,QFont::Bold));p.setPen(QColor(0,255,140));
     p.drawText(QRect(0,0,W,42),Qt::AlignCenter,"SELECT DEPLOYMENT ZONE");
-    static const char*DIFF2[]={"★★☆","★★★","★★☆"};
+    static const char*DIFF2[]={"ΓÿàΓÿàΓÿå","ΓÿàΓÿàΓÿà","ΓÿàΓÿàΓÿå"};
     for(int i=0;i<3;i++){
         bool sel=(m_mapChoice==i); int cx=W/2-280+i*280,cy=60,cw=240,ch=430;
         p.fillRect(cx-cw/2,cy,cw,ch,QColor(0,sel?20:8,sel?12:5,sel?210:160));
@@ -677,7 +628,7 @@ void MainWindow::renderMapSelect()
         p.setPen(QColor(255,200,80));p.drawText(QRect(cx-cw/2+8,infoY+76,cw-8,18),Qt::AlignCenter,QString("DIFFICULTY: %1").arg(DIFF2[i]));
     }
     p.setFont(QFont("Courier New",10));p.setPen(QColor(60,100,70));
-    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[← →] Navigate    [1/2/3] or [ENTER] Select    [ESC] Back");
+    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[ΓåÉ ΓåÆ] Navigate    [1/2/3] or [ENTER] Select    [ESC] Back");
     p.end();
 }
 
@@ -690,7 +641,7 @@ void MainWindow::renderDiffSelect()
     p.drawText(QRect(0,0,W,42),Qt::AlignCenter,QString("SELECT DIFFICULTY  |  Zone: %1").arg(MAP_NAMES[m_mapChoice]));
 
     static const QColor DIFF_COLORS[3]={QColor(80,200,80),QColor(220,180,0),QColor(220,60,60)};
-    static const char*ICONS[]={"●●○","●●●","●●●"};
+    static const char*ICONS[]={"ΓùÅΓùÅΓùï","ΓùÅΓùÅΓùÅ","ΓùÅΓùÅΓùÅ"};
     for(int i=0;i<3;i++){
         const DiffConfig &dc=DIFF_CFG[i];
         bool sel=(m_difficulty==i);
@@ -727,7 +678,7 @@ void MainWindow::renderDiffSelect()
         mbar(cy+330,dc.dmgReceivedMult/1.5f,i==0?0xFF22CC44:i==1?0xFFCC8800:0xFFCC2200);
     }
     p.setFont(QFont("Courier New",10));p.setPen(QColor(60,100,70));
-    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[← →] Navigate    [1/2/3] or [ENTER] Select    [ESC] Back");
+    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[ΓåÉ ΓåÆ] Navigate    [1/2/3] or [ENTER] Select    [ESC] Back");
     p.end();
 }
 
@@ -759,7 +710,7 @@ void MainWindow::renderCharSelect()
     QPainter p(&m_buf);
     p.setFont(QFont("Courier New",15,QFont::Bold));p.setPen(QColor(0,255,140));
     p.drawText(QRect(0,0,W,42),Qt::AlignCenter,
-               QString("ZONE: %1  |  DIFF: %2  —  SELECT OPERATIVE").arg(MAP_NAMES[m_mapChoice]).arg(DIFF_CFG[m_difficulty].name));
+               QString("ZONE: %1  |  DIFF: %2  ΓÇö  SELECT OPERATIVE").arg(MAP_NAMES[m_mapChoice]).arg(DIFF_CFG[m_difficulty].name));
 
     for(int i=0;i<3;i++){
         const CharProfile &cp=CHAR_PROFILES[i]; bool sel=(m_charChoice==i);
@@ -778,7 +729,7 @@ void MainWindow::renderCharSelect()
         p.drawText(QRect(cx-cw/2+8,infoY+158,cw-8,16),Qt::AlignCenter,cp.stat3);
     }
     p.setFont(QFont("Courier New",10));p.setPen(QColor(60,100,70));
-    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[← →] Browse    [1/2/3] or [ENTER] Deploy    [ESC] Back");
+    p.drawText(QRect(0,H-20,W,18),Qt::AlignCenter,"[ΓåÉ ΓåÆ] Browse    [1/2/3] or [ENTER] Deploy    [ESC] Back");
     p.end();
 }
 
@@ -786,11 +737,11 @@ void MainWindow::renderCharSelect()
 //  GAME RENDERERS
 // =============================================================================
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  1. Floor & Ceiling — sky gradient + procedural clouds (all raster)
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+//  1. Floor & Ceiling ΓÇö sky gradient + procedural clouds (all raster)
 //     Clouds are sinusoidal noise computed per pixel. Press [ to see them
-//     as giant blocks — proves pure per-pixel raster computation.
-// ─────────────────────────────────────────────────────────────────────────────
+//     as giant blocks ΓÇö proves pure per-pixel raster computation.
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::renderFloorCeiling()
 {
     const Player &pl=m_gs.player;
@@ -798,7 +749,7 @@ void MainWindow::renderFloorCeiling()
     int PS=m_pixelScale;
     float facing=atan2f(pl.dirY,pl.dirX);
 
-    // ── Sky / Ceiling ─────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Sky / Ceiling ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     for(int y=0;y<hor&&y<H;y+=PS){
         int sy = std::min(299, std::max(0, y * 300 / std::max(1, hor)));
         for(int x=0;x<W;x+=PS){
@@ -840,10 +791,31 @@ void MainWindow::renderFloorCeiling()
     // Horizon haze line
     for(int x=0;x<W;x++){int hy=std::max(0,std::min(H-1,hor));m_pixels[hy*W+x]=0xFF202830;}
 
-// ─────────────────────────────────────────────────────────────────────────────
-} 
+    // ΓöÇΓöÇ Floor ΓÇö perspective-correct floor cast ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    float rdX0=pl.dirX-pl.planeX*m_adsFOVMult,rdY0=pl.dirY-pl.planeY*m_adsFOVMult;
+    float rdX1=pl.dirX+pl.planeX*m_adsFOVMult,rdY1=pl.dirY+pl.planeY*m_adsFOVMult;
+    for(int y=hor+1;y<H;y+=PS){
+        int p2=y-hor; float rowDist=float(H/2)/float(p2);
+        float sX=rowDist*(rdX1-rdX0)/float(W),sY=rowDist*(rdY1-rdY0)/float(W);
+        float fX=pl.posX+rowDist*rdX0,fY=pl.posY+rowDist*rdY0;
+        float fog=std::max(0.f,1.f-rowDist/14.f);
+        uint32_t fogM = uint32_t(fog*256);
+        for(int x=0;x<W;x+=PS){
+            bool check=((int(fX)+int(fY))&1)==0;
+            uint32_t c_val = check ? 42 : 26;
+            uint8_t r = (c_val * fogM) >> 8;
+            uint8_t g = ((c_val * 220 / 256) * fogM) >> 8;
+            uint8_t b = ((c_val * 160 / 256) * fogM) >> 8;
+            uint32_t fc = (0xFF<<24)|(r<<16)|(g<<8)|b;
+            for(int by=0;by<PS&&y+by<H;by++) for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[(y+by)*W+(x+bx)]=fc;
+            fX+=sX*PS; fY+=sY*PS;
+        }
+    }
+}
+
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //  2. Walls
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::renderWalls()
 {
     const Player &pl=m_gs.player; int shOff=int(pl.shakeY),hor=H/2+shOff+int(m_jumpZ*70.f)+int(m_pitch); int PS=m_pixelScale;
@@ -862,7 +834,7 @@ void MainWindow::renderWalls()
         int wt=m_map[mapY][mapX];
         float hScale=(wt==2)?0.85f:(wt==3)?1.3f:(wt==4)?0.9f:1.0f;
         int lh=std::max(1,int(float(H)/dist*hScale));
-        int ds=std::max(0,hor-lh/2), de=std::min(H-1,hor+lh/2);
+        int ds=std::max(0,hor-lh/2),de=std::min(H-1,hor+lh/2);
         
         float fog=std::max(0.f,1.f-dist/14.f);
         uint32_t fogM = uint32_t(fog*256);
@@ -880,39 +852,11 @@ void MainWindow::renderWalls()
             for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[y*W+(x+bx)]=c;
         }
     }
-
-    // ── Floor — perspective-correct + stepped visual tint ────────────────────
-    float rdX0=pl.dirX-pl.planeX*m_adsFOVMult, rdY0=pl.dirY-pl.planeY*m_adsFOVMult;
-    float rdX1=pl.dirX+pl.planeX*m_adsFOVMult, rdY1=pl.dirY+pl.planeY*m_adsFOVMult;
-    for(int y=hor+1;y<H;y+=PS){
-        int p2=y-hor; if(p2<=0) continue;
-        float rowDist=float(H/2)/float(p2);
-        float sX=rowDist*(rdX1-rdX0)/float(W), sY=rowDist*(rdY1-rdY0)/float(W);
-        float fX=pl.posX+rowDist*rdX0, fY=pl.posY+rowDist*rdY0;
-        float fog=std::max(0.f,1.f-rowDist/14.f);
-        uint32_t fogM = uint32_t(fog*256);
-        for(int x=0;x<W;x+=PS){
-            // Stepped platform tint: hash tile coordinates for height
-            int itx=int(floorf(fX)), ity=int(floorf(fY));
-            int hv=((itx*17+ity*31)^(itx*3+ity))&15;
-            float h=(hv<3)?0.4f:(hv<6)?0.2f:0.f;  // platform heights (well below eye)
-            // Brightness: elevated platforms appear lighter
-            uint32_t base_v = uint32_t(28 + int(h*30) + ((itx*7+ity*11)^itx)%8);
-            uint8_t r = uint8_t((base_v * 95 / 100 * fogM) >> 8);
-            uint8_t g = uint8_t((base_v * 88 / 100 * fogM) >> 8);
-            uint8_t b = uint8_t((base_v * 62 / 100 * fogM) >> 8);
-            uint32_t fc = (0xFF<<24)|(r<<16)|(g<<8)|b;
-            for(int by=0;by<PS&&y+by<H;by++)
-                for(int bx=0;bx<PS&&x+bx<W;bx++) m_pixels[(y+by)*W+(x+bx)]=fc;
-            fX+=sX*PS; fY+=sY*PS;
-        }
-    }
 }
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  3. Sprites — enemies + bullets + medkits + enemy HP bars
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+//  3. Sprites ΓÇö enemies + bullets + medkits + enemy HP bars
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::renderSprites()
 {
     const Player &pl=m_gs.player;
@@ -1030,10 +974,10 @@ void MainWindow::renderParticles()
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  5. Weapon & Arms  — realistic tactical pistol + gloved arms
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+//  5. Weapon & Arms  ΓÇö realistic tactical pistol + gloved arms
 //     All drawing uses fillRect/fillCircle/drawLine (pure raster)
-// ─────────────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 void MainWindow::renderWeaponAndArms()
 {
     Player &pl=m_gs.player;
@@ -1048,10 +992,10 @@ void MainWindow::renderWeaponAndArms()
     int GS=ads?80:100;  // global scale
     auto g=[&](int v)->int{return v*GS/100;};
 
-    // ── SUPPORT HAND / LEFT ARM ───────────────────────────────────────────────
+    // ΓöÇΓöÇ SUPPORT HAND / LEFT ARM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     if(!ads){
         int lx=W/2-105+int(bobX*.4f),ly=ry-88;
-        // Forearm (tapers toward wrist — 3 segments)
+        // Forearm (tapers toward wrist ΓÇö 3 segments)
         fillRect(lx-24,ly+30,48,H-(ly+30),cp.sleeve);   // upper sleeve
         fillRect(lx-22,ly+26,44,H-(ly+26),cp.sleeveHi); // sleeve detail
         // Forearm muscle definition (lighter stripe along top)
@@ -1067,7 +1011,7 @@ void MainWindow::renderWeaponAndArms()
         fillRect(lx-14,ly-5,5,8,glove); // thumb
     }
 
-    // ── PISTOL — high-detail tactical model ──────────────────────────────────
+    // ΓöÇΓöÇ PISTOL ΓÇö high-detail tactical model ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // Drawing from bottom to top (barrel tip is at top)
 
     // --- Magazine (extends below grip) ---
@@ -1077,7 +1021,7 @@ void MainWindow::renderWeaponAndArms()
     // --- Grip ---
     fillRect(rx-g(10), ry+g(0), g(20), g(50), 0xFF1C1C28); // grip body
     fillRect(rx-g(10), ry+g(0), g(20), g(2), 0xFF2A2A38);  // top of grip
-    // Stippling texture (grip pattern — individual dots, proves raster)
+    // Stippling texture (grip pattern ΓÇö individual dots, proves raster)
     for(int row=0;row<5;row++) for(int col=0;col<3;col++)
         fillCircle(rx-g(6)+col*g(5), ry+g(8)+row*g(8), g(1), 0xFF0A0A14);
     // Right side panel
@@ -1100,7 +1044,7 @@ void MainWindow::renderWeaponAndArms()
     fillRect(rx-g(13), ry-g(34), g(20), g(4), 0xFF1E1E28);
     for(int s=0;s<4;s++) fillRect(rx-g(13)+s*g(5), ry-g(34), g(4), g(4), 0xFF2A2A36); // rail slots
 
-    // --- Slide (upper receiver) — main body ---
+    // --- Slide (upper receiver) ΓÇö main body ---
     fillRect(rx-g(13), ry-g(110), g(26), g(80), 0xFF373740); // slide main
     fillRect(rx-g(13), ry-g(110), g(2), g(80), 0xFF454550); // left edge highlight
     fillRect(rx+g(11), ry-g(110), g(2), g(80), 0xFF202028); // right edge shadow
@@ -1143,7 +1087,7 @@ void MainWindow::renderWeaponAndArms()
     fillRect(rx-g(4), ry-g(34), g(8), g(4), 0xFF404050);
     fillRect(rx-g(2), ry-g(37), g(4), g(5), 0xFF303040);
 
-    // ── FIRING HAND / RIGHT ARM ───────────────────────────────────────────────
+    // ΓöÇΓöÇ FIRING HAND / RIGHT ARM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     uint32_t glove=0xFF1A1A20, gloveHi=0xFF252530;
     // Upper forearm / sleeve
     fillRect(rx-g(22), ry+g(45), g(44), H-(ry+g(45)), cp.sleeve);
@@ -1167,7 +1111,7 @@ void MainWindow::renderWeaponAndArms()
     fillRect(rx-g(18), ry+g(39), g(5), g(6), 0xFF001828); // watch face
     fillRect(rx-g(17), ry+g(40), g(3), g(1), 0xFF00FFAA); // digital readout
 
-    // ── ADS scope ─────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ ADS scope ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     if(ads&&m_adsFOVMult<0.7f){
         int sCx=W/2,sCy=H/2;
         fillCircle(sCx,sCy,62,0xFF000000);
@@ -1194,7 +1138,7 @@ void MainWindow::renderWeaponAndArms()
         }
     }
 
-    // ── Muzzle flash ──────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Muzzle flash ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     if(pl.flashTimer>0){
         float t=pl.flashTimer/0.14f;
         int fx=rx, fy=ry-g(118);
@@ -1253,9 +1197,9 @@ void MainWindow::renderTopBar()
         const int cw=280; float ppd=float(cw)/90.f;
         static const struct{float deg;const char*lbl;}DIRS[]={{0,"N"},{45,"NE"},{90,"E"},{135,"SE"},{180,"S"},{225,"SW"},{270,"W"},{315,"NW"}};
         for(auto &d:DIRS)for(int wrap=-1;wrap<=1;wrap++){float delta=fmodf(d.deg+wrap*360.f-dh+360.f,360.f);if(delta>180)delta-=360.f;if(fabs(delta)>100)continue;int lx=W/2+int(delta*ppd);bool isCard=(int(d.deg)%90==0);p.setFont(QFont("Courier New",isCard?11:8,isCard?QFont::Bold:QFont::Normal));p.setPen(isCard?QColor(0,255,140):QColor(80,150,100));p.drawText(QRect(lx-16,4,32,18),Qt::AlignCenter,d.lbl);}
-        p.setPen(QColor(255,80,80));p.setFont(QFont("Courier New",10,QFont::Bold));p.drawText(QRect(W/2-8,21,16,16),Qt::AlignCenter,"▼");
+        p.setPen(QColor(255,80,80));p.setFont(QFont("Courier New",10,QFont::Bold));p.drawText(QRect(W/2-8,21,16,16),Qt::AlignCenter,"Γû╝");
         static const char*CARD8[]={"N","NE","E","SE","S","SW","W","NW"};int ci=int((dh+22.5f)/45.f)%8;
-        p.setFont(QFont("Courier New",9));p.setPen(QColor(180,180,180));p.drawText(QRect(W/2+140,8,60,22),Qt::AlignLeft,QString("%1° %2").arg(int(dh)).arg(CARD8[ci]));
+        p.setFont(QFont("Courier New",9));p.setPen(QColor(180,180,180));p.drawText(QRect(W/2+140,8,60,22),Qt::AlignLeft,QString("%1┬░ %2").arg(int(dh)).arg(CARD8[ci]));
     }
     p.setFont(QFont("Courier New",10,QFont::Bold));p.setPen(QColor(255,190,60));
     p.drawText(QRect(W-200,0,190,40),Qt::AlignRight|Qt::AlignVCenter,QString("SCORE %1  |  %2 FPS").arg(m_gs.score).arg(int(m_fps)));
@@ -1313,9 +1257,9 @@ void MainWindow::renderHealthPanel()
     int staDots=12; float staF=pl.stamina/cp.stamina;
     for(int d=0;d<staDots;d++){bool filled=float(d)/staDots<staF;fillCircle(PX+8+d*14,PY+52,5,filled?(pl.sprinting?0xFFFFCC00:0xFF2288FF):0xFF0A1018);}
     QPainter p2(&m_buf);p2.setFont(QFont("Courier New",10,QFont::Bold));p2.setPen(QColor(0,255,140));
-    p2.drawText(PX+2,PY+14,QString("♥  %1 / %2").arg(pl.hp).arg(cp.hp));
+    p2.drawText(PX+2,PY+14,QString("ΓÖÑ  %1 / %2").arg(pl.hp).arg(cp.hp));
     p2.setPen(pl.sprinting?QColor(255,200,0):QColor(60,140,255));
-    p2.drawText(PX+2,PY+68,QString("⚡  %1%%").arg(int(100.f*pl.stamina/cp.stamina)));p2.end();
+    p2.drawText(PX+2,PY+68,QString("ΓÜí  %1%%").arg(int(100.f*pl.stamina/cp.stamina)));p2.end();
 }
 
 void MainWindow::renderAmmoPanel()
@@ -1328,10 +1272,10 @@ void MainWindow::renderAmmoPanel()
     for(int i=0;i<cp.ammo;i++){bool loaded=i<pl.ammo;int col2=i%dotsPerRow,row=i/dotsPerRow;fillRect(PX+6+col2*12,PY+22+row*14,8,10,loaded?0xFFFFCC44:0xFF332211);if(loaded)fillRect(PX+7+col2*12,PY+22+row*14,6,3,0xFFFFEE88);}
     int kitsLeft=0;for(const auto &k:m_gs.healthKits)if(k.active)kitsLeft++;
     QPainter p2(&m_buf);p2.setFont(QFont("Courier New",11,QFont::Bold));p2.setPen(QColor(255,180,60));
-    p2.drawText(QRect(PX,PY+2,PW-4,18),Qt::AlignRight,QString("%1 / %2  ◉").arg(pl.ammo).arg(cp.ammo));
+    p2.drawText(QRect(PX,PY+2,PW-4,18),Qt::AlignRight,QString("%1 / %2  Γùë").arg(pl.ammo).arg(cp.ammo));
     p2.setFont(QFont("Courier New",8));p2.setPen(QColor(160,110,50));
     p2.drawText(QRect(PX,PY+PH-14,PW-4,14),Qt::AlignRight,
-                QString("PISTOL MK.II   ✚%1 kits").arg(kitsLeft));
+                QString("PISTOL MK.II   Γ£Ü%1 kits").arg(kitsLeft));
     p2.end();
 }
 
@@ -1403,7 +1347,7 @@ void MainWindow::renderKillFeed()
         p2.fillRect(W-195,y,190,20,QColor(0,0,0,int(140*t)));
         p2.fillRect(W-195,y,3,20,QColor(0,int(255*t),int(140*t),alpha));
         p2.setFont(QFont("Courier New",10,QFont::Bold));p2.setPen(QColor(0,int(255*t),int(140*t),alpha));
-        p2.drawText(QRect(W-190,y,185,20),Qt::AlignLeft|Qt::AlignVCenter," ▸ "+kf.text);y+=22;
+        p2.drawText(QRect(W-190,y,185,20),Qt::AlignLeft|Qt::AlignVCenter," Γû╕ "+kf.text);y+=22;
     }
     p2.end();
 }
@@ -1418,7 +1362,7 @@ void MainWindow::renderHUD()
     if(pl.ammo<=3&&pl.ammo>0){p.setFont(QFont("Courier New",13,QFont::Bold));p.setPen(QColor(255,80,0,int(200+55*sinf(m_gs.frameNum*.25f))));p.drawText(QRect(0,H-50,W,20),Qt::AlignCenter,"LOW AMMO");}
     else if(pl.ammo==0){p.setFont(QFont("Courier New",13,QFont::Bold));p.setPen(QColor(255,30,30));p.drawText(QRect(0,H-50,W,20),Qt::AlignCenter,"NO AMMO");}
     if(pl.hp<=20&&!m_gs.gameOver){p.setFont(QFont("Courier New",11,QFont::Bold));p.setPen(QColor(255,0,0,int(140+115*sinf(m_gs.frameNum*.3f))));p.drawText(QRect(0,H-66,W,20),Qt::AlignCenter,"CRITICAL HEALTH");}
-    if(m_pixelScale>1){p.setFont(QFont("Courier New",9));p.setPen(QColor(0,120,60,160));p.drawText(QRect(0,H-14,W,12),Qt::AlignCenter,QString("BLOCK: %1×%1 px  |  ZOOM %2×").arg(m_pixelScale).arg(m_zoomFactor,0,'f',1));}
+    if(m_pixelScale>1){p.setFont(QFont("Courier New",9));p.setPen(QColor(0,120,60,160));p.drawText(QRect(0,H-14,W,12),Qt::AlignCenter,QString("BLOCK: %1├ù%1 px  |  ZOOM %2├ù").arg(m_pixelScale).arg(m_zoomFactor,0,'f',1));}
     if(m_gs.frameNum<300&&m_gs.level==1){p.fillRect(0,H-26,W,26,QColor(0,0,0,160));p.setFont(QFont("Courier New",9));p.setPen(QColor(0,140,70));p.drawText(QRect(0,H-13,W,12),Qt::AlignCenter,"WASD:move  SHIFT:sprint  RMB:ADS  Space/LMB:fire  Q/E:turn  M:menu  ESC:pause  [ ]:pixelblocks  SCROLL:zoom");}
     p.end();
 }
@@ -1486,7 +1430,7 @@ void MainWindow::render()
     if(m_gs.gameOver) drawGameOver(m_buf,m_gs,m_charChoice,m_difficulty);
 }
 
-// Nearest-neighbor scaling — chunky pixels when zoomed = raster proof
+// Nearest-neighbor scaling ΓÇö chunky pixels when zoomed = raster proof
 void MainWindow::paintEvent(QPaintEvent *)
 {
     QPainter p(this);

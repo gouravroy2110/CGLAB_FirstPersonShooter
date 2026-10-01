@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 //  mainwindow.h
 // =============================================================================
 #pragma once
@@ -34,7 +34,7 @@ private slots:
     void tick();
 
 private:
-    // ── Framebuffer ──────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Framebuffer ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     QImage    m_buf;
     uint32_t *m_pixels;
     float     m_zBuf[W];
@@ -45,12 +45,13 @@ private:
     uint32_t  m_textures[5][64*64];
     uint8_t   m_vignette[H][W];
 
-    // ── Zoom / pixel-scale (raster proof for professor) ───────────────────────
+    // ΓöÇΓöÇ Zoom / pixel-scale (raster proof for professor) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     float m_zoomFactor = 1.f;
     int   m_pixelScale = 1;
 
-    // ── ADS smooth lerp ───────────────────────────────────────────────────────
+    // ΓöÇΓöÇ ADS smooth lerp ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     float m_adsFOVMult = 1.f;
+    float m_pitch = 0.f;
     // Jump state
     float m_jumpZ    = 0.f;
     float m_jumpVelZ = 0.f;
@@ -58,10 +59,8 @@ private:
     float m_casingTimer = 0.f;
     float m_casingX = 0.f, m_casingY = 0.f;
     float m_casingVX = 0.f, m_casingVY = 0.f;
-    // Vertical look (pitch)
-    float m_pitch = 0.f;
 
-    // ── Loop ─────────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Loop ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     QTimer        m_timer;
     QElapsedTimer m_clock;
     double        m_lastMs = 0;
@@ -69,10 +68,10 @@ private:
     float         m_dt     = 0.016f;
     int           m_menuFrame = 0;
 
-    // ── Input ────────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Input ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     std::set<int> m_keys;
 
-    // ── UI state ─────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ UI state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     GameScreen m_screen     = SCR_MENU;
     bool       m_paused     = false;
     int        m_mapChoice  = 0;
@@ -80,7 +79,7 @@ private:
     int        m_difficulty = 1;   // 0=Easy 1=Medium 2=Hard
     int        m_menuCursor = 0;
 
-    // ── Visual feedback ───────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Visual feedback ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     float m_hitMarker      = 0.f;
     float m_damageAngle    = 0.f;
     float m_damageDirTimer = 0.f;
@@ -94,10 +93,10 @@ private:
     struct KFEntry { QString text; float life; };
     std::vector<KFEntry> m_killFeed;
 
-    // ── Game ─────────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Game ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     GameState m_gs;
 
-    // ── Logic ────────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Logic ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     void initGame();
     void loadLevel(int lv);
     void gameStep(float dt);
@@ -110,14 +109,14 @@ private:
     void spawnPickup(float x, float y);
     void renderPickupSprites();
 
-    // ── Screens ───────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Screens ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     void drawMenuBg();
     void renderMenu();
     void renderMapSelect();
     void renderDiffSelect();
     void renderCharSelect();
 
-    // ── Game pipeline ─────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Game pipeline ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     void render();
     void renderFloorCeiling();   // sky+clouds ceiling, perspective floor
     void renderWalls();
@@ -129,7 +128,7 @@ private:
     void renderLevelBanner();
     void renderPauseMenu();
 
-    // ── HUD sub-renderers ─────────────────────────────────────────────────────
+    // ΓöÇΓöÇ HUD sub-renderers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     void renderTopBar();
     void renderRadar();
     void renderHealthPanel();
@@ -140,13 +139,13 @@ private:
     void renderComboDisplay();
     void renderKillFeed();
 
-    // ── Pixel helpers (pure raster — writes directly to m_pixels) ────────────
+    // ΓöÇΓöÇ Pixel helpers (pure raster ΓÇö writes directly to m_pixels) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     inline void  px(int x, int y, uint32_t c);
     void fillRect(int x, int y, int w, int h, uint32_t c);
     void fillCircle(int cx, int cy, int r, uint32_t c);
     void drawLine(int x0, int y0, int x1, int y1, uint32_t c);
 
-    // ── Color helpers ─────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Color helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     static uint32_t fogBlend(uint32_t col, float dist);
     static uint32_t dimColor(uint32_t col, float bright);
     static uint32_t wallPixel(int type, float wx, float wy, int side, float dist);
