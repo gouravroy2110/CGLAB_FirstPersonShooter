@@ -157,6 +157,7 @@ void MainWindow::initGame()
 
     m_combo=0; m_comboTimer=0; m_comboDisplay=0;
     m_hitMarker=0; m_damageDirTimer=0;
+    m_pitch=0.f; m_jumpZ=0.f; m_jumpVelZ=0.f;
     m_killFeed.clear();
     std::memset(m_enemyHPDisplay, 0, sizeof(m_enemyHPDisplay));
     loadLevel(1);
@@ -279,19 +280,9 @@ void MainWindow::gameStep(float dt)
     if(m_keys.count(Qt::Key_A)){mx+=pl.dirY;my-=pl.dirX;}
     if(m_keys.count(Qt::Key_D)){mx-=pl.dirY;my+=pl.dirX;}
     float len=sqrtf(mx*mx+my*my); if(len>0.001f){mx/=len;my/=len;}
-    float nx=pl.posX+mx*SPD,ny=pl.posY+my*SPD;
-    // Terrain height step collision — can't walk up ledges without jumping
-    auto tileHfn=[](float fx,float fy)->float{
-        int tx=int(floorf(fx)),ty=int(floorf(fy));
-        int h=((tx*17+ty*31)^(tx*3+ty))&15;
-        return (h<3)?0.55f:(h<6)?0.28f:0.f;
-    };
-    float srcH=tileHfn(pl.posX,pl.posY);
-    float dstHx=tileHfn(nx,pl.posY), dstHy=tileHfn(pl.posX,ny);
-    // Block if destination platform > source by more than jump can clear
-    float jumpH=m_jumpZ;
-    if(posValid(nx,pl.posY) && (dstHx <= srcH+0.15f || jumpH > dstHx-srcH-0.05f)) pl.posX=nx;
-    if(posValid(pl.posX,ny) && (dstHy <= srcH+0.15f || jumpH > dstHy-srcH-0.05f)) pl.posY=ny;
+    float nx=pl.posX+mx*SPD, ny=pl.posY+my*SPD;
+    if(posValid(nx,pl.posY)) pl.posX=nx;
+    if(posValid(pl.posX,ny)) pl.posY=ny;
     if(moving)pl.bobPhase+=dt*(pl.sprinting?8.f:4.f); else pl.bobPhase*=0.85f;
 
     // Health kit pickup
@@ -476,6 +467,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if(e->key()==Qt::Key_Space && m_jumpZ<=0.001f) m_jumpVelZ=5.5f;
     if(e->key()==Qt::Key_F) fireBullet();
     if(e->key()==Qt::Key_E) tryOpenDoor();
+    if(e->key()==Qt::Key_C) m_pitch=0.f;  // centre look
     if(e->key()==Qt::Key_Escape){if(m_paused)QApplication::quit();else m_paused=true;}
     if(e->key()==Qt::Key_R){if(m_paused)m_paused=false;if(m_gs.gameOver){initGame();m_paused=false;}}
     if(e->key()==Qt::Key_Q&&(m_paused||m_gs.gameOver)) QApplication::quit();
@@ -494,17 +486,24 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e){
     if(m_screen!=SCR_PLAYING||m_paused||m_gs.gameOver)return;
     int cx=width()/2, cy=height()/2;
     float dxf=float(e->x()-cx), dyf=float(e->y()-cy);
-    if(std::fabs(dxf)<1.f && std::fabs(dyf)<1.f) return;
+    // Dead zone: skip only when BOTH axes are essentially zero
+    if(std::fabs(dxf)<0.5f && std::fabs(dyf)<0.5f) return;
     // Horizontal rotation
     float sens = m_gs.player.adsMode ? 0.0008f : 0.0015f;
-    float rot2 = dxf * -sens;
-    Player &pl=m_gs.player; float ox=pl.dirX,op=pl.planeX;
-    pl.dirX=pl.dirX*cosf(rot2)+pl.dirY*sinf(rot2);pl.dirY=-ox*sinf(rot2)+pl.dirY*cosf(rot2);
-    pl.planeX=pl.planeX*cosf(rot2)+pl.planeY*sinf(rot2);pl.planeY=-op*sinf(rot2)+pl.planeY*cosf(rot2);
-    // Vertical look (pitch)
-    float pitchSens = m_gs.player.adsMode ? 0.35f : 0.55f;
-    m_pitch += dyf * pitchSens;
-    m_pitch = std::max(-220.f, std::min(220.f, m_pitch));
+    if(std::fabs(dxf)>=0.5f){
+        float rot2 = dxf * -sens;
+        Player &pl=m_gs.player; float ox=pl.dirX,op=pl.planeX;
+        pl.dirX=pl.dirX*cosf(rot2)+pl.dirY*sinf(rot2);
+        pl.dirY=-ox*sinf(rot2)+pl.dirY*cosf(rot2);
+        pl.planeX=pl.planeX*cosf(rot2)+pl.planeY*sinf(rot2);
+        pl.planeY=-op*sinf(rot2)+pl.planeY*cosf(rot2);
+    }
+    // Vertical look (pitch) — fully free up/down
+    if(std::fabs(dyf)>=0.5f){
+        float pitchSens = m_gs.player.adsMode ? 0.4f : 0.65f;
+        m_pitch += dyf * pitchSens;
+        m_pitch = std::max(-240.f, std::min(240.f, m_pitch));
+    }
     QCursor::setPos(mapToGlobal(QPoint(cx, cy)));
 }
 void MainWindow::wheelEvent(QWheelEvent *e){
