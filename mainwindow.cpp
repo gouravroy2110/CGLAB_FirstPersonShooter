@@ -498,17 +498,27 @@ void MainWindow::updateEnemies(float dt)
         float ez = floorH(e.x, e.y) + 0.62f;
         float detectRange = e.aggroRange * 1.5f;
         bool los = d < std::max(18.f, detectRange) && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, m_footZ + 0.5f);
-        if (los && d < detectRange) e.state = ES_ALERT;
+        if (los && d < detectRange) {
+            e.state = ES_ALERT;
+            e.alertDist = 0.f; // Player detected! From this point onwards, pursue normally
+        }
 
         // Pick a movement vector
         float vx = 0, vy = 0, spd = 0;
         if (e.state == ES_ALERT) {
-            float ux = d > 0.01f ? dx / d : 0, uy = d > 0.01f ? dy / d : 0;
-            e.strafeTimer -= dt;
-            if (e.strafeTimer <= 0) { e.strafeTimer = frand(0.8f, 2.2f); e.moveX = frand() < 0.5f ? -1.f : 1.f; }
-            if (!los || d > 5.5f)      { vx = ux; vy = uy; spd = 1.35f; }
-            else if (d < 2.2f)         { vx = -ux; vy = -uy; spd = 1.0f; }
-            else                       { vx = -uy * e.moveX; vy = ux * e.moveX; spd = 0.9f; }
+            if (e.alertDist > 0.f) {
+                // Running in the direction the bullet came from until player is detected
+                vx = e.alertDirX;
+                vy = e.alertDirY;
+                spd = 1.35f;
+            } else {
+                float ux = d > 0.01f ? dx / d : 0, uy = d > 0.01f ? dy / d : 0;
+                e.strafeTimer -= dt;
+                if (e.strafeTimer <= 0) { e.strafeTimer = frand(0.8f, 2.2f); e.moveX = frand() < 0.5f ? -1.f : 1.f; }
+                if (!los || d > 5.5f)      { vx = ux; vy = uy; spd = 1.35f; }
+                else if (d < 2.2f)         { vx = -ux; vy = -uy; spd = 1.0f; }
+                else                       { vx = -uy * e.moveX; vy = ux * e.moveX; spd = 0.9f; }
+            }
             if (e.hitFlash > 0) spd *= 0.3f;            // staggered
             if (e.shootAnim > 0) spd = 0;
         } else {
@@ -542,8 +552,26 @@ void MainWindow::updateEnemies(float dt)
         e.moving = moved > 0.0005f;
         if (e.moving) e.walkPhase += moved * 1.3f;
 
+        // Progress distance travelled in bullet direction
+        if (e.state == ES_ALERT && e.alertDist > 0.f) {
+            if (moved > 0.0005f) {
+                e.alertDist -= moved;
+            } else {
+                // If blocked by a wall or obstacle, count down search time faster
+                e.alertDist -= dt * 3.5f;
+            }
+            if (e.alertDist <= 0.f) {
+                e.alertDist = 0.f;
+                // If reached destination without detecting player, return to idle
+                if (!(los && d < detectRange)) {
+                    e.state = ES_IDLE;
+                    e.wanderTimer = frand(1.0f, 2.5f);
+                }
+            }
+        }
+
         // Fire
-        if (e.state == ES_ALERT && los && d < e.aggroRange && e.fireCooldown <= 0 && e.hitFlash <= 0) {
+        if (e.state == ES_ALERT && e.alertDist <= 0.f && los && d < e.aggroRange && e.fireCooldown <= 0 && e.hitFlash <= 0) {
             enemyFire(e);
             e.shootAnim = 0.2f;
             e.fireCooldown = m_gs.enemyFireRate * frand(0.7f, 1.3f) * (e.elite ? 0.6f : 1.f);
@@ -646,7 +674,31 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     Enemy &e = m_gs.enemies[idx];
     if (!e.alive) return;
     bool head = part == PART_HEAD;
-    e.hp -= dmg; e.hitFlash = 0.16f; e.state = ES_ALERT;
+    e.hp -= dmg; e.hitFlash = 0.16f;
+
+    Player &pl = m_gs.player;
+    float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
+    float ez = floorH(e.x, e.y) + 0.62f;
+    float detectRange = e.aggroRange * 1.5f;
+    bool los = d < std::max(18.f, detectRange) && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, m_footZ + 0.5f);
+
+    e.state = ES_ALERT;
+    if (los && d < detectRange) {
+        // Player is within detection range: alert and pursue normally
+        e.alertDist = 0.f;
+    } else {
+        // Player is out of detection range: run in the direction the bullet came from
+        if (d > 0.01f) {
+            e.alertDirX = dx / d;
+            e.alertDirY = dy / d;
+        } else {
+            e.alertDirX = 0.f;
+            e.alertDirY = 0.f;
+        }
+        // Run in the bullet direction for a certain distance (up to 12 units)
+        e.alertDist = std::max(6.0f, std::min(d, 12.0f));
+    }
+
     m_hitMarker = 0.25f;
     if (head) m_headMarker = 0.35f;
     if (idx < 12) m_enemyHPDisplay[idx] = 2.2f;

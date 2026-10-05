@@ -175,6 +175,7 @@ struct Enemy {
     float moveX=0, moveY=0, strafeTimer=0, wanderTimer=0;
     bool  moving=false, killedByHeadshot=false;
     bool  elite=false;           // vault guard: tougher, faster, darker kit
+    float alertDirX=0.f, alertDirY=0.f, alertDist=0.f;
 };
 
 // --- Projectiles -------------------------------------------------------------
