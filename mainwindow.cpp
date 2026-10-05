@@ -346,8 +346,16 @@ void MainWindow::gameStep(float dt)
     float len = std::sqrt(mx * mx + my * my); if (len > 0.001f) { mx /= len; my /= len; }
     float nx = pl.posX + mx * SPD, ny = pl.posY + my * SPD;
     // Ground under the feet may rise at most a step (0.32) unless we're mid-jump above it
-    if (canStep(nx, pl.posY, m_footZ, 0.32f)) pl.posX = nx;
-    if (canStep(pl.posX, ny, m_footZ, 0.32f)) pl.posY = ny;
+    bool canMoveX = canStep(nx, pl.posY, m_footZ, 0.32f);
+    bool canMoveY = canStep(pl.posX, ny, m_footZ, 0.32f);
+
+    // If movement directly into a wall is blocked, suppress sliding along the wall surface
+    // when motion is perpendicular to the wall (i.e. no intentional motion parallel to the wall face)
+    if (!canMoveX && canMoveY && std::fabs(my) <= 0.40f * std::fabs(mx)) canMoveY = false;
+    if (!canMoveY && canMoveX && std::fabs(mx) <= 0.40f * std::fabs(my)) canMoveX = false;
+
+    if (canMoveX) pl.posX = nx;
+    if (canMoveY) pl.posY = ny;
 
     // Vertical: gravity, landing, sticking to slopes when walking downhill
     float g = floorH(pl.posX, pl.posY);
