@@ -84,14 +84,15 @@ struct DiffConfig {
     float enemyHPMult, fireCoolMult, bulletSpeedMult, dmgReceivedMult, speedBonus;
     int   numKits;
     float enemyAccuracy;   // 0..1, scales enemy aim spread
+    float aggroRangeMult;  // multiplier for enemy aggro & detection range
 };
 static const DiffConfig DIFF_CFG[3] = {
     {"EASY",   "Enemy HP:    60%", "Fire Rate:   slow",  "Kits: 6  DMG: -45%",
-     0.60f, 2.0f,  0.70f, 0.55f, 0.2f, 6, 0.55f},
+     0.60f, 2.0f,  0.70f, 0.55f, 0.2f, 6, 0.55f, 0.85f},
     {"MEDIUM", "Enemy HP:   100%", "Fire Rate: normal", "Kits: 4  DMG: 100%",
-     1.00f, 1.0f,  1.00f, 1.00f, 0.0f, 4, 0.75f},
+     1.00f, 1.0f,  1.00f, 1.00f, 0.0f, 4, 0.75f, 1.00f},
     {"HARD",   "Enemy HP:   160%", "Fire Rate:  fast",  "Kits: 2  DMG: +50%",
-     1.60f, 0.55f, 1.30f, 1.50f, 0.0f, 2, 0.9f},
+     1.60f, 0.55f, 1.30f, 1.50f, 0.0f, 2, 0.90f, 1.35f},
 };
 
 // --- Character profiles ------------------------------------------------------

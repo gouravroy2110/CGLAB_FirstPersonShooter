@@ -151,7 +151,8 @@ void MainWindow::loadLevel(int lv)
     auto addEnemy = [&](float x, float y, bool elite) {
         Enemy e; e.x = x; e.y = y; e.elite = elite;
         e.hp = e.maxHp = elite ? hp * 2 : hp;
-        e.aggroRange = elite ? cfg.aggroRange + 3.f : cfg.aggroRange;
+        float baseRange = elite ? cfg.aggroRange + 3.f : cfg.aggroRange;
+        e.aggroRange = baseRange * dc.aggroRangeMult;
         e.fireCooldown = frand(1.f, 3.f) * dc.fireCoolMult;
         e.wanderTimer = frand(0.f, 3.f);
         e.walkPhase = frand();
@@ -495,8 +496,9 @@ void MainWindow::updateEnemies(float dt)
 
         float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
         float ez = floorH(e.x, e.y) + 0.62f;
-        bool los = d < 18.f && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, m_footZ + 0.5f);
-        if (los && d < e.aggroRange * 1.5f) e.state = ES_ALERT;
+        float detectRange = e.aggroRange * 1.5f;
+        bool los = d < std::max(18.f, detectRange) && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, m_footZ + 0.5f);
+        if (los && d < detectRange) e.state = ES_ALERT;
 
         // Pick a movement vector
         float vx = 0, vy = 0, spd = 0;
