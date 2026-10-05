@@ -87,15 +87,23 @@ void MainWindow::initGame()
     pl.stamina         = cp.stamina;
     pl.speedMult       = cp.speedMult + dc.speedBonus;
     pl.damageReduction = cp.damageReduction;
+    pl.owned[WPN_KNIFE] = true;
+    pl.owned[WPN_PISTOL] = true;
+    pl.owned[WPN_SHOTGUN] = false;
+    pl.owned[WPN_RIFLE] = false;
     pl.curWeapon = WPN_PISTOL;
+    pl.mag[WPN_KNIFE] = 0;
+    pl.reserve[WPN_KNIFE] = 0;
     pl.mag[WPN_PISTOL] = WEAPONS[WPN_PISTOL].magSize;
     pl.reserve[WPN_PISTOL] = cp.ammo * 2;
+    m_knifeSwing = 0;
 
     m_combo = 0; m_comboTimer = 0; m_comboDisplay = 0;
     m_pitch = 0; m_recoilPitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f; m_adsT = 0; m_adsFOVMult = 1;
     m_hitMarker = m_headMarker = m_killMarker = m_headshotBanner = 0; m_damageDirTimer = 0;
     m_velZ = 0; m_onGround = true; m_acidAcc = 0; m_kick = m_actionT = 0; m_pendingWeapon = -1;
     m_killFeed.clear(); m_casings.clear();
+    m_emergencyAmmoCooldown = 0.f; m_emergencyHealthCooldown = 0.f;
     std::memset(m_enemyHPDisplay, 0, sizeof(m_enemyHPDisplay));
     loadLevel(1);
     m_paused = false;
@@ -118,6 +126,7 @@ void MainWindow::loadLevel(int lv)
     m_gs.levelComplete = false; m_gs.levelTransTimer = 0;
     m_gs.bullets.clear(); m_gs.tracers.clear(); m_gs.particles.clear(); m_gs.healthKits.clear();
     m_gs.weaponPickups.clear(); m_gs.damageNums.clear();
+    m_emergencyAmmoCooldown = 0.f; m_emergencyHealthCooldown = 0.f;
     m_gs.enemyBulletSpeed = cfg.bulletSpeed  * dc.bulletSpeedMult;
     m_gs.enemyFireRate    = cfg.fireCooldown * dc.fireCoolMult;
 
@@ -125,7 +134,9 @@ void MainWindow::loadLevel(int lv)
     if (lv > 1) {
         pl.hp = std::min(pl.hp + 30, CHAR_PROFILES[m_charChoice].hp);
         int w = pl.curWeapon;
-        pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize, WEAPONS[w].maxReserve);
+        if (w != WPN_KNIFE) {
+            pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize, WEAPONS[w].maxReserve);
+        }
         pl.damageFlash = 0;
     }
 
@@ -252,7 +263,7 @@ void MainWindow::advance(float dt)
     // Recoil / animation decay
     m_kick *= std::exp(-dt * 9.f);
     m_camKick *= std::exp(-dt * 14.f);
-    m_actionT = std::max(0.f, m_actionT - dt * (pl.curWeapon == WPN_SHOTGUN ? 1.4f : 9.f));
+    m_actionT = std::max(0.f, m_actionT - dt * (pl.curWeapon == WPN_SHOTGUN ? 1.4f : (pl.curWeapon == WPN_KNIFE ? 4.8f : 9.f)));
     m_flashLight = std::max(0.f, m_flashLight - dt * 16.f);
     float rec = m_recoilPitch * std::min(1.f, dt * 5.f);
     m_pitch -= rec; m_recoilPitch -= rec;
@@ -401,14 +412,21 @@ void MainWindow::gameStep(float dt)
         if (dx * dx + dy * dy >= 0.35f || std::fabs(m_footZ - floorH(wp.x, wp.y)) > 0.6f) continue;
         wp.active = false;
         if (wp.type == PICKUP_INTEL) {
-            for (int w = 0; w < WPN_COUNT; w++) if (pl.owned[w]) pl.reserve[w] = WEAPONS[w].maxReserve;
+            for (int w = WPN_PISTOL; w < WPN_COUNT; w++) if (pl.owned[w]) pl.reserve[w] = WEAPONS[w].maxReserve;
             pl.hp = CHAR_PROFILES[m_charChoice].hp;
             m_gs.score += 1000;
             pushFeed("INTEL RECOVERED  +1000", 4.5f, true);
         } else if (wp.type == PICKUP_AMMO) {
-            for (int w = 0; w < WPN_COUNT; w++) if (pl.owned[w])
-                pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize, WEAPONS[w].maxReserve);
-            pushFeed("+ AMMO", 3.f);
+            bool isScavenger = wp.emergency;
+            for (int w = WPN_PISTOL; w < WPN_COUNT; w++) if (pl.owned[w]) {
+                int add = isScavenger ? WEAPONS[w].magSize : (WEAPONS[w].magSize * 2);
+                pl.reserve[w] = std::min(pl.reserve[w] + add, WEAPONS[w].maxReserve);
+            }
+            if (isScavenger) pushFeed("+ SCAVENGER RATIONS (1 MAG)", 3.5f);
+            else pushFeed("+ AMMO", 3.f);
+            if (pl.mag[pl.curWeapon] == 0 && pl.reserve[pl.curWeapon] > 0 && pl.reloadTimer <= 0) {
+                startReload();
+            }
         } else {
             int w = wp.type == PICKUP_SHOTGUN ? WPN_SHOTGUN : WPN_RIFLE;
             bool had = pl.owned[w];
@@ -419,6 +437,8 @@ void MainWindow::gameStep(float dt)
             if (!had) switchWeapon(w);
         }
     }
+
+    checkEmergencyDrops(dt);
 
     updateEnemies(dt);
 
@@ -593,9 +613,13 @@ void MainWindow::tryFire()
 {
     Player &pl = m_gs.player;
     if (pl.reloadTimer > 0 || pl.switchTimer > 0 || pl.attackCooldown > 0 || pl.sprinting) return;
+    if (pl.curWeapon == WPN_KNIFE) {
+        fireWeapon();
+        return;
+    }
     if (pl.mag[pl.curWeapon] <= 0) {
         if (pl.reserve[pl.curWeapon] > 0) startReload();
-        else { pl.attackCooldown = 0.3f; pushFeed("OUT OF AMMO", 1.5f); }
+        else { pl.attackCooldown = 0.3f; pushFeed("OUT OF AMMO - PRESS 1 FOR KNIFE", 1.5f); }
         return;
     }
     fireWeapon();
@@ -605,6 +629,36 @@ void MainWindow::fireWeapon()
 {
     Player &pl = m_gs.player;
     const WeaponDef &wd = WEAPONS[pl.curWeapon];
+
+    if (pl.curWeapon == WPN_KNIFE) {
+        pl.attackCooldown = wd.fireDelay;
+        m_actionT = 1.0f;
+        m_knifeSwing = 1 - m_knifeSwing; // alternate slash / stab
+        m_camKick += (m_knifeSwing ? 1.0f : -0.8f);
+        m_kick = std::min(1.2f, m_kick + 0.35f);
+        m_gs.shotsFired++;
+
+        computeView();
+        float ax, ay; aimPoint(ax, ay);
+        HitResult h = hitscan(ax, ay);
+
+        if (h.enemy >= 0 && h.depth <= 2.2f) {
+            m_gs.shotsHit++;
+            float mult = h.part == PART_HEAD ? wd.headMult : (h.part == PART_LIMB ? wd.limbMult : 1.0f);
+            int dmg = int(wd.damage * mult * frand(0.95f, 1.15f));
+            damageEnemy(h.enemy, dmg, h.part, h.x, h.y, h.z);
+            m_hitMarker = 0.3f;
+            if (h.part == PART_HEAD) m_headMarker = 0.45f;
+            if (h.enemy < int(m_gs.enemies.size())) {
+                m_gs.enemies[h.enemy].hitFlash = 0.35f; // enemy stagger
+            }
+            spawnBlood(h.x, h.y, h.z, h.part == PART_HEAD ? 24 : 14, 1.5f);
+        } else if (!h.sky && h.depth <= 2.0f) {
+            spawnImpact(h.x, h.y, h.z, h.floor);
+        }
+        return;
+    }
+
     pl.mag[pl.curWeapon]--;
     pl.attackCooldown = wd.fireDelay;
     pl.flashTimer = pl.curWeapon == WPN_SHOTGUN ? 0.09f : 0.06f;
@@ -722,7 +776,7 @@ void MainWindow::startReload()
 {
     Player &pl = m_gs.player;
     int w = pl.curWeapon;
-    if (pl.reloadTimer > 0 || pl.switchTimer > 0 || pl.mag[w] >= WEAPONS[w].magSize || pl.reserve[w] <= 0) return;
+    if (w == WPN_KNIFE || pl.reloadTimer > 0 || pl.switchTimer > 0 || pl.mag[w] >= WEAPONS[w].magSize || pl.reserve[w] <= 0) return;
     float t = WEAPONS[w].reloadTime;
     if (w == WPN_SHOTGUN) t = 0.5f + 0.32f * std::min(WEAPONS[w].magSize - pl.mag[w], pl.reserve[w]);
     pl.reloadTimer = t;
@@ -817,6 +871,231 @@ void MainWindow::spawnPickup(float x, float y)
     wp.type = r < 5 ? PICKUP_AMMO : r < 8 ? PICKUP_SHOTGUN : PICKUP_RIFLE;
     m_gs.weaponPickups.push_back(wp);
 }
+
+bool MainWindow::findEmergencyDropPos(float &outX, float &outY) const
+{
+    const Player &pl = m_gs.player;
+    float bestX = 0, bestY = 0;
+    bool foundAny = false;
+
+    // Search around the player for a reachable, walkable floor cell
+    // Preferred distance: 5.0 to 8.5 units
+    float baseAngle = frand(0.f, 6.2831853f);
+    for (int i = 0; i < 32; i++) {
+        float ang = baseAngle + i * (6.2831853f / 32.f);
+        for (float d = 7.5f; d >= 4.5f; d -= 0.75f) {
+            float tx = pl.posX + std::cos(ang) * d;
+            float ty = pl.posY + std::sin(ang) * d;
+            int cx = int(std::floor(tx)), cy = int(std::floor(ty));
+            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (!posValid(tx, ty, 0.28f)) continue;
+            float fh = floorH(tx, ty);
+            if (std::fabs(fh - m_footZ) > 0.75f) continue;
+
+            bool los = hasLOS(pl.posX, pl.posY, m_footZ + 0.5f, tx, ty, fh + 0.3f);
+            if (los) {
+                outX = tx;
+                outY = ty;
+                return true;
+            }
+            if (!foundAny) {
+                bestX = tx;
+                bestY = ty;
+                foundAny = true;
+            }
+        }
+    }
+
+    if (foundAny) {
+        outX = bestX;
+        outY = bestY;
+        return true;
+    }
+
+    // Fallback: try closer distances (2.0 to 4.5 units) if in a compact room
+    for (int i = 0; i < 24; i++) {
+        float ang = baseAngle + i * (6.2831853f / 24.f);
+        for (float d = 4.0f; d >= 2.0f; d -= 0.5f) {
+            float tx = pl.posX + std::cos(ang) * d;
+            float ty = pl.posY + std::sin(ang) * d;
+            int cx = int(std::floor(tx)), cy = int(std::floor(ty));
+            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (!posValid(tx, ty, 0.28f)) continue;
+            float fh = floorH(tx, ty);
+            if (std::fabs(fh - m_footZ) > 0.75f) continue;
+
+            outX = tx;
+            outY = ty;
+            return true;
+        }
+    }
+
+    // Extreme fallback: slight offset in reverse direction
+    for (float d = 1.8f; d >= 1.0f; d -= 0.4f) {
+        float tx = pl.posX - pl.dirX * d;
+        float ty = pl.posY - pl.dirY * d;
+        int cx = int(std::floor(tx)), cy = int(std::floor(ty));
+        if (cx >= 1 && cx < MAP_W - 1 && cy >= 1 && cy < MAP_H - 1 && !solidCell(cx, cy) && !m_acid[cy][cx] && posValid(tx, ty, 0.2f)) {
+            outX = tx;
+            outY = ty;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
+{
+    const Player &pl = m_gs.player;
+
+    // Collect living enemies
+    struct CandEnemy { int idx; float dist; };
+    std::vector<CandEnemy> candidates;
+    for (int i = 0; i < int(m_gs.enemies.size()); ++i) {
+        const auto &e = m_gs.enemies[i];
+        if (!e.alive) continue;
+        float dx = e.x - pl.posX, dy = e.y - pl.posY;
+        float d = std::sqrt(dx * dx + dy * dy);
+        candidates.push_back({ i, d });
+    }
+
+    // Sort by distance descending to prioritize distant hostiles (10 to 24 units away)
+    std::sort(candidates.begin(), candidates.end(), [](const CandEnemy &a, const CandEnemy &b) {
+        return a.dist > b.dist;
+    });
+
+    // Try finding a walkable floor position near one of the distant enemies (Hot Zone!)
+    for (const auto &c : candidates) {
+        if (c.dist < 8.0f) continue; // too close, not a distant hot zone
+        const auto &e = m_gs.enemies[c.idx];
+        float baseAng = frand(0.f, 6.2831853f);
+        for (int step = 0; step < 16; ++step) {
+            float ang = baseAng + step * (6.2831853f / 16.f);
+            for (float r = 2.5f; r <= 4.5f; r += 0.7f) {
+                float tx = e.x + std::cos(ang) * r;
+                float ty = e.y + std::sin(ang) * r;
+                int cx = int(std::floor(tx)), cy = int(std::floor(ty));
+                if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+                if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+                if (!posValid(tx, ty, 0.28f)) continue;
+                float fh = floorH(tx, ty);
+                if (std::fabs(fh - floorH(e.x, e.y)) > 0.8f) continue;
+                outX = tx;
+                outY = ty;
+                return true;
+            }
+        }
+    }
+
+    // Fallback: If no distant enemy, find a distant floor cell 14 to 22 units from player
+    float baseAng = frand(0.f, 6.2831853f);
+    for (int step = 0; step < 36; ++step) {
+        float ang = baseAng + step * (6.2831853f / 36.f);
+        for (float d = 20.0f; d >= 12.0f; d -= 1.0f) {
+            float tx = pl.posX + std::cos(ang) * d;
+            float ty = pl.posY + std::sin(ang) * d;
+            int cx = int(std::floor(tx)), cy = int(std::floor(ty));
+            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (!posValid(tx, ty, 0.28f)) continue;
+            outX = tx;
+            outY = ty;
+            return true;
+        }
+    }
+
+    // Closer fallback: 8 to 12 units
+    for (int step = 0; step < 24; ++step) {
+        float ang = baseAng + step * (6.2831853f / 24.f);
+        for (float d = 12.0f; d >= 7.0f; d -= 1.0f) {
+            float tx = pl.posX + std::cos(ang) * d;
+            float ty = pl.posY + std::sin(ang) * d;
+            int cx = int(std::floor(tx)), cy = int(std::floor(ty));
+            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (!posValid(tx, ty, 0.28f)) continue;
+            outX = tx;
+            outY = ty;
+            return true;
+        }
+    }
+
+    return findEmergencyDropPos(outX, outY);
+}
+
+void MainWindow::checkEmergencyDrops(float dt)
+{
+    if (m_gs.gameOver || m_screen != SCR_PLAYING) return;
+    Player &pl = m_gs.player;
+    if (pl.hp <= 0) return;
+
+    if (m_emergencyAmmoCooldown > 0.f)   m_emergencyAmmoCooldown -= dt;
+    if (m_emergencyHealthCooldown > 0.f) m_emergencyHealthCooldown -= dt;
+
+    // 1. Ammo drop check: when the player runs out of firearms ammo
+    int totalAmmo = 0;
+    for (int w = WPN_PISTOL; w < WPN_COUNT; ++w) {
+        if (pl.owned[w]) {
+            totalAmmo += pl.mag[w] + pl.reserve[w];
+        }
+    }
+
+    if (totalAmmo == 0) {
+        bool hasActiveEmergencyAmmo = false;
+        for (const auto &wp : m_gs.weaponPickups) {
+            if (wp.active && wp.emergency && wp.type == PICKUP_AMMO) {
+                hasActiveEmergencyAmmo = true;
+                break;
+            }
+        }
+        if (!hasActiveEmergencyAmmo && m_emergencyAmmoCooldown <= 0.f) {
+            float dropX = 0, dropY = 0;
+            if (findHotZoneDropPos(dropX, dropY)) {
+                WeaponPickup wp;
+                wp.x = dropX;
+                wp.y = dropY;
+                wp.bobPhase = frand(0.f, 6.28f);
+                wp.type = PICKUP_AMMO;
+                wp.active = true;
+                wp.emergency = true;
+                m_gs.weaponPickups.push_back(wp);
+                m_emergencyAmmoCooldown = 25.0f;
+                pushFeed("AMMO DROPPED IN HOSTILE ZONE - CHECK COMPASS", 5.0f, true);
+            }
+        }
+    }
+
+    // 2. Health drop check: when the player is in critical health condition
+    int maxHP = CHAR_PROFILES[m_charChoice].hp;
+    bool criticalHealth = (pl.hp <= std::max(25, int(maxHP * 0.25f)));
+
+    if (criticalHealth) {
+        bool hasActiveEmergencyHealth = false;
+        for (const auto &k : m_gs.healthKits) {
+            if (k.active && k.emergency) {
+                hasActiveEmergencyHealth = true;
+                break;
+            }
+        }
+        if (!hasActiveEmergencyHealth && m_emergencyHealthCooldown <= 0.f) {
+            float dropX = 0, dropY = 0;
+            if (findEmergencyDropPos(dropX, dropY)) {
+                HealthKit k;
+                k.x = dropX;
+                k.y = dropY;
+                k.bobPhase = frand(0.f, 6.28f);
+                k.active = true;
+                k.emergency = true;
+                m_gs.healthKits.push_back(k);
+                m_emergencyHealthCooldown = 25.0f;
+                pushFeed("HEALTH DROPPED NEAR YOUR LOCATION", 4.5f, true);
+            }
+        }
+    }
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Camera helpers
@@ -944,7 +1223,16 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_C) { m_pitch = 0.f; m_aimX = W / 2.f; m_aimY = H / 2.f; }
         if (k == Qt::Key_V) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
         if (k == Qt::Key_Tab) pl.adsMode = !pl.adsMode;
-        if (k >= Qt::Key_1 && k <= Qt::Key_3) switchWeapon(k - Qt::Key_1);
+        if (k >= Qt::Key_1 && k <= Qt::Key_4) switchWeapon(k - Qt::Key_1);
+        if (k == Qt::Key_Q) {
+            if (pl.curWeapon == WPN_KNIFE) {
+                for (int w = WPN_PISTOL; w < WPN_COUNT; ++w) {
+                    if (pl.owned[w]) { switchWeapon(w); break; }
+                }
+            } else {
+                switchWeapon(WPN_KNIFE);
+            }
+        }
         if (k == Qt::Key_R) startReload();
     }
     if (k == Qt::Key_Escape) { if (m_paused) QApplication::quit(); else if (!m_gs.gameOver) { m_paused = true; pl.adsMode = false; m_lmb = false; } }

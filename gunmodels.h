@@ -123,7 +123,53 @@ static const GunModel PISTOL_MODEL = { PISTOL_PARTS, int(sizeof(PISTOL_PARTS)/si
     51, 51,4, 31,7, 5,-16, 3,-20, -33, 17,
     PISTOL_HANDS, int(sizeof(PISTOL_HANDS)/sizeof(GunPart)), 3,-27, -1,-31 };
 
-static const GunModel *const GUN_MODELS[3] = { &PISTOL_MODEL, &SHOTGUN_MODEL, &RIFLE_MODEL };
+// --- Combat knife -------------------------------------------------------------
+static const GunPart KNIFE_PARTS[] = {
+    // Steel pommel
+    {4, {-6, 2,  0, 2,  0, -5, -6, -5},          0xFF282A2E, 0},
+    // Tactical ribbed grip
+    {4, {0, 3,  24, 3,  22, -6,  0, -6},         0xFF1C1D1F, 0},
+    // Grip ribs
+    {4, {4, 2,  8, 2,  8, -5,  4, -5},           0xFF141517, GP_NORIM},
+    {4, {10, 2, 14, 2, 14, -5, 10, -5},          0xFF141517, GP_NORIM},
+    {4, {16, 2, 20, 2, 20, -5, 16, -5},          0xFF141517, GP_NORIM},
+    // Steel crossguard
+    {4, {23, 9, 27, 9, 27, -10, 23, -10},        0xFF353840, 0},
+    // Blade ricasso
+    {4, {27, 6, 34, 6, 34, -4, 27, -4},          0xFF686C75, 0},
+    // Main blade spine & flat
+    {4, {34, 6, 52, 6, 50, -4, 34, -4},          0xFF8A909C, 0},
+    // Blood groove / fuller
+    {4, {36, 3, 48, 3, 48, 0, 36, 0},            0xFF4A4E57, GP_NORIM},
+    // Swedge / clip point
+    {3, {52, 6, 65, 2, 52, 2},                   0xFF727885, GP_NORIM},
+    // Blade tip & belly
+    {4, {52, 2, 65, 2, 60, -4, 50, -4},          0xFF9EA5B3, 0},
+    // Razor edge bevel (high-polish silver edge)
+    {4, {27, -4, 50, -4, 60, -4, 27, -6},        0xFFDDE4ED, 0},
+    {3, {50, -4, 65, 2, 60, -4},                 0xFFEEF3FA, 0},
+};
+
+static const GunPart KNIFE_HANDS[] = {
+    // Gloved hand wrapping around the knife handle
+    {6, {2, 4, 20, 4, 22, -2, 19, -9, 4, -9, 1, -2}, GLOVE, 0},
+    {4, {5, 5.5f, 8, 5.5f, 8, 2, 5, 2},             GLOVE, 0},
+    {4, {10, 5.5f, 13, 5.5f, 13, 2, 10, 2},         GLOVE, 0},
+    {4, {15, 5.5f, 18, 5.5f, 18, 2, 15, 2},         GLOVE, 0},
+    // Thumb locked along the guard
+    {4, {16, 6.5f, 23, 6.5f, 23, 2, 16, 2},         GLOVE, 0},
+};
+
+static const GunModel KNIFE_MODEL = {
+    KNIFE_PARTS, int(sizeof(KNIFE_PARTS)/sizeof(GunPart)),
+    65, 65, 2, 0, 0,
+    10, -5, 0, 0,
+    -12, 10,
+    KNIFE_HANDS, int(sizeof(KNIFE_HANDS)/sizeof(GunPart)),
+    8, -10, 0, 0
+};
+
+static const GunModel *const GUN_MODELS[4] = { &KNIFE_MODEL, &PISTOL_MODEL, &SHOTGUN_MODEL, &RIFLE_MODEL };
 
 // Flat (orthographic) rasterization of a gun profile — used for HUD icons and
 // pickup textures. (ox,oy) = screen position of u=0,h=0; s = pixels per unit.

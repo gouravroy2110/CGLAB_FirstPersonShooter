@@ -195,7 +195,7 @@ void MainWindow::renderHUD()
     float ax, ay; aimPoint(ax, ay);
     const WeaponDef &wd = WEAPONS[pl.curWeapon];
     int mag = pl.mag[pl.curWeapon], res = pl.reserve[pl.curWeapon];
-    if (pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !m_gs.gameOver) {
+    if (pl.curWeapon != WPN_KNIFE && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !m_gs.gameOver) {
         if (mag == 0 && res == 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "NO AMMO", QColor(255, 70, 60), 14, 800);
         else if (mag <= wd.magSize / 4 && res > 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "[R]  RELOAD", QColor(255, 190, 80, int(180 + 75 * std::sin(m_time * 8))), 13, 700);
     }
@@ -229,7 +229,7 @@ void MainWindow::renderHUD()
         text(0, H - 16, W, 14, Qt::AlignCenter, QString("PIXEL BLOCK %1x%1  ( [ ] to change )").arg(m_pixelScale), QColor(255, 200, 100, 200), 11, 600);
     if (m_gs.frameNum < 420 && m_gs.level == 1 && !scoped) {
         m_cv.blendRect(0, H - 20, W, 20, withAlpha(0, 150));
-        text(0, H - 19, W, 18, Qt::AlignCenter, "WASD move  MOUSE aim  LMB fire  RMB sights  R reload  1-3 guns  SPACE jump  E door  ESC pause",
+        text(0, H - 19, W, 18, Qt::AlignCenter, "WASD move  MOUSE aim  LMB fire/strike  RMB sights  R reload  1-4 weapons  SPACE jump  E door  ESC pause",
              QColor(220, 220, 220, 220), 11, 500, false);
     }
 }
@@ -265,6 +265,78 @@ void MainWindow::renderCompass()
         int x = cx + int(dlt * ppd);
         m_cv.tri(x - 4, y0 + hgt + 2, x + 4, y0 + hgt + 2, x, y0 + hgt + 8, RED);
     }
+
+    // Health drops on the compass
+    for (const HealthKit &k : m_gs.healthKits) {
+        if (!k.active) continue;
+        if (!k.emergency && pl.hp > 25) continue;
+        float dx = k.x - pl.posX, dy = k.y - pl.posY;
+        float dist = std::sqrt(dx * dx + dy * dy);
+        float ka = std::atan2(dy, dx) * 180.f / PI;
+        float dlt = std::fmod(ka - a + 540.f, 360.f) - 180.f;
+        bool pulse = (int(m_time * 6.f) & 1) == 0;
+        uint32_t col = (k.emergency && pulse) ? 0xFF88FFAA : GREEN;
+        int cy = y0 + 13;
+        if (std::fabs(dlt) <= 88.f) {
+            int x = cx + int(dlt * ppd);
+            m_cv.blendRect(x - 5, cy - 5, 11, 11, withAlpha(0x000000, 200));
+            m_cv.fillRect(x - 4, cy - 1, 9, 3, col);
+            m_cv.fillRect(x - 1, cy - 4, 3, 9, col);
+            m_cv.tri(x, y0 + 2, x - 3, y0 - 2, x + 3, y0 - 2, col);
+            text(x - 20, y0 - 8, 40, 9, Qt::AlignCenter, QString("%1m").arg(std::max(1, int(dist))), QColor(100, 255, 140), 9, 700, false);
+        } else {
+            int x = dlt < 0 ? cx - 176 : cx + 176;
+            if (dlt < 0) {
+                m_cv.tri(x, cy, x + 6, cy - 4, x + 6, cy + 4, col);
+                m_cv.fillRect(x + 8, cy - 1, 5, 2, col);
+                m_cv.fillRect(x + 9, cy - 3, 3, 6, col);
+                text(x, y0 - 8, 36, 9, Qt::AlignLeft, QString("%1m").arg(std::max(1, int(dist))), QColor(100, 255, 140), 9, 700, false);
+            } else {
+                m_cv.tri(x, cy, x - 6, cy - 4, x - 6, cy + 4, col);
+                m_cv.fillRect(x - 13, cy - 1, 5, 2, col);
+                m_cv.fillRect(x - 12, cy - 3, 3, 6, col);
+                text(x - 36, y0 - 8, 36, 9, Qt::AlignRight, QString("%1m").arg(std::max(1, int(dist))), QColor(100, 255, 140), 9, 700, false);
+            }
+        }
+    }
+
+    // Ammo drops on the compass
+    int curTotalAmmo = 0;
+    for (int w = WPN_PISTOL; w < WPN_COUNT; ++w) if (pl.owned[w]) curTotalAmmo += pl.mag[w] + pl.reserve[w];
+    for (const WeaponPickup &wp : m_gs.weaponPickups) {
+        if (!wp.active) continue;
+        if (!wp.emergency && (curTotalAmmo > 0 || wp.type != PICKUP_AMMO)) continue;
+        float dx = wp.x - pl.posX, dy = wp.y - pl.posY;
+        float dist = std::sqrt(dx * dx + dy * dy);
+        float wa = std::atan2(dy, dx) * 180.f / PI;
+        float dlt = std::fmod(wa - a + 540.f, 360.f) - 180.f;
+        bool pulse = (int(m_time * 6.f) & 1) == 0;
+        uint32_t col = (wp.emergency && pulse) ? 0xFFFFDD33 : AMBER;
+        int cy = y0 + 13;
+        if (std::fabs(dlt) <= 88.f) {
+            int x = cx + int(dlt * ppd);
+            m_cv.blendRect(x - 6, cy - 5, 13, 11, withAlpha(0x000000, 200));
+            m_cv.fillRect(x - 5, cy - 4, 11, 9, col);
+            m_cv.fillRect(x - 4, cy - 3, 9, 7, 0xFF332000);
+            m_cv.fillRect(x - 2, cy - 2, 4, 5, col);
+            m_cv.tri(x, y0 + 2, x - 3, y0 - 2, x + 3, y0 - 2, col);
+            text(x - 20, y0 - 8, 40, 9, Qt::AlignCenter, QString("%1m").arg(std::max(1, int(dist))), QColor(255, 215, 80), 9, 700, false);
+        } else {
+            int x = dlt < 0 ? cx - 176 : cx + 176;
+            if (dlt < 0) {
+                m_cv.tri(x, cy, x + 6, cy - 4, x + 6, cy + 4, col);
+                m_cv.fillRect(x + 8, cy - 3, 6, 6, col);
+                m_cv.fillRect(x + 9, cy - 2, 4, 4, 0xFF332000);
+                text(x, y0 - 8, 36, 9, Qt::AlignLeft, QString("%1m").arg(std::max(1, int(dist))), QColor(255, 215, 80), 9, 700, false);
+            } else {
+                m_cv.tri(x, cy, x - 6, cy - 4, x - 6, cy + 4, col);
+                m_cv.fillRect(x - 14, cy - 3, 6, 6, col);
+                m_cv.fillRect(x - 13, cy - 2, 4, 4, 0xFF332000);
+                text(x - 36, y0 - 8, 36, 9, Qt::AlignRight, QString("%1m").arg(std::max(1, int(dist))), QColor(255, 215, 80), 9, 700, false);
+            }
+        }
+    }
+
     m_cv.tri(cx - 6, y0 - 1, cx + 6, y0 - 1, cx, y0 + 6, AMBER);
     text(cx - 40, y0 + hgt + 4, 80, 14, Qt::AlignCenter, QString::number(int(head)) + QChar(0x00B0), QColor(230, 230, 230), 11, 600);
     text(cx - 160, y0 + hgt + 20, 320, 16, Qt::AlignCenter,
@@ -307,10 +379,19 @@ void MainWindow::renderMinimap()
         sx += MX; sy += MY; return true;
     };
     float sx, sy;
-    for (const auto &k : m_gs.healthKits) if (k.active && toMap(k.x, k.y, sx, sy, false)) {
-        m_cv.fillRect(int(sx) - 3, int(sy) - 1, 7, 3, GREEN); m_cv.fillRect(int(sx) - 1, int(sy) - 3, 3, 7, GREEN);
+    for (const auto &k : m_gs.healthKits) if (k.active && toMap(k.x, k.y, sx, sy, k.emergency)) {
+        bool pulse = (int(m_time * 5) & 1) == 0;
+        uint32_t c = (k.emergency && pulse) ? 0xFF88FFAA : GREEN;
+        m_cv.fillRect(int(sx) - 3, int(sy) - 1, 7, 3, c);
+        m_cv.fillRect(int(sx) - 1, int(sy) - 3, 3, 7, c);
+        if (k.emergency) m_cv.ring(int(sx), int(sy), 4.5f, 6.f, c);
     }
-    for (const auto &p : m_gs.weaponPickups) if (p.active && toMap(p.x, p.y, sx, sy, false)) m_cv.fillCircle(int(sx), int(sy), 2, AMBER);
+    for (const auto &p : m_gs.weaponPickups) if (p.active && toMap(p.x, p.y, sx, sy, p.emergency)) {
+        bool pulse = (int(m_time * 5) & 1) == 0;
+        uint32_t c = (p.emergency && pulse) ? 0xFFFFDD33 : AMBER;
+        m_cv.fillCircle(int(sx), int(sy), p.emergency ? 3 : 2, c);
+        if (p.emergency) m_cv.ring(int(sx), int(sy), 4.5f, 6.f, c);
+    }
     bool blink = int(m_time * 4) % 2 == 0;
     for (const auto &e : m_gs.enemies) {
         if (!e.alive) continue;
@@ -375,15 +456,21 @@ void MainWindow::renderWeaponPanel()
     const GunModel &M = *GUN_MODELS[pl.curWeapon];
     float sc = 92.f / M.length;
     if (pl.curWeapon == WPN_PISTOL) sc = 1.0f;
+    else if (pl.curWeapon == WPN_KNIFE) sc = 1.05f;
     drawGunFlat(m_cv, M, x + 18, y + 30 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, 210));
-    int mag = pl.mag[pl.curWeapon];
-    uint32_t mc = mag == 0 ? RED : mag <= wd.magSize / 4 ? AMBER : 0xFFFFFFFF;
-    text(x + 118, y + 2, 70, 36, Qt::AlignRight | Qt::AlignVCenter, QString::number(mag), qc(mc), 26, 800);
-    text(x + 192, y + 14, 60, 20, Qt::AlignLeft | Qt::AlignVCenter, QString("/ %1").arg(pl.reserve[pl.curWeapon]), QColor(190, 190, 190), 15, 600);
-    text(x + 118, y + 37, 134, 13, Qt::AlignRight, wd.name, QColor(170, 170, 170), 10, 600, false);
-    // rounds in the magazine
-    int pips = wd.magSize, pw = std::max(2, std::min(5, 100 / pips));
-    for (int i = 0; i < pips; i++) m_cv.fillRect(x + 18 + i * (pw + 1), y + h - 8, pw, 4, i < mag ? withAlpha(AMBER, 230) : withAlpha(0xFFFFFFFF, 35));
+    if (pl.curWeapon == WPN_KNIFE) {
+        text(x + 118, y + 4, 134, 30, Qt::AlignRight | Qt::AlignVCenter, "MELEE", QColor(255, 215, 80), 18, 800);
+        text(x + 118, y + 37, 134, 13, Qt::AlignRight, wd.name, QColor(170, 170, 170), 10, 600, false);
+    } else {
+        int mag = pl.mag[pl.curWeapon];
+        uint32_t mc = mag == 0 ? RED : mag <= wd.magSize / 4 ? AMBER : 0xFFFFFFFF;
+        text(x + 118, y + 2, 70, 36, Qt::AlignRight | Qt::AlignVCenter, QString::number(mag), qc(mc), 26, 800);
+        text(x + 192, y + 14, 60, 20, Qt::AlignLeft | Qt::AlignVCenter, QString("/ %1").arg(pl.reserve[pl.curWeapon]), QColor(190, 190, 190), 15, 600);
+        text(x + 118, y + 37, 134, 13, Qt::AlignRight, wd.name, QColor(170, 170, 170), 10, 600, false);
+        // rounds in the magazine
+        int pips = wd.magSize, pw = std::max(2, std::min(5, 100 / pips));
+        for (int i = 0; i < pips; i++) m_cv.fillRect(x + 18 + i * (pw + 1), y + h - 8, pw, 4, i < mag ? withAlpha(AMBER, 230) : withAlpha(0xFFFFFFFF, 35));
+    }
     // reload progress
     if (pl.reloadTimer > 0) {
         float p = 1.f - pl.reloadTimer / std::max(0.01f, m_reloadTotal);
@@ -407,6 +494,19 @@ void MainWindow::renderCrosshair()
     if (m_adsT > 0.35f || m_gs.gameOver) return;
     int cx = int(m_aimX), cy = int(m_aimY);
     const WeaponDef &wd = WEAPONS[pl.curWeapon];
+
+    if (pl.curWeapon == WPN_KNIFE) {
+        bool inRange = (m_probeEnemy >= 0);
+        int gap = inRange ? 7 : 13;
+        uint32_t col = inRange ? rgb(255, 50, 40) : 0xFFFFFFFF;
+        m_cv.brackets(cx - gap, cy - gap, gap * 2 + 1, gap * 2 + 1, 4, withAlpha(col, inRange ? 255 : 180), 2);
+        m_cv.fillRect(cx - 1, cy - 1, 2, 2, col);
+        if (inRange) {
+            text(cx - 30, cy + gap + 4, 60, 12, Qt::AlignCenter, "READY", QColor(255, 60, 50), 9, 800, false);
+        }
+        return;
+    }
+
     bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
     float spread = wd.spread * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f) * W;
     int gap = int(5 + spread * 0.9f + m_kick * 10 + (pl.sprinting ? 10 : 0));

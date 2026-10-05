@@ -131,6 +131,7 @@ private:
     float m_muzzleX = W * 0.6f, m_muzzleY = H * 0.6f;
     float m_ejectX = W * 0.7f, m_ejectY = H * 0.75f;
     int   m_pendingWeapon = -1;
+    int   m_knifeSwing = 0;
     float m_reloadTotal = 1.f, m_sprintT = 0.f;
     float m_flashLight = 0;
     int   m_flashSeed = 0;
@@ -176,6 +177,8 @@ private:
     struct KFEntry { QString text; float life; bool head; };
     std::vector<KFEntry> m_killFeed;
     void pushFeed(const QString &t, float life, bool head = false);
+    float m_emergencyAmmoCooldown = 0.f;
+    float m_emergencyHealthCooldown = 0.f;
 
     GameState m_gs;
 
@@ -205,6 +208,9 @@ private:
     void tryOpenDoor();
     void updateDoors(float dt);
     void spawnPickup(float x, float y);
+    bool findEmergencyDropPos(float &outX, float &outY) const;
+    bool findHotZoneDropPos(float &outX, float &outY) const;
+    void checkEmergencyDrops(float dt);
     int  enemyFrame(const Enemy &e) const;
     int  enemyMaxHP() const;
 

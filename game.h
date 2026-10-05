@@ -109,10 +109,10 @@ static const CharProfile CHAR_PROFILES[3] = {
 };
 
 // --- Weapons -----------------------------------------------------------------
-enum WeaponId { WPN_PISTOL=0, WPN_SHOTGUN=1, WPN_RIFLE=2, WPN_COUNT=3 };
+enum WeaponId { WPN_KNIFE=0, WPN_PISTOL=1, WPN_SHOTGUN=2, WPN_RIFLE=3, WPN_COUNT=4 };
 struct WeaponDef {
     const char *name, *shortName;
-    int   damage;        // per pellet, body hit
+    int   damage;        // per pellet / strike, body hit
     float headMult;      // headshot multiplier
     float limbMult;      // arm / leg multiplier
     float fireDelay;     // seconds between shots
@@ -127,6 +127,7 @@ struct WeaponDef {
     int   maxReserve;
 };
 static const WeaponDef WEAPONS[WPN_COUNT] = {
+    {"COMBAT KNIFE",  "KNIFE",   55, 2.5f, 0.80f, 0.35f, 1, 0.000f,  0, 0.00f, 0.1f, true,  1.00f, false,   0},
     {"M9 SIDEARM",    "PISTOL",  28, 3.0f, 0.75f, 0.24f, 1, 0.012f, 12, 1.25f, 1.0f, false, 0.70f, false,  96},
     {"M870 SHOTGUN",  "SHOTGUN", 15, 2.0f, 0.75f, 0.85f, 8, 0.060f,  6, 2.20f, 2.4f, false, 0.80f, false,  36},
     {"M4 CARBINE",    "RIFLE",   22, 2.5f, 0.70f, 0.10f, 1, 0.016f, 30, 1.90f, 0.8f, true,  0.25f, true,  180},
@@ -141,9 +142,9 @@ struct Particle {
 };
 
 // --- Pickups -----------------------------------------------------------------
-struct HealthKit { float x, y, bobPhase=0; bool active=true; };
+struct HealthKit { float x, y, bobPhase=0; bool active=true; bool emergency=false; };
 enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE, PICKUP_INTEL };
-struct WeaponPickup { float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; };
+struct WeaponPickup { float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; bool emergency=false; };
 
 // --- Player ------------------------------------------------------------------
 struct Player {
@@ -155,9 +156,9 @@ struct Player {
     float shakeY=0;
     // Weapons
     int   curWeapon=WPN_PISTOL;
-    bool  owned[WPN_COUNT]={true,false,false};
-    int   mag[WPN_COUNT]={12,0,0};
-    int   reserve[WPN_COUNT]={60,0,0};
+    bool  owned[WPN_COUNT]={true,true,false,false};
+    int   mag[WPN_COUNT]={0,12,0,0};
+    int   reserve[WPN_COUNT]={0,60,0,0};
     float reloadTimer=0;     // >0 while reloading
     float switchTimer=0;     // >0 while swapping weapons
     bool  triggerHeld=false;

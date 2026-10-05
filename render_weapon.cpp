@@ -65,8 +65,15 @@ void MainWindow::renderViewModel()
 
     // --- Anchors: rear of the gun (R, off-screen bottom-right) and the
     //     vanishing point (V, on the crosshair) -------------------------------------
+    // --- Anchors: rear of the gun (R, off-screen bottom-right) and the
+    //     vanishing point (V, on the crosshair) -------------------------------------
     struct Base { float rx, ry, k, s0; };
-    const Base bases[3] = { {W * 0.78f, H * 0.82f, 0.7f, 5.0f}, {W * 1.00f, H * 0.98f, 1.5f, 5.8f}, {W * 1.00f, H * 0.98f, 1.7f, 5.6f} };
+    const Base bases[WPN_COUNT] = {
+        {W * 0.74f, H * 0.82f, 0.8f, 5.2f}, // WPN_KNIFE
+        {W * 0.78f, H * 0.82f, 0.7f, 5.0f}, // WPN_PISTOL
+        {W * 1.00f, H * 0.98f, 1.5f, 5.8f}, // WPN_SHOTGUN
+        {W * 1.00f, H * 0.98f, 1.7f, 5.6f}  // WPN_RIFLE
+    };
     const Base &b = bases[w];
     GunProj gp;
     gp.k = b.k; gp.s0 = b.s0; gp.L = M.length;
@@ -78,6 +85,26 @@ void MainWindow::renderViewModel()
     gp.Rx += (gp.Rx - gp.Vx) * 0.08f * m_kick; gp.Ry += (gp.Ry - gp.Vy) * 0.08f * m_kick;
     gp.Vy -= 50.f * m_kick;
     float cant = -0.04f + 0.05f * m_kick;
+
+    // Knife unique stabbing and slashing animations
+    if (w == WPN_KNIFE && m_actionT > 0.f) {
+        float t = 1.0f - m_actionT;
+        if (m_knifeSwing == 1) {
+            // STAB ANIMATION: Forward piercing lunge directly into the crosshair
+            float thrust = std::sin(t * 3.14159f);
+            gp.Rx += (gp.Vx - gp.Rx) * 0.48f * thrust;
+            gp.Ry += (gp.Vy - gp.Ry) * 0.48f * thrust;
+            gp.s0 *= (1.f + 0.35f * thrust);
+            cant += -0.25f * thrust;
+        } else {
+            // SLASH ANIMATION: Sweeping diagonal cut across the screen with blade tilt
+            float slash = std::sin(t * 3.14159f);
+            gp.Rx += std::cos(t * 3.14159f) * 120.f * slash;
+            gp.Ry -= std::sin(t * 3.14159f) * 75.f * slash;
+            cant += (t - 0.5f) * 1.4f * slash;
+        }
+    }
+
     // reload: tilt the gun in and up so the magazine well faces the camera
     gp.Ry += rl * 30; gp.Vy += rl * 120; gp.Vx -= rl * 70; cant += rl * 0.45f;
     // sprint carry
@@ -100,7 +127,7 @@ void MainWindow::renderViewModel()
     if (w == WPN_PISTOL) actionU = -7.f * m_actionT;
     if (w == WPN_SHOTGUN) { float t = 1.f - m_actionT; actionU = t > 0.15f && t < 0.85f ? -11.f * std::sin((t - 0.15f) / 0.7f * 3.14159f) : 0.f; }
     float magH = 0; bool magHidden = false;
-    if (pl.reloadTimer > 0 && w != WPN_SHOTGUN) {
+    if (pl.reloadTimer > 0 && w != WPN_SHOTGUN && w != WPN_KNIFE) {
         if (rp < 0.2f) magH = 0;
         else if (rp < 0.42f) magH = -60.f * (rp - 0.2f) / 0.22f;
         else if (rp < 0.58f) magHidden = true;
@@ -141,12 +168,24 @@ void MainWindow::renderViewModel()
     gp.map(M.lWristU + (w == WPN_SHOTGUN ? actionU : 0), M.lWristH, lwx, lwy, lws);
     float lsx = (w == WPN_PISTOL ? W * 0.55f : W * 0.30f) + bx * 0.5f + m_swayX, lsy = H + 150.f + dropPx * 0.5f;
     float rsx = W + 90.f + bx + m_swayX, rsy = H + 110.f + dropPx * 0.6f;
-    limb(m_cv, lsx, lsy, 54, lwx, lwy, 8.5f * lws, cp.sleeve, cp.sleeveHi);
-    limb(m_cv, lwx + (lsx - lwx) * 0.12f, lwy + (lsy - lwy) * 0.12f, 9.5f * lws, lwx, lwy, 8.f * lws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
-    limb(m_cv, rsx, rsy, 60, rwx, rwy, 9.f * rws, cp.sleeve, cp.sleeveHi);
-    limb(m_cv, rwx + (rsx - rwx) * 0.12f, rwy + (rsy - rwy) * 0.12f, 10.f * rws, rwx, rwy, 8.5f * rws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
 
-    // --- Gun, then gloves wrapped around it ---------------------------------------------
+    if (w == WPN_KNIFE) {
+        // Right arm drives the combat knife
+        limb(m_cv, rsx, rsy, 60, rwx, rwy, 9.f * rws, cp.sleeve, cp.sleeveHi);
+        limb(m_cv, rwx + (rsx - rwx) * 0.12f, rwy + (rsy - rwy) * 0.12f, 10.f * rws, rwx, rwy, 8.5f * rws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
+        // Left hand in tactical ready guard
+        float glx = W * 0.20f + bx * 0.3f, gly = H + 80.f + dropPx * 0.4f;
+        float gwx = W * 0.28f + bx * 0.4f, gwy = H * 0.88f + dropPx * 0.4f;
+        limb(m_cv, glx, gly, 46, gwx, gwy, 28, cp.sleeve, cp.sleeveHi);
+        m_cv.fillCircle(int(gwx), int(gwy), 14, GLOVE);
+    } else {
+        limb(m_cv, lsx, lsy, 54, lwx, lwy, 8.5f * lws, cp.sleeve, cp.sleeveHi);
+        limb(m_cv, lwx + (lsx - lwx) * 0.12f, lwy + (lsy - lwy) * 0.12f, 9.5f * lws, lwx, lwy, 8.f * lws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
+        limb(m_cv, rsx, rsy, 60, rwx, rwy, 9.f * rws, cp.sleeve, cp.sleeveHi);
+        limb(m_cv, rwx + (rsx - rwx) * 0.12f, rwy + (rsy - rwy) * 0.12f, 10.f * rws, rwx, rwy, 8.5f * rws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
+    }
+
+    // --- Gun / Knife, then gloves wrapped around it ---------------------------------------------
     for (int i = 0; i < M.count; i++) {
         const GunPart &part = M.parts[i];
         if ((part.flags & GP_MAG) && magHidden) continue;
@@ -160,8 +199,20 @@ void MainWindow::renderViewModel()
         drawPart(part, du, dh);
     }
 
+    // Slashing arc / thrust streak effect for knife
+    if (w == WPN_KNIFE && m_actionT > 0.08f && m_actionT < 0.92f) {
+        float act = m_actionT;
+        float t = 1.0f - act;
+        float s0x, s0y, ss0, s1x, s1y, ss1;
+        gp.map(M.length * 0.4f, 0.f, s0x, s0y, ss0);
+        gp.map(M.length + 8.f, 2.f, s1x, s1y, ss1);
+        int alpha = int(220 * std::sin(t * 3.14159f));
+        uint32_t streakCol = m_knifeSwing == 1 ? withAlpha(0xFFFFFFFF, alpha) : withAlpha(0xFFDDE8F8, alpha);
+        m_cv.thickLine(int(s0x), int(s0y), int(s1x), int(s1y), streakCol, 3);
+    }
+
     // Fresh magazine in the support hand mid-reload
-    if (pl.reloadTimer > 0 && w != WPN_SHOTGUN && rp > 0.38f && rp < 0.62f) {
+    if (pl.reloadTimer > 0 && w != WPN_SHOTGUN && w != WPN_KNIFE && rp > 0.38f && rp < 0.62f) {
         float mx, my, ms; gp.map(M.lWristU - 6, M.lWristH - 22, mx, my, ms);
         m_cv.quad(mx - 4 * ms, my - 12 * ms, mx + 4 * ms, my - 12 * ms, mx + 6 * ms, my + 10 * ms, mx - 3 * ms, my + 10 * ms, rgb(56, 58, 62));
     }
@@ -172,7 +223,7 @@ void MainWindow::renderViewModel()
     gp.map(M.muzzleU, M.muzzleH, m_muzzleX, m_muzzleY, s);
 
     // --- Muzzle flash ---------------------------------------------------------------------------
-    if (pl.flashTimer > 0) {
+    if (pl.flashTimer > 0 && w != WPN_KNIFE) {
         float t = pl.flashTimer / (w == WPN_SHOTGUN ? 0.09f : 0.06f);
         float ax2, ay2, s2; gp.map(M.muzzleU + 12, M.muzzleH, ax2, ay2, s2);
         float dx = ax2 - m_muzzleX, dy = ay2 - m_muzzleY, dl = std::sqrt(dx * dx + dy * dy) + 1e-3f;
