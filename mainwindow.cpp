@@ -116,7 +116,15 @@ void MainWindow::initGame()
     m_combo = 0; m_comboTimer = 0; m_comboDisplay = 0;
     m_pitch = 0; m_recoilPitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f; m_adsT = 0; m_adsFOVMult = 1;
     m_hitMarker = m_headMarker = m_killMarker = m_headshotBanner = 0; m_damageDirTimer = 0;
-    m_velZ = 0; m_onGround = true; m_acidAcc = 0; m_kick = m_actionT = 0; m_pendingWeapon = -1;
+    
+    pl.velX = 0.f;
+    pl.velY = 0.f;
+    m_velZ = 0;
+    m_onGround = true;
+    m_acidAcc = 0;
+    m_kick = m_actionT = 0;
+    m_pendingWeapon = -1;
+    
     m_killFeed.clear(); m_casings.clear();
     m_emergencyAmmoCooldown = 0.f; m_emergencyHealthCooldown = 0.f;
     std::memset(m_enemyHPDisplay, 0, sizeof(m_enemyHPDisplay));
@@ -358,8 +366,18 @@ void MainWindow::loadLevel(int lv)
     const ParsedMap &pm = m_parsed[m_gs.mapChoice];
     pl.posX = pm.spawnX;
     pl.posY = pm.spawnY;
-    m_footZ = floorH(pl.posX, pl.posY); m_velZ = 0; m_onGround = true;
-    pl.dirX = 1.f;  pl.dirY = 0.f;
+
+    // Do not preserve movement momentum between zones.
+    pl.velX = 0.f;
+    pl.velY = 0.f;
+
+    m_footZ = floorH(pl.posX, pl.posY);
+    m_velZ = 0;
+    m_onGround = true;
+
+    pl.dirX = 1.f;
+    pl.dirY = 0.f;
+    
     pl.planeX = 0.f; pl.planeY = 0.66f;
     pl.shakeY = 0;  pl.adsMode = false;
     pl.reloadTimer = 0; pl.switchTimer = 0;
@@ -647,26 +665,168 @@ void MainWindow::gameStep(float dt)
     pl.stamina += wantSprint ? -45.f * dt : m_holdBreath ? -22.f * dt : 28.f * dt;
     pl.stamina = std::max(0.f, std::min(CHAR_PROFILES[m_charChoice].stamina, pl.stamina));
 
-    float SPD = pl.speedMult * (pl.sprinting ? 5.8f : pl.adsMode ? 2.0f : 3.5f) * dt;
-    float mx = 0, my = 0;
-    if (m_keys.count(Qt::Key_W)) { mx += pl.dirX; my += pl.dirY; }
-    if (m_keys.count(Qt::Key_S)) { mx -= pl.dirX; my -= pl.dirY; }
-    if (m_keys.count(Qt::Key_A)) { mx += pl.dirY; my -= pl.dirX; }
-    if (m_keys.count(Qt::Key_D)) { mx -= pl.dirY; my += pl.dirX; }
-    float len = std::sqrt(mx * mx + my * my); if (len > 0.001f) { mx /= len; my /= len; }
-    float nx = pl.posX + mx * SPD, ny = pl.posY + my * SPD;
-    // Ground under the feet may rise at most a step (0.32) unless we're mid-jump above it
-    bool canMoveX = canStep(nx, pl.posY, m_footZ, 0.32f);
-    bool canMoveY = canStep(pl.posX, ny, m_footZ, 0.32f);
+    // -------------------------------------------------------------------------
+// Acceleration-based horizontal movement
+// -------------------------------------------------------------------------
 
-    // If movement directly into a wall is blocked, suppress sliding along the wall surface
-    // when motion is perpendicular to the wall (i.e. no intentional motion parallel to the wall face)
-    if (!canMoveX && canMoveY && std::fabs(my) <= 0.40f * std::fabs(mx)) canMoveY = false;
-    if (!canMoveY && canMoveX && std::fabs(mx) <= 0.40f * std::fabs(my)) canMoveX = false;
+// Read keyboard input as two separate axes.
+//
+// forwardInput:
+//   W =  1
+//   S = -1
+//
+// strafeInput:
+//   D =  1
+//   A = -1
+float forwardInput =
+    float(m_keys.count(Qt::Key_W)) -
+    float(m_keys.count(Qt::Key_S));
 
-    if (canMoveX) pl.posX = nx;
-    if (canMoveY) pl.posY = ny;
+float strafeInput =
+    float(m_keys.count(Qt::Key_D)) -
+    float(m_keys.count(Qt::Key_A));
 
+// Backward movement is slower than forward movement.
+// Strafing is also slightly slower.
+//
+// These multipliers combine during diagonal backward/strafe movement.
+float directionMult = 1.f;
+
+if (forwardInput < 0.f)
+    directionMult *= 0.78f;
+
+if (std::fabs(strafeInput) > 0.01f)
+    directionMult *= 0.88f;
+
+// Convert local input into world-space movement.
+//
+// Forward direction:
+//   (dirX, dirY)
+//
+// Right direction:
+//   (-dirY, dirX)
+float moveX =
+    pl.dirX * forwardInput -
+    pl.dirY * strafeInput;
+
+float moveY =
+    pl.dirY * forwardInput +
+    pl.dirX * strafeInput;
+
+// Normalize diagonal input.
+//
+// Without this, pressing W+D would move the player approximately
+// 1.414 times faster than pressing only W.
+float inputLen = std::sqrt(moveX * moveX + moveY * moveY);
+
+if (inputLen > 1.f) {
+    moveX /= inputLen;
+    moveY /= inputLen;
+}
+
+// Select the player's maximum movement speed.
+//
+// Sprinting: 5.8
+// Normal:    3.5
+// ADS:       2.0
+float moveSpeed =
+    pl.speedMult *
+    (pl.sprinting ? 5.8f :
+     pl.adsMode    ? 2.0f :
+                     3.5f);
+
+// The input direction determines the desired velocity.
+// We do not apply this velocity instantly.
+float targetVelX = moveX * moveSpeed * directionMult;
+float targetVelY = moveY * moveSpeed * directionMult;
+
+bool hasMoveInput = inputLen > 0.001f;
+
+// Choose how quickly current velocity moves toward target velocity.
+//
+// On ground with input:
+//   Responsive acceleration.
+//
+// On ground without input:
+//   Strong friction and quick deceleration.
+//
+// In air with input:
+//   Limited air control.
+//
+// In air without input:
+//   Preserve most existing momentum.
+float response;
+
+if (m_onGround) {
+    response = hasMoveInput ? 13.f : 18.f;
+} else {
+    response = hasMoveInput ? 3.5f : 0.45f;
+}
+
+// Frame-rate-independent smoothing.
+//
+// At a higher response value, the current velocity reaches the
+// target velocity more quickly.
+float velocityBlend = 1.f - std::exp(-response * dt);
+
+pl.velX += (targetVelX - pl.velX) * velocityBlend;
+pl.velY += (targetVelY - pl.velY) * velocityBlend;
+
+// Remove tiny velocity values after ground friction has almost
+// completely stopped the player. This prevents slow drifting.
+float velocitySquared =
+    pl.velX * pl.velX +
+    pl.velY * pl.velY;
+
+if (m_onGround &&
+    !hasMoveInput &&
+    velocitySquared < 0.0004f) {
+    pl.velX = 0.f;
+    pl.velY = 0.f;
+}
+
+// Convert velocity into this frame's movement distance.
+float nx = pl.posX + pl.velX * dt;
+float ny = pl.posY + pl.velY * dt;
+
+// Preserve the existing terrain and step-height checks.
+bool canMoveX =
+    canStep(nx, pl.posY, m_footZ, 0.32f);
+
+bool canMoveY =
+    canStep(pl.posX, ny, m_footZ, 0.32f);
+
+// Preserve the existing wall-sliding suppression.
+//
+// This now compares velocity instead of the old temporary
+// input direction.
+if (!canMoveX &&
+    canMoveY &&
+    std::fabs(pl.velY) <= 0.40f * std::fabs(pl.velX)) {
+    canMoveY = false;
+}
+
+if (!canMoveY &&
+    canMoveX &&
+    std::fabs(pl.velX) <= 0.40f * std::fabs(pl.velY)) {
+    canMoveX = false;
+}
+
+// Move along each valid axis.
+//
+// If an axis is blocked, cancel velocity on that axis.
+// Otherwise, momentum would continuously push the player into the wall.
+if (canMoveX) {
+    pl.posX = nx;
+} else {
+    pl.velX = 0.f;
+}
+
+if (canMoveY) {
+    pl.posY = ny;
+} else {
+    pl.velY = 0.f;
+}
     // Vertical: gravity, landing, sticking to slopes when walking downhill
     float g = floorH(pl.posX, pl.posY);
     m_velZ -= 20.f * dt;
