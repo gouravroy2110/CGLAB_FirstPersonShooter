@@ -120,6 +120,24 @@ Menus work with keyboard (arrows / 1-4 / Enter / Esc / Space) **and mouse** (hov
 
 ---
 
+## Acceleration-Based Player Movement
+
+Replaced instant movement with velocity-based acceleration and deceleration.
+
+### Changes
+
+- Added horizontal player velocity.
+- Applied smooth ground acceleration and friction.
+- Preserved movement momentum while airborne.
+- Reduced air control, backward speed, and strafe speed.
+- Prevented diagonal movement speed boosts.
+- Stopped velocity on blocked collision axes.
+- Reset player velocity when starting or loading a level.
+
+### Result
+
+Player movement now feels smoother, more natural, and more responsive while preserving the existing terrain, step-height, and collision systems.
+
 ## Raster compliance
 
 Everything visible is written into `m_pixels[y*W + x]` by our own code:
