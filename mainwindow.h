@@ -17,6 +17,7 @@
 #include "game.h"
 #include "raster.h"
 #include "assets.h"
+#include "audio.h"
 
 class MainWindow : public QWidget {
     Q_OBJECT
@@ -24,6 +25,8 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     // Dev aid: render a scripted set of scenes to PNG files and return.
     bool snapshot(const QString &dir);
+    // Open the sound device (skipped in snapshot/test mode)
+    void enableAudio();
 
 protected:
     void paintEvent(QPaintEvent *)      override;
@@ -218,6 +221,33 @@ private:
     void spawnEnemy(float x, float y, bool elite, EnemyType type);
     void checkReinforcements(float dt);
     float m_reinforceTimer = 0.f;
+
+    // -- Sound -------------------------------------------------------------------
+    SoundEngine *m_snd = nullptr;
+    int   m_ambId = -1;
+    float m_footstepPrev = 0, m_heartbeatT = 0, m_acidSndT = 0, m_hurtSndT = 0, m_alertSndT = 0, m_prevAdsT = 0;
+    bool  m_prevGameOver = false;
+    void  sfx(SoundId id, float gain = 1.f, float pitch = 1.f, float delay = 0.f);
+    void  sfxAt(SoundId id, float wx, float wy, float gain = 1.f, float pitch = 1.f, float delay = 0.f);
+    void  updateAmbience();
+
+    // -- Between-zone intermission (upgrade + loadout) -------------------------------
+    float m_intermissionT = 0.f;     // seconds since the zone was cleared
+    int   m_hoverCard = -1, m_hoverChip = -1;
+    bool  m_hoverDeploy = false;
+    int   m_loadoutWeapon = WPN_PISTOL;
+    std::vector<int> loadoutChoices() const;
+    QRect ixCardRect(int i) const;
+    QRect ixChipRect(int slot, int n) const;
+    QRect ixDeployRect() const;
+    void  updateIntermissionHover(const QPointF &widgetPos);
+    void  deployNextZone();
+
+    // -- Reachability (cells the player can walk to without secrets) ----------------
+    std::vector<uint8_t> m_reach;
+    void  computeReachable(float sx, float sy);
+    bool  reachable(int cx, int cy) const { return cx >= 0 && cy >= 0 && cx < MAP_W && cy < MAP_H && !m_reach.empty() && m_reach[size_t(cy) * MAP_W + cx]; }
+    float m_probeDepth = 1e9f;
 
     // -- Weapon Upgrade / Attachment System ----------------------------------------
     struct UpgradeCard {

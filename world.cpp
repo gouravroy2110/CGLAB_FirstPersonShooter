@@ -98,6 +98,31 @@ void MainWindow::loadMapGeometry(int map)
     m_wallDecals.clear();
     if (m_sunVisCache[map].empty()) { buildLightMap(); m_sunVisCache[map] = m_sunVis; m_lightCache[map] = m_light; }
     else { m_sunVis = m_sunVisCache[map]; m_light = m_lightCache[map]; }
+    m_reach.clear();
+    updateAmbience();
+}
+
+// Flood fill from (sx,sy) over floor cells and doors, but not through secret
+// walls: cells reached here are places the player can get to by normal play.
+void MainWindow::computeReachable(float sx, float sy)
+{
+    m_reach.assign(size_t(MAP_W) * MAP_H, 0);
+    std::vector<int> stack;
+    int x0 = clampi(int(sx), 0, MAP_W - 1), y0 = clampi(int(sy), 0, MAP_H - 1);
+    stack.push_back(y0 * MAP_W + x0);
+    while (!stack.empty()) {
+        int id = stack.back(); stack.pop_back();
+        if (m_reach[size_t(id)]) continue;
+        int x = id % MAP_W, y = id / MAP_W;
+        int t = m_map[y][x];
+        if (t != CELL_FLOOR && t != CELL_DOOR) continue;
+        m_reach[size_t(id)] = 1;
+        const int d[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (auto &o : d) {
+            int nx = x + o[0], ny = y + o[1];
+            if (nx >= 0 && ny >= 0 && nx < MAP_W && ny < MAP_H && !m_reach[size_t(ny * MAP_W + nx)]) stack.push_back(ny * MAP_W + nx);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +324,8 @@ void MainWindow::tryOpenDoor()
         int t = m_map[ny][nx];
         if ((t != CELL_DOOR && t != CELL_SECRET) || m_doorMoving[ny][nx]) continue;
         m_doorMoving[ny][nx] = true;
+        sfxAt(SND_DOOR, nx + 0.5f, ny + 0.5f, 0.9f);
+        if (t == CELL_SECRET) sfx(SND_SECRET, 0.8f, 1.f, 0.3f);
         if (t == CELL_SECRET) {
             m_gs.secretsFound++;
             m_gs.score += 500;
@@ -318,6 +345,7 @@ void MainWindow::updateDoors(float dt)
             m_doorMoving[y][x] = false;
             m_map[y][x] = CELL_FLOOR;
             buildLightMap(x - 8, y - 8, x + 9, y + 9);
+            if (m_screen == SCR_PLAYING) computeReachable(m_parsed[m_gs.mapChoice].spawnX, m_parsed[m_gs.mapChoice].spawnY);
         }
     }
 }

@@ -46,8 +46,7 @@ void MainWindow::renderViewModel()
 {
     const Player &pl = m_gs.player;
     const int w = pl.curWeapon;
-    const WeaponDef &wd = WEAPONS[w];
-    if (wd.scope && m_adsT > 0.6f) return;                     // scope overlay replaces the gun
+    if (effectiveScope(w) && m_adsT > 0.6f) return;                     // scope overlay replaces the gun
     const GunModel &M = *GUN_MODELS[w];
     const CharProfile &cp = CHAR_PROFILES[m_charChoice];
 
@@ -61,7 +60,7 @@ void MainWindow::renderViewModel()
     float drop = 0;
     if (pl.switchTimer > 0) { float s = pl.switchTimer / 0.4f; drop = s > 0.5f ? (1.f - s) * 2.f : s * 2.f; }
     float spr = m_sprintT;
-    float aimHide = wd.scope ? 0.f : m_adsT;                    // reflex weapons lower as the sight rises
+    float aimHide = effectiveScope(w) ? 0.f : m_adsT;                    // reflex weapons lower as the sight rises
 
     // --- Anchors: rear of the gun (R, off-screen bottom-right) and the
     //     vanishing point (V, on the crosshair) -------------------------------------
@@ -80,7 +79,7 @@ void MainWindow::renderViewModel()
     gp.Vx = m_aimX + m_swayX * 0.5f; gp.Vy = m_aimY + m_swayY * 0.5f + 25.f;
     gp.Rx = b.rx + bx + m_swayX; gp.Ry = b.ry + by + breathe + m_swayY;
     // Rifle ADS: swing toward the centre line before the scope takes over
-    if (wd.scope && m_adsT > 0) { gp.Rx += (W * 0.62f - gp.Rx) * m_adsT; gp.Ry += 30 * m_adsT; }
+    if (effectiveScope(w) && m_adsT > 0) { gp.Rx += (W * 0.62f - gp.Rx) * m_adsT; gp.Ry += 30 * m_adsT; }
     // recoil: gun slams back toward the camera, muzzle climbs
     gp.Rx += (gp.Rx - gp.Vx) * 0.08f * m_kick; gp.Ry += (gp.Ry - gp.Vy) * 0.08f * m_kick;
     gp.Vy -= 50.f * m_kick;
@@ -268,7 +267,7 @@ void MainWindow::renderCasings()
 void MainWindow::renderReflexSight()
 {
     const Player &pl = m_gs.player;
-    if (effectiveScope(pl.curWeapon) || m_adsT < 0.02f) return;
+    if (effectiveScope(pl.curWeapon) || pl.curWeapon == WPN_KNIFE || m_adsT < 0.02f) return;
     float rise = 1.f - smoothstep01(m_adsT);
     float cx = W / 2.f + m_swayX * 0.4f, cy = H / 2.f + m_swayY * 0.4f + rise * H * 0.8f;
     bool holo = pl.curWeapon == WPN_SHOTGUN;

@@ -15,7 +15,8 @@ SOURCES += \
     render_world.cpp \
     render_weapon.cpp \
     render_hud.cpp \
-    world.cpp
+    world.cpp \
+    audio.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -24,7 +25,8 @@ HEADERS += \
     assets.h \
     gunmodels.h \
     maps.h \
-    pixelfont.h
+    pixelfont.h \
+    audio.h
 
 FORMS +=
 

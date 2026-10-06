@@ -400,10 +400,10 @@ void MainWindow::renderSprites()
                                                  e.type == ET_SHOTGUNNER ? m_shotgunAtlas :
                                                  e.type == ET_SNIPER ? m_sniperAtlas : m_enemyAtlas;
             blit(e.x, e.y, base, 1.f, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive);
-            if (e.alive && s.idx < 12 && m_enemyHPDisplay[s.idx] > 0) {
+            if (e.alive && e.hpShow > 0) {
                 float sx, sy, d;
                 if (project(e.x, e.y, base + 1.08f, sx, sy, d) && d < depthAt(int(sx), int(sy)) + 0.5f) {
-                    float a = std::min(1.f, m_enemyHPDisplay[s.idx] / 0.4f);
+                    float a = std::min(1.f, e.hpShow / 0.4f);
                     int bw = clampi(int(70 / std::max(1.f, d * 0.4f)), 28, 70), bx = int(sx) - bw / 2, by = int(sy) - 6;
                     float frac = float(e.hp) / float(std::max(1, e.maxHp));
                     m_cv.blendRect(bx - 1, by - 1, bw + 2, 6, withAlpha(0, int(170 * a)));

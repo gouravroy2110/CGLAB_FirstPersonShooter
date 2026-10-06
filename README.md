@@ -45,7 +45,8 @@
 | **1 / 2 / 3 / 4** | Knife / Pistol / Shotgun / Carbine (once picked up) |
 | **U** | **Field Armory** — inspect weapon stats, attachment slots, and upgrade status |
 | **9** | **Debug Weapon Range** — toggle all attachments across all weapons |
-| **Space** | Jump — onto ledges, out of pits, across acid · **Deploy immediately** on Zone Clear screen |
+| **Space** | Jump — onto ledges, out of pits, across acid |
+| **N** | Sound on / off |
 | **E** | Open a door · **inspect a suspicious wall** for a secret passage |
 | **V** | Toggle free-aim ↔ classic centred crosshair |
 | **C** | Re-centre crosshair and view |
@@ -85,11 +86,27 @@ Menus work with keyboard (arrows / 1-4 / Enter / Esc / Space) **and mouse** (hov
 - **HUD Attachment Badges**: The bottom weapon HUD badge displays active attachment abbreviations (`[MAG]`, `[COMP]`, `[AP]`, `[ACOG]`, `[PUMP]`, `[TRIG]`).
 - **Debug Weapon Range (`[9]`)**: Press `[9]` in-game to instantly toggle all attachments across all weapons for testing and tuning.
 
-### Zone Clear Supply Drop Draft & Progression
-- **Post-Arena Supply Drop**: Clearing an arena presents 3 procedurally drafted tactical upgrade cards.
-- **30-Second Decision Timer**: Provides ample time to read weapon descriptions, stat bonuses, and card choices without rushing.
-- **Clickable Continue / Deploy Button**: A dedicated button plate `[ CONTINUE >> ]` / `[ DEPLOY NOW >> ]` on screen, with keyboard shortcuts (`Space` / `Enter` / `1`, `2`, `3`).
-- **2-Stage Deployment Flow**: Selecting a card locks in the attachment and begins a 3-second deployment countdown with an option to deploy immediately. If the 30-second timer expires, the first card is auto-equipped.
+### Zone Clear: upgrade + loadout screen
+- Clearing a zone opens a three-step screen: **1 choose one of 3 upgrade cards → 2 choose the weapon to deploy with → 3 deploy**.
+- Nothing happens until you decide: pick a card with `1` `2` `3` or a click (you can change your mind), choose the weapon with `TAB` / arrows or a click, then press `ENTER` or click **DEPLOY**. A 60-second fallback timer only moves an idle game on.
+- The mouse is released on this screen (visible cursor, hover highlights), and input from the fight that cleared the zone is ignored for the first second, so a stray shot, jump or number key can no longer pick a card or skip the screen.
+
+### Sound
+- **Every sound is synthesised in code at start-up** — no audio files, the same way no image files are used. Oscillators, filtered noise, envelopes, formant filters and a small room reverb build 52 effects (`audio.cpp`).
+- A real-time software mixer (`SoundEngine`, pulled by `QAudioSink`) plays overlapping voices with per-voice volume, stereo pan, pitch and delay; a soft clipper prevents distortion.
+- **Positional 3D audio**: enemy gunfire, impacts, doors and death cries are panned left/right by direction, fade with distance and are muffled behind walls.
+- **Distinct sounds for each feature**:
+
+| Feature | Sounds |
+|---|---|
+| Your weapons | pistol / shotgun / carbine reports, knife swing + hit, dry-fire click, brass and shell tinkles |
+| Handling | magazine out / in, slide & bolt rack, shotgun shell loading and pump, weapon switch, scope-in, scope zoom ticks |
+| Enemies | rifleman, scout pistol, shotgunner and sniper (with echo) gunfire, alert call-out, death cry, near-miss bullet whiz |
+| Hits | flesh hit, hit-marker tick, helmet "ping" for headshots, kill confirm, wall impacts and ricochets |
+| Player | footsteps (faster when sprinting, quiet when aiming), jump, landing thud, pain grunts, acid sizzle, low-health heartbeat |
+| World | stone door grinding, secret-area chime, pickups (ammo, health, weapon, intel fanfare), radio chatter for reinforcements and supply drops |
+| Flow | zone-clear fanfare, upgrade select, deploy, game-over sting, menu move / select / back blips |
+| Ambience | looping wind (Arena), cave drone with water drips (Dungeon), low dusk drone (Crypt) |
 
 ### Tactical Enemy AI & Hostile Archetypes
 - **Smart Stop-and-Shoot AI**: Hostiles halt movement when ready to fire (`fireCooldown ≤ 0.35s`), take aim, and engage the operative up to true weapon ranges (up to 22 units), completely replacing erratic sideways jitter with grounded tactical gunplay.
@@ -207,7 +224,8 @@ fps_game/
 │                       decals, 3D hitscan, line of sight, movement checks
 ├── render_world.cpp    Terrain + walls ray-march, sky, lens flare, sprites, tracers, particles
 ├── render_weapon.cpp   First-person gun + hands, muzzle flash, casings, sights, scope
-└── render_hud.cpp      Frame composition, post FX, HUD, menus, pause / game over
+├── render_hud.cpp      Frame composition, post FX, HUD, menus, intermission, pause / game over
+└── audio.h/.cpp        Procedural sound synthesis + real-time stereo mixer
 ```
 
 ---

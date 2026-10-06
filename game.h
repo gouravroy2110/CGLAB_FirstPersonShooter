@@ -189,11 +189,12 @@ struct Enemy {
     bool  moving=false, killedByHeadshot=false;
     bool  elite=false;           // vault guard: tougher, faster, darker kit
     float alertDirX=0.f, alertDirY=0.f, alertDist=0.f;
+    float hpShow=0.f;             // seconds left to show the floating health bar
 };
 
 // --- Projectiles -------------------------------------------------------------
 // Enemy rounds are slow glowing projectiles you can dodge.
-struct Bullet { float x,y,z,dx,dy,dz=0; float px=0,py=0,pz=0; BulletOwner owner=ENEMY_SHOT; bool alive=true; int damage=0; };
+struct Bullet { float x,y,z,dx,dy,dz=0; float px=0,py=0,pz=0; BulletOwner owner=ENEMY_SHOT; bool alive=true; int damage=0; bool whizzed=false; };
 // Player rounds are hitscan; a tracer streak flies along the resolved path.
 struct Tracer { float x0,y0,z0, x1,y1,z1, t=0, len=1; };
 // Floating damage number

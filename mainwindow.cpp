@@ -38,6 +38,7 @@ MainWindow::MainWindow(QWidget *parent)
     setMinimumSize(W / 2, H / 2);
     setWindowTitle("RASTER  -  Tactical Shooter");
     resize(W, H);
+    m_snd = new SoundEngine(this);
     m_pixels = reinterpret_cast<uint32_t *>(m_buf.bits());
     m_cv = rs::Canvas{m_pixels, W, H};
     m_depth.assign(size_t(W) * H, 1e30f);
@@ -390,11 +391,13 @@ void MainWindow::loadLevel(int lv)
     for (size_t i = spawns.size(); i > 1; i--) std::swap(spawns[i - 1], spawns[size_t(rand()) % i]);
     for (size_t i = kits.size(); i > 1; i--) std::swap(kits[i - 1], kits[size_t(rand()) % i]);
 
-    // Gather valid walkable floor tiles away from player spawn (> 8 units)
+    // Gather valid walkable floor tiles away from player spawn (> 8 units), reachable without
+    // opening secrets and not inside pits (enemies spawned there could never be reached / escape)
+    computeReachable(pl.posX, pl.posY);
     std::vector<std::pair<float, float>> validFloorTiles;
     for (int y = 1; y < MAP_H - 1; y++) {
         for (int x = 1; x < MAP_W - 1; x++) {
-            if (m_map[y][x] == CELL_FLOOR && !m_acid[y][x]) {
+            if (m_map[y][x] == CELL_FLOOR && !m_acid[y][x] && reachable(x, y) && m_plat[y][x] > -0.1f) {
                 float fx = x + 0.5f, fy = y + 0.5f;
                 float dsq = (fx - pl.posX) * (fx - pl.posX) + (fy - pl.posY) * (fy - pl.posY);
                 if (dsq > 64.f && posValid(fx, fy, 0.28f)) {
@@ -487,7 +490,7 @@ void MainWindow::tick()
 
     advance(dt);
 
-    bool captured = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver && hasFocus();
+    bool captured = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver && !m_gs.levelComplete && !m_showArmory && hasFocus();
     Qt::CursorShape want = captured ? Qt::BlankCursor : Qt::ArrowCursor;
     if (cursor().shape() != want) setCursor(want);
 
@@ -510,10 +513,22 @@ void MainWindow::advance(float dt)
     if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
 
     // ADS blend + FOV
-    bool canAim = playing && pl.adsMode && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !pl.sprinting && !m_gs.gameOver;
+    bool canAim = playing && pl.adsMode && pl.curWeapon != WPN_KNIFE && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !pl.sprinting && !m_gs.gameOver && !m_gs.levelComplete;
     m_adsT += ((canAim ? 1.f : 0.f) - m_adsT) * std::min(1.f, dt * 12.f);
     float adsFov = effectiveScope(pl.curWeapon) ? 1.f / m_scopeMag : effectiveAdsFov(pl.curWeapon);
     m_adsFOVMult = 1.f + (adsFov - 1.f) * m_adsT;
+    if (m_prevAdsT < 0.5f && m_adsT >= 0.5f) sfx(SND_SCOPE_IN, effectiveScope(pl.curWeapon) ? 0.5f : 0.25f);
+    m_prevAdsT = m_adsT;
+
+    // Sound timers, heartbeat at low health, game-over sting
+    m_hurtSndT -= dt; m_alertSndT -= dt;
+    if (playing && !m_paused && !m_gs.gameOver && !m_gs.levelComplete &&
+        pl.hp <= std::max(25, CHAR_PROFILES[m_charChoice].hp / 4)) {
+        m_heartbeatT -= dt;
+        if (m_heartbeatT <= 0) { sfx(SND_HEARTBEAT, 0.8f); m_heartbeatT = 0.85f; }
+    }
+    if (playing && m_gs.gameOver && !m_prevGameOver) sfx(SND_GAME_OVER, 0.8f);
+    m_prevGameOver = playing && m_gs.gameOver;
 
     // Aiming down sights pulls the free crosshair back to the centre (the
     // camera absorbs the offset, so the aimed-at point stays put)
@@ -560,7 +575,7 @@ void MainWindow::advance(float dt)
     if (m_comboTimer > 0) { m_comboTimer -= dt; if (m_comboTimer <= 0) m_combo = 0; }
     for (auto &k : m_killFeed) k.life -= dt;
     m_killFeed.erase(std::remove_if(m_killFeed.begin(), m_killFeed.end(), [](const KFEntry &k) { return k.life <= 0; }), m_killFeed.end());
-    for (int i = 0; i < 12; i++) if (m_enemyHPDisplay[i] > 0) m_enemyHPDisplay[i] -= dt;
+    for (auto &en : m_gs.enemies) if (en.hpShow > 0) en.hpShow -= dt;
 
     // Ejected casings (screen space, with gravity and spin)
     for (auto &c : m_casings) {
@@ -575,7 +590,7 @@ void MainWindow::advance(float dt)
         computeView();
         float ax, ay; aimPoint(ax, ay);
         HitResult h = hitscan(ax, ay);
-        m_probeEnemy = h.enemy; m_probePart = h.part;
+        m_probeEnemy = h.enemy; m_probePart = h.part; m_probeDepth = h.depth;
 
         // Proximity detection for secret walls and doors in front of the player
         int cand[3][2] = {
@@ -603,28 +618,106 @@ void MainWindow::pushFeed(const QString &t, float life, bool head)
     if (int(m_killFeed.size()) > 5) m_killFeed.pop_back();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Sound helpers
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::enableAudio()
+{
+    if (m_snd && !m_snd->available()) m_snd->start();
+    m_ambId = -1;
+    updateAmbience();
+}
+
+void MainWindow::sfx(SoundId id, float gain, float pitch, float delay)
+{
+    if (m_snd) m_snd->play(id, gain, 0.f, pitch, delay);
+}
+
+// Positional sound: stereo pan from the direction relative to the view,
+// distance fall-off, and muffling when a wall blocks the line of sight.
+void MainWindow::sfxAt(SoundId id, float wx, float wy, float gain, float pitch, float delay)
+{
+    if (!m_snd || !m_snd->available()) return;
+    const Player &pl = m_gs.player;
+    float dx = wx - pl.posX, dy = wy - pl.posY, d = std::sqrt(dx * dx + dy * dy);
+    float fl = std::sqrt(pl.dirX * pl.dirX + pl.dirY * pl.dirY) + 1e-6f;
+    float rx = -pl.dirY / fl, ry = pl.dirX / fl;                 // screen-right in world space
+    float pan = d > 0.05f ? rs::clampf((dx * rx + dy * ry) / d, -1.f, 1.f) * 0.85f : 0.f;
+    float att = 1.f / (1.f + 0.035f * std::pow(d, 1.6f));
+    if (d > 1.5f && !hasLOS(wx, wy, floorH(wx, wy) + 0.6f, pl.posX, pl.posY, m_footZ + 0.5f)) att *= 0.5f;
+    m_snd->play(id, gain * att, pan, pitch, delay);
+}
+
+void MainWindow::updateAmbience()
+{
+    if (!m_snd) return;
+    int want = m_theme == 0 ? SND_AMB_DUNGEON : m_theme == 1 ? SND_AMB_WIND : SND_AMB_CRYPT;
+    if (want == m_ambId) return;
+    m_snd->setAmbience(want, 0.32f);
+    m_ambId = want;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Intermission between zones: pick one upgrade + the weapon to deploy with
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<int> MainWindow::loadoutChoices() const
+{
+    std::vector<int> v;
+    for (int w = 0; w < WPN_COUNT; w++) if (m_gs.player.owned[w]) v.push_back(w);
+    return v;
+}
+QRect MainWindow::ixCardRect(int i) const
+{
+    const int cw = 232, ch = 248, sp = 18, x0 = (W - (3 * cw + 2 * sp)) / 2;
+    return QRect(x0 + i * (cw + sp), 118, cw, ch);
+}
+QRect MainWindow::ixChipRect(int slot, int n) const
+{
+    const int cw = 150, sp = 10, tot = n * cw + (n - 1) * sp, x0 = (W - tot) / 2;
+    return QRect(x0 + slot * (cw + sp), 392, cw, 48);
+}
+QRect MainWindow::ixDeployRect() const { return QRect((W - 270) / 2, 456, 270, 38); }
+
+void MainWindow::updateIntermissionHover(const QPointF &widgetPos)
+{
+    QPointF f = widgetToFrame(widgetPos);
+    QPoint p(int(f.x()), int(f.y()));
+    int oldCard = m_hoverCard, oldChip = m_hoverChip;
+    m_hoverCard = -1; m_hoverChip = -1;
+    for (int i = 0; i < int(m_upgradeCards.size()) && i < 3; i++) if (ixCardRect(i).contains(p)) m_hoverCard = i;
+    std::vector<int> ch = loadoutChoices();
+    for (int s = 0; s < int(ch.size()); s++) if (ixChipRect(s, int(ch.size())).contains(p)) m_hoverChip = s;
+    m_hoverDeploy = ixDeployRect().contains(p);
+    if ((m_hoverCard != oldCard && m_hoverCard >= 0) || (m_hoverChip != oldChip && m_hoverChip >= 0)) sfx(SND_UI_MOVE, 0.5f);
+}
+
+void MainWindow::deployNextZone()
+{
+    Player &pl = m_gs.player;
+    int idx = m_selectedUpgradeCard >= 0 ? m_selectedUpgradeCard : 0;
+    QString title;
+    if (idx < int(m_upgradeCards.size())) {
+        applyUpgrade(m_upgradeCards[idx].weapon, m_upgradeCards[idx].slot);
+        title = m_upgradeCards[idx].title;
+    }
+    int lw = m_loadoutWeapon;
+    loadLevel(m_gs.level + 1);
+    if (lw >= 0 && lw < WPN_COUNT && pl.owned[lw]) { pl.curWeapon = lw; m_pendingWeapon = -1; pl.switchTimer = 0.4f; }
+    if (!title.isEmpty()) pushFeed("UPGRADE EQUIPPED: " + title, 4.f, true);
+    pushFeed(QString("ZONE %1 - DEPLOYED WITH %2").arg(m_gs.level).arg(WEAPONS[pl.curWeapon].shortName), 4.f);
+    sfx(SND_DEPLOY, 0.7f);
+}
+
 void MainWindow::gameStep(float dt)
 {
     Player &pl = m_gs.player;
     m_gs.frameNum++;
     if (m_gs.levelComplete) {
-        if (!m_upgradePicked) {
-            m_upgradeDecisionTimer -= dt;
-            if (m_upgradeDecisionTimer <= 0.0f) {
-                if (!m_upgradeCards.empty()) {
-                    applyUpgrade(m_upgradeCards[0].weapon, m_upgradeCards[0].slot);
-                    m_selectedUpgradeCard = 0;
-                }
-                m_upgradePicked = true;
-                m_deployTimer = 3.0f;
-                pushFeed("AUTO-EQUIPPED: " + (m_upgradeCards.empty() ? "" : m_upgradeCards[0].title), 3.0f, true);
-            }
-        } else {
-            m_deployTimer -= dt;
-            if (m_deployTimer <= 0.0f) {
-                loadLevel(m_gs.level + 1);
-            }
-        }
+        // The player decides at their own pace; the long fallback timer only
+        // exists so an idle game still moves on.
+        m_intermissionT += dt;
+        m_upgradeDecisionTimer -= dt;
+        if (m_upgradeDecisionTimer <= 0.0f) deployNextZone();
         return;
     }
     if (pl.attackCooldown > 0) pl.attackCooldown -= dt;
@@ -834,6 +927,7 @@ if (canMoveY) {
     if (m_onGround && m_velZ <= 0 && m_footZ - g < 0.12f) { m_footZ = g; m_velZ = 0; }
     if (m_footZ <= g) {
         if (!m_onGround && m_velZ < -4.f) pl.shakeY += std::min(10.f, -m_velZ * 1.2f);
+        if (!m_onGround && m_velZ < -2.5f) sfx(SND_LAND, std::min(1.f, -m_velZ * 0.12f), frand(0.9f, 1.1f));
         m_footZ = g; m_velZ = 0; m_onGround = true;
     } else if (m_footZ > g + 0.12f) m_onGround = false;
 
@@ -842,10 +936,17 @@ if (canMoveY) {
     if (m_acid[pcy][pcx] && m_footZ <= g + 0.05f) {
         m_acidAcc += 28.f * dt * (1.f - pl.damageReduction * 0.5f);
         m_acidFlash = 1.f;
+        m_acidSndT -= dt;
+        if (m_acidSndT <= 0) { sfx(SND_ACID, 0.6f, frand(0.9f, 1.1f)); m_acidSndT = 0.35f; }
+        if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.45f, frand(0.95f, 1.05f)); m_hurtSndT = 1.0f; }
         if (m_acidAcc >= 1.f) { int d = int(m_acidAcc); m_acidAcc -= d; pl.hp -= d; pl.damageFlash = std::max(pl.damageFlash, 0.2f); }
         if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
     }
     if (moving) pl.bobPhase += dt * (pl.sprinting ? 9.f : 5.5f); else pl.bobPhase *= 0.9f;
+    // Footsteps: one per half bob cycle while walking on the ground
+    if (moving && m_onGround && int(pl.bobPhase / 3.14159f) != int(m_footstepPrev / 3.14159f))
+        sfx(SND_STEP, pl.sprinting ? 0.55f : pl.adsMode ? 0.2f : 0.36f, frand(0.86f, 1.14f));
+    m_footstepPrev = pl.bobPhase;
 
     // Automatic fire while the trigger is held
     if (m_lmb && WEAPONS[pl.curWeapon].automatic) tryFire();
@@ -860,6 +961,7 @@ if (canMoveY) {
             k.active = false;
             pl.hp = std::min(pl.hp + 30, maxHP);
             pushFeed("+30 HEALTH", 3.f);
+            sfx(SND_PICKUP_HEALTH, 0.7f);
         }
     }
     // Weapon / ammo pickups
@@ -874,6 +976,7 @@ if (canMoveY) {
             pl.hp = CHAR_PROFILES[m_charChoice].hp;
             m_gs.score += 1000;
             pushFeed("INTEL RECOVERED  +1000", 4.5f, true);
+            sfx(SND_INTEL, 0.8f);
         } else if (wp.type == PICKUP_AMMO) {
             bool isScavenger = wp.emergency;
             for (int w = WPN_PISTOL; w < WPN_COUNT; w++) if (pl.owned[w]) {
@@ -882,6 +985,7 @@ if (canMoveY) {
             }
             if (isScavenger) pushFeed("+ SCAVENGER RATIONS (1 MAG)", 3.5f);
             else pushFeed("+ AMMO", 3.f);
+            sfx(SND_PICKUP_AMMO, 0.7f);
             if (pl.mag[pl.curWeapon] == 0 && pl.reserve[pl.curWeapon] > 0 && pl.reloadTimer <= 0) {
                 startReload();
             }
@@ -892,6 +996,7 @@ if (canMoveY) {
             if (!had) pl.mag[w] = WEAPONS[w].magSize;
             pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize * 2, WEAPONS[w].maxReserve);
             pushFeed(QString(had ? "+ AMMO  %1" : "NEW WEAPON  %1").arg(WEAPONS[w].name), 4.f);
+            sfx(had ? SND_PICKUP_AMMO : SND_PICKUP_WEAPON, 0.75f);
             if (!had) switchWeapon(w);
         }
     }
@@ -909,13 +1014,18 @@ if (canMoveY) {
         b.x += b.dx * dt; b.y += b.dy * dt; b.z += b.dz * dt;
         int bx = int(std::floor(b.x)), by = int(std::floor(b.y));
         if (bx < 0 || bx >= MAP_W || by < 0 || by >= MAP_H || b.z < groundAt(b.x, b.y)) {
-            b.alive = false; spawnImpact(b.px, b.py, b.pz, !solidCell(bx, by)); continue;
+            b.alive = false; spawnImpact(b.px, b.py, b.pz, !solidCell(bx, by));
+            sfxAt(SND_IMPACT, b.px, b.py, 0.5f, frand(0.9f, 1.2f));
+            continue;
         }
         float dx = b.x - pl.posX, dy = b.y - pl.posY;
+        if (!b.whizzed && dx * dx + dy * dy < 1.6f) { b.whizzed = true; sfxAt(SND_BULLET_WHIZ, b.x, b.y, 0.9f, frand(0.9f, 1.15f)); }
         if (dx * dx + dy * dy < 0.15f && b.z > m_footZ - 0.1f && b.z < m_footZ + 0.95f) {
             b.alive = false;
             int dmg = b.damage > 0 ? b.damage : int((10 + 4 * (m_gs.level - 1)) * (1.f - pl.damageReduction) * dc.dmgReceivedMult);
             pl.hp -= dmg; pl.damageFlash = 0.45f; pl.shakeY = -9.f;
+            sfx(SND_HIT_FLESH, 0.6f, frand(0.9f, 1.1f));
+            if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.85f, frand(0.93f, 1.07f)); m_hurtSndT = 0.35f; }
             m_damageAngle = std::atan2(-b.dy, -b.dx); m_damageDirTimer = 2.0f;
             if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
         }
@@ -955,13 +1065,21 @@ if (canMoveY) {
 
     if (!m_gs.levelComplete && m_gs.killsThisLevel >= m_gs.killsNeeded) {
         m_gs.levelComplete = true;
-        m_upgradeDecisionTimer = 30.0f;
+        m_upgradeDecisionTimer = 60.0f;
+        m_intermissionT = 0.f;
         m_deployTimer = 0.0f;
         m_upgradePicked = false;
         m_selectedUpgradeCard = -1;
+        m_hoverCard = m_hoverChip = -1;
         m_gs.score += 500 * m_gs.level;
         generateUpgradeChoices();
-        pushFeed("ZONE CLEARED! SELECT TACTICAL UPGRADE [1, 2, 3]", 5.0f, true);
+        // Stop combat input carrying over into the menu (held trigger, aim)
+        m_lmb = false; pl.adsMode = false; m_showArmory = false;
+        m_loadoutWeapon = pl.curWeapon;
+        if (m_loadoutWeapon == WPN_KNIFE)
+            for (int w = WPN_RIFLE; w >= WPN_PISTOL; w--) if (pl.owned[w]) { m_loadoutWeapon = w; break; }
+        sfx(SND_LEVEL_CLEAR, 0.8f);
+        pushFeed("ZONE CLEARED - CHOOSE AN UPGRADE AND YOUR WEAPON", 5.0f, true);
     }
 }
 
@@ -988,6 +1106,7 @@ void MainWindow::updateEnemies(float dt)
             if (e.state != ES_ALERT) {
                 // Initial target acquisition: alert bot with snappy reaction time
                 e.state = ES_ALERT;
+                if (m_alertSndT <= 0) { sfxAt(SND_ENEMY_ALERT, e.x, e.y, 0.9f, frand(0.88f, 1.12f)); m_alertSndT = 1.5f; }
                 e.fireCooldown = frand(0.35f, 0.65f) * dc.fireCoolMult;
                 e.strafeTimer = frand(2.0f, 3.8f);
                 e.moveX = frand() < 0.5f ? -1.f : 1.f;
@@ -1174,7 +1293,7 @@ void MainWindow::checkReinforcements(float dt)
     // Find a valid floor tile out of player LOS and at distance 10..22 units
     for (int tries = 0; tries < 40; tries++) {
         int rx = 2 + rand() % (MAP_W - 4), ry = 2 + rand() % (MAP_H - 4);
-        if (m_map[ry][rx] != CELL_FLOOR || m_acid[ry][rx]) continue;
+        if (m_map[ry][rx] != CELL_FLOOR || m_acid[ry][rx] || !reachable(rx, ry) || m_plat[ry][rx] < -0.1f) continue;
         float fx = rx + 0.5f, fy = ry + 0.5f;
         float dsq = (fx - pl.posX) * (fx - pl.posX) + (fy - pl.posY) * (fy - pl.posY);
         if (dsq < 100.f || dsq > 500.f) continue;
@@ -1185,6 +1304,7 @@ void MainWindow::checkReinforcements(float dt)
         EnemyType rt = (rand() % 100 < 40) ? ET_SCOUT : (rand() % 100 < 70) ? ET_RIFLEMAN : ET_SHOTGUNNER;
         spawnEnemy(fx, fy, false, rt);
         pushFeed("HOSTILE REINFORCEMENTS INBOUND", 3.0f);
+        sfx(SND_RADIO, 0.6f);
         m_reinforceTimer = frand(20.f, 32.f);
         break;
     }
@@ -1209,7 +1329,7 @@ void MainWindow::tryFire()
     }
     if (pl.mag[pl.curWeapon] <= 0) {
         if (pl.reserve[pl.curWeapon] > 0) startReload();
-        else { pl.attackCooldown = 0.3f; pushFeed("OUT OF AMMO - PRESS 1 FOR KNIFE", 1.5f); }
+        else { pl.attackCooldown = 0.3f; sfx(SND_DRY_FIRE, 0.7f); pushFeed("OUT OF AMMO - PRESS 1 FOR KNIFE", 1.5f); }
         return;
     }
     fireWeapon();
@@ -1224,6 +1344,7 @@ void MainWindow::fireWeapon()
         pl.attackCooldown = effectiveFireDelay(WPN_KNIFE);
         m_actionT = 1.0f;
         m_knifeSwing = 1 - m_knifeSwing; // alternate slash / stab
+        sfx(SND_KNIFE_SWING, 0.8f, frand(0.9f, 1.15f));
         m_camKick += (m_knifeSwing ? 1.0f : -0.8f);
         m_kick = std::min(1.2f, m_kick + 0.35f);
         m_gs.shotsFired++;
@@ -1234,6 +1355,7 @@ void MainWindow::fireWeapon()
 
         if (h.enemy >= 0 && h.depth <= 2.2f) {
             m_gs.shotsHit++;
+            sfx(SND_KNIFE_HIT, 0.9f, frand(0.9f, 1.1f), 0.05f);
             float headMult = (pl.upgradeSpecial[WPN_KNIFE] ? 3.5f : wd.headMult);
             float mult = h.part == PART_HEAD ? headMult : (h.part == PART_LIMB ? wd.limbMult : 1.0f);
             int dmg = int(effectiveDamage(WPN_KNIFE) * mult * frand(0.95f, 1.15f));
@@ -1246,12 +1368,20 @@ void MainWindow::fireWeapon()
             spawnBlood(h.x, h.y, h.z, h.part == PART_HEAD ? 24 : 14, 1.5f);
         } else if (!h.sky && h.depth <= 2.0f) {
             spawnImpact(h.x, h.y, h.z, h.floor);
+            sfx(SND_IMPACT, 0.6f, frand(0.9f, 1.1f), 0.05f);
         }
         return;
     }
 
     pl.mag[pl.curWeapon]--;
     pl.attackCooldown = effectiveFireDelay(pl.curWeapon);
+    {
+        const int w = pl.curWeapon;
+        SoundId gs = w == WPN_SHOTGUN ? SND_SHOTGUN : w == WPN_RIFLE ? SND_RIFLE : SND_PISTOL;
+        sfx(gs, pl.upgradeCompensator[w] ? 0.85f : 1.f, frand(0.95f, 1.05f));
+        if (w == WPN_SHOTGUN) { sfx(SND_PUMP, 0.7f, 1.f, 0.12f); sfx(SND_SHELL_DROP, 0.45f, frand(0.9f, 1.1f), 0.7f); }
+        else sfx(SND_CASING, 0.4f, frand(0.85f, 1.2f), frand(0.35f, 0.5f));
+    }
     pl.flashTimer = pl.curWeapon == WPN_SHOTGUN ? 0.09f : 0.06f;
     m_flashLight = 1.f; m_flashSeed = rand();
     float recoil = effectiveRecoil(pl.curWeapon);
@@ -1303,6 +1433,7 @@ void MainWindow::fireWeapon()
             float bx = h.x - (h.x - pl.posX) / std::max(0.1f, h.depth) * 0.04f;
             float by = h.y - (h.y - pl.posY) / std::max(0.1f, h.depth) * 0.04f;
             spawnImpact(bx, by, h.z, h.floor);
+            if (p < 2) sfxAt(h.wall && rand() % 4 == 0 ? SND_RICOCHET : SND_IMPACT, h.x, h.y, 0.7f, frand(0.85f, 1.2f));
             if (h.floor) addDecal(m_scorch, h.x, h.y, 0.03f, 160);
             if (h.wall) stampWallDecal(h.cx, h.cy, h.face, h.u, h.v, wd.pellets > 1);
         }
@@ -1323,6 +1454,9 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     if (!e.alive) return;
     bool head = part == PART_HEAD;
     e.hp -= dmg; e.hitFlash = 0.16f;
+    e.hpShow = 2.2f;
+    sfxAt(SND_HIT_FLESH, hx, hy, 0.8f, frand(0.9f, 1.1f));
+    sfx(head ? SND_HEADSHOT : SND_HITMARK, head ? 0.8f : 0.55f);
 
     Player &pl = m_gs.player;
     float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
@@ -1349,12 +1483,13 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
 
     m_hitMarker = 0.25f;
     if (head) m_headMarker = 0.35f;
-    if (idx < 12) m_enemyHPDisplay[idx] = 2.2f;
     m_gs.damageNums.push_back(DamageNum{hx, hy, hz + 0.05f, dmg, head, 0.9f});
     spawnBlood(hx, hy, hz, head ? 22 : 9, head ? 1.7f : 1.f);
 
     if (e.hp <= 0) {
         e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0; e.killedByHeadshot = head;
+        sfx(SND_KILL, 0.7f, 1.f, 0.05f);
+        sfxAt(SND_ENEMY_DEATH, e.x, e.y, 0.9f, frand(0.85f, 1.15f));
         m_gs.kills++; m_gs.killsThisLevel++;
         m_gs.score += 100 * m_gs.level + (head ? 50 * m_gs.level : 0);
         if (head) { m_gs.headshots++; m_headshotBanner = 1.3f; }
@@ -1376,6 +1511,15 @@ void MainWindow::startReload()
     if (w == WPN_SHOTGUN) t = 0.5f + 0.32f * std::min(maxMag - pl.mag[w], pl.reserve[w]);
     pl.reloadTimer = t;
     m_reloadTotal = t;
+    if (w == WPN_SHOTGUN) {
+        int shells = std::min(maxMag - pl.mag[w], pl.reserve[w]);
+        for (int s = 0; s < shells; s++) sfx(SND_SHELL_IN, 0.6f, frand(0.95f, 1.05f), 0.35f + 0.32f * s);
+        sfx(SND_PUMP, 0.6f, 1.f, std::max(0.f, t - 0.32f));
+    } else {
+        sfx(SND_MAG_OUT, 0.7f, 1.f, t * 0.15f);
+        sfx(SND_MAG_IN, 0.75f, 1.f, t * 0.6f);
+        sfx(SND_BOLT, 0.7f, w == WPN_PISTOL ? 1.25f : 1.f, t * 0.82f);
+    }
     pl.adsMode = false;
 }
 
@@ -1386,6 +1530,7 @@ void MainWindow::switchWeapon(int w)
     pl.reloadTimer = 0;
     pl.switchTimer = 0.4f;
     m_pendingWeapon = w;
+    sfx(SND_SWITCH, 0.6f, frand(0.95f, 1.05f));
 }
 
 void MainWindow::enemyFire(Enemy &e)
@@ -1393,6 +1538,9 @@ void MainWindow::enemyFire(Enemy &e)
     const Player &pl = m_gs.player;
     float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
     if (d < 0.1f) return;
+    SoundId shot = e.type == ET_SNIPER ? SND_ENEMY_SNIPER : e.type == ET_SHOTGUNNER ? SND_ENEMY_SHOTGUN :
+                   e.type == ET_SCOUT ? SND_ENEMY_PISTOL : SND_ENEMY_RIFLE;
+    sfxAt(shot, e.x, e.y, 1.f, frand(0.94f, 1.06f));
     float acc = DIFF_CFG[m_difficulty].enemyAccuracy;
     if (e.type == ET_SNIPER) acc = std::min(0.98f, acc + 0.18f);
     else if (e.type == ET_SCOUT) acc = std::max(0.40f, acc - 0.12f);
@@ -1515,7 +1663,7 @@ bool MainWindow::findEmergencyDropPos(float &outX, float &outY) const
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
             if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
-            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             float fh = floorH(tx, ty);
             if (std::fabs(fh - m_footZ) > 0.75f) continue;
@@ -1548,7 +1696,7 @@ bool MainWindow::findEmergencyDropPos(float &outX, float &outY) const
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
             if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
-            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             float fh = floorH(tx, ty);
             if (std::fabs(fh - m_footZ) > 0.75f) continue;
@@ -1605,7 +1753,7 @@ bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
                 float ty = e.y + std::sin(ang) * r;
                 int cx = int(std::floor(tx)), cy = int(std::floor(ty));
                 if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
-                if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+                if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
                 if (!posValid(tx, ty, 0.28f)) continue;
                 float fh = floorH(tx, ty);
                 if (std::fabs(fh - floorH(e.x, e.y)) > 0.8f) continue;
@@ -1625,7 +1773,7 @@ bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
             if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
-            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             outX = tx;
             outY = ty;
@@ -1641,7 +1789,7 @@ bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
             if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
-            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR) continue;
+            if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             outX = tx;
             outY = ty;
@@ -1690,6 +1838,7 @@ void MainWindow::checkEmergencyDrops(float dt)
                 m_gs.weaponPickups.push_back(wp);
                 m_emergencyAmmoCooldown = 25.0f;
                 pushFeed("AMMO DROPPED IN HOSTILE ZONE - CHECK COMPASS", 5.0f, true);
+                sfx(SND_RADIO, 0.6f);
             }
         }
     }
@@ -1718,6 +1867,7 @@ void MainWindow::checkEmergencyDrops(float dt)
                 m_gs.healthKits.push_back(k);
                 m_emergencyHealthCooldown = 25.0f;
                 pushFeed("HEALTH DROPPED NEAR YOUR LOCATION", 4.5f, true);
+                sfx(SND_RADIO, 0.6f);
             }
         }
     }
@@ -1801,6 +1951,7 @@ void MainWindow::applyAimDelta(float dx, float dy)
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::menuConfirm()
 {
+    sfx(SND_UI_SELECT, 0.6f);
     switch (m_screen) {
     case SCR_MENU:
         if (m_menuCursor == 0) m_screen = SCR_MAP_SELECT;
@@ -1815,6 +1966,7 @@ void MainWindow::menuConfirm()
 }
 void MainWindow::menuBack()
 {
+    sfx(SND_UI_BACK, 0.6f);
     switch (m_screen) {
     case SCR_MENU:        QApplication::quit(); break;
     case SCR_MAP_SELECT:  m_screen = SCR_MENU; m_menuCursor = 0; break;
@@ -1831,6 +1983,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if (m_screen != SCR_PLAYING) {
         int *sel = m_screen == SCR_MAP_SELECT ? &m_mapChoice : m_screen == SCR_DIFF_SELECT ? &m_difficulty :
                    m_screen == SCR_CHAR_SELECT ? &m_charChoice : nullptr;
+        if (k == Qt::Key_Up || k == Qt::Key_Down || k == Qt::Key_Left || k == Qt::Key_Right) sfx(SND_UI_MOVE, 0.5f);
         if (m_screen == SCR_MENU) {
             if (k == Qt::Key_Up)   m_menuCursor = std::max(0, m_menuCursor - 1);
             if (k == Qt::Key_Down) m_menuCursor = std::min(2, m_menuCursor + 1);
@@ -1849,26 +2002,29 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if (e->isAutoRepeat()) return;
     Player &pl = m_gs.player;
 
-    // Level completion upgrade selection
-    if (m_gs.levelComplete) {
+    // Zone cleared: choose an upgrade [1-3], a weapon [TAB / arrows], then deploy [ENTER].
+    // Keys pressed in the first moments are ignored so combat input can't skip the screen.
+    if (m_gs.levelComplete && !m_paused && !m_gs.gameOver && k != Qt::Key_Escape) {
+        if (m_intermissionT < 0.9f) return;
         if (k >= Qt::Key_1 && k <= Qt::Key_3) {
             int idx = k - Qt::Key_1;
-            if (idx < int(m_upgradeCards.size())) {
-                applyUpgrade(m_upgradeCards[idx].weapon, m_upgradeCards[idx].slot);
-                m_selectedUpgradeCard = idx;
-                m_upgradePicked = true;
-                m_deployTimer = 3.0f;
-                pushFeed("UPGRADE EQUIPPED: " + m_upgradeCards[idx].title, 3.5f, true);
+            if (idx < int(m_upgradeCards.size())) { m_selectedUpgradeCard = idx; m_upgradePicked = true; sfx(SND_UPGRADE, 0.6f); }
+            return;
+        }
+        if (k == Qt::Key_Tab || k == Qt::Key_Right || k == Qt::Key_Left) {
+            std::vector<int> ch = loadoutChoices();
+            if (!ch.empty()) {
+                int cur = 0;
+                for (int s = 0; s < int(ch.size()); s++) if (ch[s] == m_loadoutWeapon) cur = s;
+                cur = (cur + (k == Qt::Key_Left ? int(ch.size()) - 1 : 1)) % int(ch.size());
+                m_loadoutWeapon = ch[cur];
+                sfx(SND_SWITCH, 0.5f);
             }
             return;
         }
-        if (k == Qt::Key_Space || k == Qt::Key_Return || k == Qt::Key_Enter) {
-            if (!m_upgradePicked && !m_upgradeCards.empty()) {
-                applyUpgrade(m_upgradeCards[0].weapon, m_upgradeCards[0].slot);
-                m_selectedUpgradeCard = 0;
-                m_upgradePicked = true;
-            }
-            loadLevel(m_gs.level + 1);
+        if (k == Qt::Key_Return || k == Qt::Key_Enter) {
+            if (m_selectedUpgradeCard >= 0) deployNextZone();
+            else { sfx(SND_UI_BACK, 0.6f); pushFeed("PICK AN UPGRADE FIRST  [1] [2] [3]", 2.f); }
             return;
         }
         return;
@@ -1902,7 +2058,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
 
     bool live = !m_paused && !m_gs.gameOver;
     if (live) {
-        if (k == Qt::Key_Space && m_onGround) { m_velZ = 5.5f; m_onGround = false; }
+        if (k == Qt::Key_Space && m_onGround) { m_velZ = 5.5f; m_onGround = false; sfx(SND_JUMP, 0.5f, frand(0.9f, 1.1f)); }
+        if (k == Qt::Key_N && m_snd) { m_snd->setMuted(!m_snd->muted()); pushFeed(m_snd->muted() ? "SOUND: OFF" : "SOUND: ON", 2.f); }
         if (k == Qt::Key_F) tryFire();
         if (k == Qt::Key_E) tryOpenDoor();
         if (k == Qt::Key_C) { m_pitch = 0.f; m_aimX = W / 2.f; m_aimY = H / 2.f; }
@@ -1947,34 +2104,24 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
         }
         return;
     }
-    if (m_gs.levelComplete) {
+    if (m_gs.levelComplete && !m_paused && !m_gs.gameOver) {
+        if (m_intermissionT < 0.9f) return;                     // ignore the shot that cleared the zone
         QPointF f = widgetToFrame(e->position());
-        int cw = 232, ch = 280, cy = 122;
-        int spacing = 18;
-        int totalW = 3 * cw + 2 * spacing;
-        int startX = (W - totalW) / 2;
+        QPoint pt(int(f.x()), int(f.y()));
         for (int i = 0; i < int(m_upgradeCards.size()) && i < 3; i++) {
-            int cx = startX + i * (cw + spacing);
-            if (f.x() >= cx && f.x() < cx + cw && f.y() >= cy && f.y() < cy + ch) {
-                applyUpgrade(m_upgradeCards[i].weapon, m_upgradeCards[i].slot);
-                m_selectedUpgradeCard = i;
-                m_upgradePicked = true;
-                m_deployTimer = 3.0f;
-                pushFeed("UPGRADE EQUIPPED: " + m_upgradeCards[i].title, 3.5f, true);
-                return;
-            }
-        }
-        // Continue / Deploy button
-        int btnW = 240, btnH = 36;
-        int btnX = (W - btnW) / 2, btnY = 432;
-        if (f.x() >= btnX && f.x() < btnX + btnW && f.y() >= btnY && f.y() < btnY + btnH) {
-            if (!m_upgradePicked && !m_upgradeCards.empty()) {
-                applyUpgrade(m_upgradeCards[0].weapon, m_upgradeCards[0].slot);
-                m_selectedUpgradeCard = 0;
-                m_upgradePicked = true;
-            }
-            loadLevel(m_gs.level + 1);
+            if (!ixCardRect(i).contains(pt)) continue;
+            m_selectedUpgradeCard = i; m_upgradePicked = true; sfx(SND_UPGRADE, 0.6f);
             return;
+        }
+        std::vector<int> ch = loadoutChoices();
+        for (int s = 0; s < int(ch.size()); s++) {
+            if (!ixChipRect(s, int(ch.size())).contains(pt)) continue;
+            m_loadoutWeapon = ch[s]; sfx(SND_SWITCH, 0.5f);
+            return;
+        }
+        if (ixDeployRect().contains(pt)) {
+            if (m_selectedUpgradeCard >= 0) deployNextZone();
+            else { sfx(SND_UI_BACK, 0.6f); pushFeed("PICK AN UPGRADE FIRST  [1] [2] [3]", 2.f); }
         }
         return;
     }
@@ -1996,6 +2143,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
     m_mouseWidget = e->position();
     if (m_screen != SCR_PLAYING) {
         QPointF f = widgetToFrame(e->position());
+        int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000;
         for (const HitRect &r : m_menuRects) {
             if (r.id == 10 || f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
@@ -2003,8 +2151,10 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
             if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
             if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
         }
+        if (m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 != before) sfx(SND_UI_MOVE, 0.5f);
         return;
     }
+    if (m_gs.levelComplete || m_showArmory) { if (m_gs.levelComplete) updateIntermissionHover(e->position()); return; }
     if (m_paused || m_gs.gameOver || !hasFocus()) return;
     QPoint c(width() / 2, height() / 2);
     float dx = float(e->position().x() - c.x()), dy = float(e->position().y() - c.y());
@@ -2020,6 +2170,7 @@ void MainWindow::wheelEvent(QWheelEvent *e)
     bool live = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver;
     if (live && effectiveScope(m_gs.player.curWeapon) && m_adsT > 0.5f) {
         m_scopeMag = rs::clampf(m_scopeMag + steps, 2.f, 8.f);
+        sfx(SND_ZOOM_TICK, 0.5f);
         return;
     }
     // Raster magnifier: keep the framebuffer pixel under the anchor fixed on screen.
@@ -2247,5 +2398,141 @@ bool MainWindow::snapshot(const QString &dir)
     for (int i = 0; i < 120; i++) { advance(1.f / 60.f); render(); }
     log(QString("%1 ms/frame (dungeon)").arg(tm.elapsed() / 120.0));
     m_gs.player.hp = 0; m_gs.gameOver = true; run(2); save("50_gameover");
+    m_gs.gameOver = false;
+
+    // ── Sound bank sanity: every effect non-empty, finite, not silent, not clipping ──
+    {
+        int bad = 0;
+        for (int i = 0; i < SND_COUNT; i++) {
+            const std::vector<float> &b = m_snd->buffer(SoundId(i));
+            float peak = 0; double rms = 0; bool finite = true;
+            for (float x : b) { if (!std::isfinite(x)) finite = false; peak = std::max(peak, std::fabs(x)); rms += double(x) * x; }
+            rms = b.empty() ? 0 : std::sqrt(rms / b.size());
+            bool ok = !b.empty() && finite && peak > 0.05f && peak <= 1.0f && rms > 0.002;
+            if (!ok) { bad++; log(QString("  BAD SOUND %1: len=%2 peak=%3 rms=%4 finite=%5").arg(i).arg(b.size()).arg(peak).arg(rms).arg(finite)); }
+        }
+        log(QString("sound bank: %1 sounds, %2 bad").arg(int(SND_COUNT)).arg(bad));
+        // Real output device, silent: does the sink start and pull mixed audio?
+        m_snd->setMasterVolume(0.f);
+        bool started = m_snd->start();
+        m_snd->play(SND_PISTOL);
+        QElapsedTimer at; at.start();
+        while (at.elapsed() < 600) QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        log(QString("audio device: started=%1 bytesMixed=%2").arg(started).arg(m_snd->bytesServed()));
+    }
+
+    // ── Intermission: combat input must not skip it; selection + loadout + deploy work ──
+    {
+        start(1);
+        Player &pl = m_gs.player;
+        pl.owned[WPN_SHOTGUN] = true; pl.mag[WPN_SHOTGUN] = 6; pl.reserve[WPN_SHOTGUN] = 12;
+        m_gs.killsThisLevel = m_gs.killsNeeded;
+        advance(1.f / 60.f);                                     // zone clears this frame
+        // The player is still shooting / jumping / pressing 1 at that moment
+        QMouseEvent click(QEvent::MouseButtonPress, QPointF(400, 300), QPointF(400, 300), QPointF(400, 300), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        mousePressEvent(&click);
+        QKeyEvent space(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier), one(QEvent::KeyPress, Qt::Key_1, Qt::NoModifier);
+        keyPressEvent(&space); keyPressEvent(&one);
+        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        keyPressEvent(&enter);
+        m_keys.clear();
+        log(QString("intermission after stray input: level=%1 complete=%2 selected=%3 (expect 1, 1, -1)")
+                .arg(m_gs.level).arg(m_gs.levelComplete).arg(m_selectedUpgradeCard));
+        for (int i = 0; i < 20; i++) advance(1.f / 60.f);
+        render(); save("60_intermission_fadein");
+        for (int i = 0; i < 60; i++) advance(1.f / 60.f);
+        render(); save("61_intermission");
+        keyPressEvent(&enter); m_keys.clear();
+        log(QString("enter without a pick: level=%1 (expect 1)").arg(m_gs.level));
+        QKeyEvent two(QEvent::KeyPress, Qt::Key_2, Qt::NoModifier), tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+        keyPressEvent(&two); keyPressEvent(&tab); m_keys.clear();
+        int chosen = m_loadoutWeapon;
+        m_mouseWidget = QPointF(ixCardRect(1).center()); updateIntermissionHover(m_mouseWidget);
+        render(); save("62_intermission_selected");
+        float t0 = m_upgradeDecisionTimer;
+        for (int i = 0; i < 600; i++) advance(1.f / 60.f);      // 10 s of thinking: must not auto-deploy
+        log(QString("after 10 s idle with a pick: level=%1 timer %2 -> %3 (expect level 1)").arg(m_gs.level).arg(t0).arg(m_upgradeDecisionTimer));
+        keyPressEvent(&enter); m_keys.clear();
+        log(QString("deploy: level=%1 weapon=%2 chosen=%3 complete=%4 (expect 2, chosen, 0)")
+                .arg(m_gs.level).arg(pl.curWeapon).arg(chosen).arg(m_gs.levelComplete));
+    }
+
+    // ── Bot playtest: random movement + aiming at enemies, invariants checked every frame ──
+    for (int map = 0; map < 3; map++) {
+        m_mapChoice = map; m_charChoice = 0; m_difficulty = 2;
+        initGame(); m_screen = SCR_PLAYING;
+        Player &pl = m_gs.player;
+        pl.hp = 100000;
+        int nan = 0, inWall = 0, underGround = 0, enemyInWall = 0, enemyUnreach = 0, stuck = 0, hardStuck = 0, levels = 0, kills0 = 0;
+        for (const Enemy &e : m_gs.enemies)
+            if (!e.elite && !reachable(int(e.x), int(e.y))) enemyUnreach++;
+        float stuckT = 0, lastX = pl.posX, lastY = pl.posY;
+        unsigned rng = 1234u + unsigned(map);
+        auto rnd = [&rng]() { rng = rng * 1103515245u + 12345u; return int((rng >> 16) & 0x7FFF); };
+        float keyT = 0;
+        for (int f = 0; f < 60 * 75; f++) {
+            if (keyT <= 0) {
+                m_keys.clear();
+                int r = rnd() % 6;
+                if (r != 5) m_keys.insert(Qt::Key_W);
+                if (r == 1) m_keys.insert(Qt::Key_A);
+                if (r == 2) m_keys.insert(Qt::Key_D);
+                if (r == 3) m_keys.insert(Qt::Key_Shift);
+                if (rnd() % 4 == 0 && m_onGround) { m_velZ = 5.5f; m_onGround = false; }
+                turn(float(rnd() % 200 - 100) / 100.f * 1.2f);
+                keyT = 0.6f + float(rnd() % 100) / 80.f;
+            }
+            keyT -= 1.f / 60.f;
+            // aim toward the nearest visible enemy and fire
+            float best = 1e9f; int bi = -1;
+            for (int i = 0; i < int(m_gs.enemies.size()); i++) {
+                const Enemy &e = m_gs.enemies[i];
+                if (!e.alive) continue;
+                float dx = e.x - pl.posX, dy = e.y - pl.posY, d = dx * dx + dy * dy;
+                if (d < best && hasLOS(pl.posX, pl.posY, m_footZ + 0.5f, e.x, e.y, floorH(e.x, e.y) + 0.6f)) { best = d; bi = i; }
+            }
+            if (bi >= 0) {
+                const Enemy &e = m_gs.enemies[bi];
+                float want = std::atan2(e.y - pl.posY, e.x - pl.posX), have = std::atan2(pl.dirY, pl.dirX);
+                float dd = want - have; while (dd > 3.14159f) dd -= 6.28318f; while (dd < -3.14159f) dd += 6.28318f;
+                turn(rs::clampf(dd, -0.08f, 0.08f));
+                m_aimX = W / 2.f; m_aimY = H / 2.f;
+                if (std::fabs(dd) < 0.1f) { if (pl.mag[pl.curWeapon] == 0 && pl.reserve[pl.curWeapon] == 0) pl.reserve[pl.curWeapon] = 60; tryFire(); }
+            }
+            advance(1.f / 60.f);
+            if (m_gs.levelComplete && m_intermissionT > 1.f) {           // clear the zone like a player would
+                levels++;
+                m_selectedUpgradeCard = 0;
+                deployNextZone();
+                for (const Enemy &e : m_gs.enemies)
+                    if (!e.elite && !reachable(int(e.x), int(e.y))) enemyUnreach++;
+            }
+            if (f % 6 == 0) render();
+            // invariants
+            if (!std::isfinite(pl.posX) || !std::isfinite(pl.posY) || !std::isfinite(m_footZ) || !std::isfinite(m_pitch)) nan++;
+            if (!posValid(pl.posX, pl.posY, 0.2f)) inWall++;
+            if (m_footZ < floorH(pl.posX, pl.posY) - 0.05f) underGround++;
+            for (const Enemy &e : m_gs.enemies) if (e.alive && !posValid(e.x, e.y, 0.15f)) enemyInWall++;
+            bool pushing = m_keys.count(Qt::Key_W) > 0;
+            float mv = std::hypot(pl.posX - lastX, pl.posY - lastY);
+            lastX = pl.posX; lastY = pl.posY;
+            if (pushing && mv < 0.002f) stuckT += 1.f / 60.f; else stuckT = 0;
+            if (stuckT > 2.f) {
+                stuck++; stuckT = 0;
+                int free = 0;                                    // can the player move in ANY direction?
+                for (int k = 0; k < 16; k++) {
+                    float an = k * 0.3927f;
+                    if (canStep(pl.posX + std::cos(an) * 0.06f, pl.posY + std::sin(an) * 0.06f, m_footZ, 0.32f)) free++;
+                }
+                if (free == 0) { hardStuck++; log(QString("  HARD STUCK at (%1,%2) z=%3").arg(pl.posX).arg(pl.posY).arg(m_footZ)); }
+                turn(2.5f);
+            }
+        }
+        kills0 = m_gs.kills;
+        m_keys.clear();
+        save(QString("7%1_bot_%2").arg(map).arg(MAP_NAMES[map]));
+        log(QString("bot %1: kills=%2 zones=%3  nan=%4 inWall=%5 underGround=%6 enemyInWall=%7 unreachableSpawns=%8 stuckEvents=%9 hardStuck=%10")
+                .arg(MAP_NAMES[map]).arg(kills0).arg(levels).arg(nan).arg(inWall).arg(underGround).arg(enemyInWall).arg(enemyUnreach).arg(stuck).arg(hardStuck));
+    }
     return true;
 }

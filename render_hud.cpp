@@ -183,6 +183,7 @@ void MainWindow::renderPostFX()
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::renderHUD()
 {
+    if (m_gs.levelComplete) return;                 // the intermission screen replaces the HUD
     const Player &pl = m_gs.player;
     bool scoped = effectiveScope(pl.curWeapon) && m_adsT > 0.6f;
     if (!scoped) { renderCompass(); renderMinimap(); renderKillFeed(); }
@@ -519,7 +520,7 @@ void MainWindow::renderCrosshair()
     const WeaponDef &wd = WEAPONS[pl.curWeapon];
 
     if (pl.curWeapon == WPN_KNIFE) {
-        bool inRange = (m_probeEnemy >= 0);
+        bool inRange = (m_probeEnemy >= 0 && m_probeDepth <= 2.2f);
         int gap = inRange ? 7 : 13;
         uint32_t col = inRange ? rgb(255, 50, 40) : 0xFFFFFFFF;
         m_cv.brackets(cx - gap, cy - gap, gap * 2 + 1, gap * 2 + 1, 4, withAlpha(col, inRange ? 255 : 180), 2);
@@ -622,111 +623,109 @@ void MainWindow::renderKillFeed()
 void MainWindow::renderLevelBanner()
 {
     if (!m_gs.levelComplete) return;
+    const Player &pl = m_gs.player;
+    // Fade in over 0.6 s; the cards slide up into place
+    float fade = clampf(m_intermissionT / 0.6f, 0.f, 1.f);
+    float ease = fade * fade * (3 - 2 * fade);
+    int slide = int((1.f - ease) * 26.f);
+    bool ready = m_intermissionT >= 0.9f;                     // input accepted from here
 
-    // Dark tactical overlay covering entire view
-    m_cv.blendRect(0, 0, W, H, withAlpha(0x06090D, 225));
+    m_cv.blendRect(0, 0, W, H, withAlpha(0x06090D, int(228 * ease)));
 
-    // Top Header Banner
-    m_cv.blendRect(0, 14, W, 74, withAlpha(UI_BG, 200));
-    m_cv.blendRect(0, 14, W, 2, withAlpha(AMBER, 255));
-    m_cv.blendRect(0, 88, W, 2, withAlpha(AMBER, 255));
-
-    text(0, 18, W, 34, Qt::AlignCenter, QString("ZONE %1 CLEARED").arg(m_gs.level), QColor(255, 215, 80), 30, 900);
+    // Header
+    m_cv.blendRect(0, 14, W, 74, withAlpha(UI_BG, int(200 * ease)));
+    m_cv.blendRect(0, 14, W, 2, withAlpha(AMBER, int(255 * ease)));
+    m_cv.blendRect(0, 88, W, 2, withAlpha(AMBER, int(255 * ease)));
+    int ta = int(255 * ease);
+    text(0, 18, W, 34, Qt::AlignCenter, QString("ZONE %1 CLEARED").arg(m_gs.level), QColor(255, 215, 80, ta), 30, 900);
     text(0, 54, W, 20, Qt::AlignCenter,
-         QString("ZONE CLEAR BONUS +%1      SCORE %2      HEADSHOTS %3")
-             .arg(500 * m_gs.level).arg(m_gs.score).arg(m_gs.headshots),
-         QColor(220, 225, 230), 12, 700);
+         QString("ZONE CLEAR BONUS +%1      SCORE %2      HEADSHOTS %3").arg(500 * m_gs.level).arg(m_gs.score).arg(m_gs.headshots),
+         QColor(220, 225, 230, ta), 12, 700);
 
-    if (!m_upgradePicked) {
-        text(0, 94, W, 22, Qt::AlignCenter,
-             QString("FIELD SUPPLY DROP  -  CHOOSE 1 WEAPON UPGRADE  [ DECISION TIME: %1s ]")
-                 .arg(std::max(1, int(m_upgradeDecisionTimer) + 1)),
-             QColor(255, 220, 90), 13, 800);
-    } else {
-        text(0, 94, W, 22, Qt::AlignCenter,
-             QString("FIELD SUPPLY DROP  -  ATTACHMENT CONFIGURED  [ DEPLOYING IN %1s ]")
-                 .arg(QString::number(std::max(0.1f, m_deployTimer), 'f', 1)),
-             QColor(100, 255, 140), 13, 800);
+    // Step indicator: 1 upgrade  ->  2 weapon  ->  3 deploy
+    {
+        bool s1 = m_selectedUpgradeCard >= 0;
+        const char *steps[3] = { "1  CHOOSE UPGRADE", "2  CHOOSE WEAPON", "3  DEPLOY" };
+        for (int i = 0; i < 3; i++) {
+            bool done = (i == 0 && s1) || (i == 1 && s1);
+            bool cur = (i == 0 && !s1) || (i == 2 && s1);
+            QColor c = done ? QColor(100, 255, 140, ta) : cur ? QColor(255, 220, 90, ta) : QColor(150, 155, 160, ta);
+            text(W / 2 - 300 + i * 200, 94, 200, 18, Qt::AlignCenter, steps[i], c, 12, 800, false);
+        }
     }
 
-    // 3 Upgrade Cards
-    int cw = 232, ch = 280, cy = 122;
-    int spacing = 18;
-    int totalW = 3 * cw + 2 * spacing;
-    int startX = (W - totalW) / 2;
-
+    // Upgrade cards
     for (int i = 0; i < int(m_upgradeCards.size()) && i < 3; i++) {
         const UpgradeCard &card = m_upgradeCards[i];
-        int cx = startX + i * (cw + spacing);
+        QRect rc = ixCardRect(i);
+        int cx = rc.x(), cy = rc.y() + slide, cw = rc.width(), ch = rc.height();
         bool selected = (m_selectedUpgradeCard == i);
+        bool hover = ready && m_hoverCard == i && !selected;
 
-        // Card backdrop panel
         panel(cx, cy, cw, ch, selected, selected ? GREEN : 0xFF354050);
+        if (hover) m_cv.rectOutline(cx - 2, cy - 2, cw + 4, ch + 4, withAlpha(AMBER, 200), 2);
 
-        // Header key button: [ 1 ], [ 2 ], [ 3 ]
         uint32_t keyBtnCol = selected ? GREEN : AMBER;
         m_cv.fillRect(cx + 12, cy + 12, 42, 22, keyBtnCol);
         text(cx + 12, cy + 12, 42, 22, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(15, 15, 15), 12, 900, false);
-
         if (selected) {
             m_cv.blendRect(cx + cw - 95, cy + 12, 85, 22, withAlpha(GREEN, 220));
-            text(cx + cw - 95, cy + 12, 85, 22, Qt::AlignCenter, "EQUIPPED", QColor(10, 10, 10), 11, 800, false);
+            text(cx + cw - 95, cy + 12, 85, 22, Qt::AlignCenter, "SELECTED", QColor(10, 10, 10), 11, 800, false);
         }
-
-        // Weapon icon if weapon >= 0
         if (card.weapon >= 0 && card.weapon < WPN_COUNT) {
             const GunModel &M = *GUN_MODELS[card.weapon];
             float sc = 70.f / M.length;
             if (card.weapon == WPN_PISTOL) sc = 0.85f;
             else if (card.weapon == WPN_KNIFE) sc = 0.90f;
-            drawGunFlat(m_cv, M, cx + cw / 2 - 30, cy + 62 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, selected ? 240 : 160));
+            drawGunFlat(m_cv, M, cx + cw / 2 - 30, cy + 60 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, selected || hover ? 240 : 160));
         }
-
-        // Title
-        text(cx + 10, cy + 98, cw - 20, 26, Qt::AlignCenter, card.title, selected ? QColor(255, 225, 90) : QColor(240, 240, 240), 13, 800);
-
-        // Description (Word wrapped)
-        m_cv.blendRect(cx + 10, cy + 130, cw - 20, 78, withAlpha(0, 130));
-        text(cx + 14, cy + 134, cw - 28, 70, Qt::AlignLeft | Qt::TextWordWrap, card.desc, QColor(185, 195, 205), 11, 500, false);
-
-        // Stat bonus plate at bottom
-        m_cv.blendRect(cx + 8, cy + ch - 54, cw - 16, 42, withAlpha(selected ? 0xFF0E3020 : 0xFF141F2C, 220));
-        m_cv.blendRect(cx + 8, cy + ch - 54, cw - 16, 2, withAlpha(selected ? GREEN : 0xFF3AB4E8, 220));
-        text(cx + 10, cy + ch - 50, cw - 20, 36, Qt::AlignCenter | Qt::TextWordWrap, card.bonus, selected ? QColor(100, 255, 140) : QColor(80, 210, 255), 11, 700, false);
+        text(cx + 10, cy + 92, cw - 20, 26, Qt::AlignCenter, card.title, selected ? QColor(255, 225, 90) : QColor(240, 240, 240), 13, 800);
+        m_cv.blendRect(cx + 10, cy + 122, cw - 20, 70, withAlpha(0, 130));
+        text(cx + 14, cy + 126, cw - 28, 62, Qt::AlignLeft | Qt::TextWordWrap, card.desc, QColor(185, 195, 205), 11, 500, false);
+        m_cv.blendRect(cx + 8, cy + ch - 50, cw - 16, 40, withAlpha(selected ? 0xFF0E3020 : 0xFF141F2C, 220));
+        m_cv.blendRect(cx + 8, cy + ch - 50, cw - 16, 2, withAlpha(selected ? GREEN : 0xFF3AB4E8, 220));
+        text(cx + 10, cy + ch - 46, cw - 20, 34, Qt::AlignCenter | Qt::TextWordWrap, card.bonus, selected ? QColor(100, 255, 140) : QColor(80, 210, 255), 11, 700, false);
     }
 
-    // Bottom Action Prompt & Continue Button
-    int btnW = 240, btnH = 36;
-    int btnX = (W - btnW) / 2, btnY = 432;
+    // Loadout: which weapon to deploy with
+    std::vector<int> choices = loadoutChoices();
+    text(0, 374, W, 16, Qt::AlignCenter, "DEPLOY WITH   ( TAB / ARROWS OR CLICK )", QColor(200, 205, 210, ta), 11, 800, false);
+    for (int s = 0; s < int(choices.size()); s++) {
+        int wpn = choices[s];
+        QRect rc = ixChipRect(s, int(choices.size()));
+        int x = rc.x(), y = rc.y() + slide, w = rc.width(), h = rc.height();
+        bool sel = wpn == m_loadoutWeapon, hover = ready && m_hoverChip == s && !sel;
+        m_cv.blendRect(x, y, w, h, withAlpha(sel ? 0xFF2A2210 : UI_BG, sel ? 235 : 200));
+        m_cv.rectOutline(x, y, w, h, sel ? AMBER : hover ? withAlpha(AMBER, 160) : withAlpha(0xFFFFFFFF, 40), sel ? 2 : 1);
+        const GunModel &M = *GUN_MODELS[wpn];
+        float sc = std::min(44.f / M.length, 30.f / (M.hMax - M.hMin));   // fit both width and height
+        drawGunFlat(m_cv, M, x + 8 + (44.f - M.length * sc) * 0.5f, y + h * 0.5f + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, sel ? 235 : 150));
+        text(x + 56, y + 6, w - 60, 16, Qt::AlignLeft, WEAPONS[wpn].shortName, sel ? QColor(255, 215, 80) : QColor(225, 225, 225), 12, 800, false);
+        QString stat = wpn == WPN_KNIFE ? QString("DMG %1  MELEE").arg(effectiveDamage(wpn))
+                                        : QString("DMG %1  MAG %2").arg(effectiveDamage(wpn)).arg(effectiveMagSize(wpn));
+        text(x + 56, y + 24, w - 60, 14, Qt::AlignLeft, stat, QColor(160, 170, 180), 9, 600, false);
+        if (wpn != WPN_KNIFE)
+            text(x + 56, y + 35, w - 60, 12, Qt::AlignLeft, QString("RESERVE %1").arg(pl.reserve[wpn]), QColor(130, 140, 150), 9, 600, false);
+    }
 
-    if (!m_upgradePicked) {
-        text(0, 408, W, 18, Qt::AlignCenter,
-             QString("CLICK A CARD OR PRESS [1, 2, 3] TO EQUIP  -  AUTO-SELECT IN %1s")
-                 .arg(std::max(1, int(m_upgradeDecisionTimer) + 1)),
-             QColor(230, 235, 240), 11, 600);
-
-        m_cv.blendRect(btnX, btnY, btnW, btnH, withAlpha(0x1B2635, 230));
-        m_cv.blendRect(btnX, btnY, btnW, 2, withAlpha(AMBER, 220));
-        m_cv.blendRect(btnX, btnY + btnH - 2, btnW, 2, withAlpha(AMBER, 220));
-        m_cv.blendRect(btnX, btnY, 2, btnH, withAlpha(AMBER, 220));
-        m_cv.blendRect(btnX + btnW - 2, btnY, 2, btnH, withAlpha(AMBER, 220));
-        text(btnX, btnY + 7, btnW, 22, Qt::AlignCenter, "CONTINUE >>  [SPACE]", QColor(255, 220, 100), 13, 800);
+    // Deploy button (enabled once an upgrade is chosen)
+    QRect dr = ixDeployRect();
+    bool canDeploy = m_selectedUpgradeCard >= 0;
+    int bx = dr.x(), by = dr.y() + slide, bw = dr.width(), bh = dr.height();
+    if (canDeploy) {
+        bool pulse = (int(m_time * 3.f) & 1) == 0;
+        m_cv.blendRect(bx, by, bw, bh, withAlpha(pulse || m_hoverDeploy ? 0xFF1D6638 : 0xFF144D29, 240));
+        m_cv.rectOutline(bx, by, bw, bh, 0xFF45F07E, 2);
+        text(bx, by, bw, bh, Qt::AlignCenter, "DEPLOY  >>   [ENTER]", QColor(255, 255, 255), 14, 900);
     } else {
-        text(0, 408, W, 18, Qt::AlignCenter,
-             QString("UPGRADE SECURED!  DEPLOYING TO ZONE %1 IN %2s  (CLICK TO SKIP)")
-                 .arg(m_gs.level + 1).arg(QString::number(std::max(0.1f, m_deployTimer), 'f', 1)),
-             QColor(100, 255, 140), 11, 700);
-
-        bool pulse = (int(m_time * 4.f) & 1) == 0;
-        uint32_t bgCol = pulse ? 0xFF1D6638 : 0xFF144D29;
-        uint32_t bdrCol = 0xFF45F07E;
-        m_cv.blendRect(btnX, btnY, btnW, btnH, withAlpha(bgCol, 240));
-        m_cv.blendRect(btnX, btnY, btnW, 2, withAlpha(bdrCol, 255));
-        m_cv.blendRect(btnX, btnY + btnH - 2, btnW, 2, withAlpha(bdrCol, 255));
-        m_cv.blendRect(btnX, btnY, 2, btnH, withAlpha(bdrCol, 255));
-        m_cv.blendRect(btnX + btnW - 2, btnY, 2, btnH, withAlpha(bdrCol, 255));
-        text(btnX, btnY + 7, btnW, 22, Qt::AlignCenter, "DEPLOY NOW >>  [SPACE]", QColor(255, 255, 255), 13, 900);
+        m_cv.blendRect(bx, by, bw, bh, withAlpha(0xFF1B2635, 220));
+        m_cv.rectOutline(bx, by, bw, bh, withAlpha(0xFFFFFFFF, 50), 1);
+        text(bx, by, bw, bh, Qt::AlignCenter, "PICK AN UPGRADE FIRST", QColor(150, 155, 160), 12, 800);
     }
+    text(0, 502, W, 16, Qt::AlignCenter, "[1] [2] [3] or click a card      TAB weapon      ENTER deploy      U armory",
+         QColor(200, 205, 210, ta), 11, 600, false);
+    text(0, 522, W, 14, Qt::AlignCenter, QString("Take your time  -  auto-deploy in %1 s").arg(std::max(1, int(m_upgradeDecisionTimer) + 1)),
+         QColor(130, 140, 150, ta), 10, 600, false);
 }
 
 void MainWindow::renderArmoryOverlay()
