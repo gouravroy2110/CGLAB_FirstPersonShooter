@@ -151,6 +151,11 @@ struct Player {
     float posX=2.5f,posY=2.5f,dirX=1.f,dirY=0.f,planeX=0.f,planeY=0.66f;
     int   hp=100;
     float stamina=100.f,speedMult=1.f,damageReduction=0.f;
+
+    // Horizontal movement velocity.
+    // These values allow acceleration, friction and airborne momentum.
+    float velX=0.f,velY=0.f;
+
     float bobPhase=0,attackCooldown=0,flashTimer=0,damageFlash=0;
     bool  adsMode=false,sprinting=false;
     float shakeY=0;
