@@ -86,10 +86,37 @@ Menus work with keyboard (arrows / 1-4 / Enter / Esc / Space) **and mouse** (hov
 - **HUD Attachment Badges**: The bottom weapon HUD badge displays active attachment abbreviations (`[MAG]`, `[COMP]`, `[AP]`, `[ACOG]`, `[PUMP]`, `[TRIG]`).
 - **Debug Weapon Range (`[9]`)**: Press `[9]` in-game to instantly toggle all attachments across all weapons for testing and tuning.
 
+### Zone objectives, Commander boss & loot
+- **A zone is cleared only when every enemy on the map is dead** — patrols, vault guards behind secret walls, reinforcements and the Commander. The HUD shows *HOSTILES REMAINING*; when 3 or fewer are left they are marked on the minimap and compass, and if the last ones are hidden in a vault the HUD says to search the walls.
+- Reinforcements are limited per zone (none in zone 1, up to 5 later), so a zone can always be finished.
+- Every zone has a **Commander** boss: a larger (1.35×) elite with ~3.6× health, its own health bar and a +1000 score bounty.
+- **Bosses and elite guards always drop a gun** (one you don't own yet when possible) marked by a golden light beam and shown on the compass; the Commander also drops a medkit and ammo.
+
+### Zone report, coins & field shop
+- Clearing a zone first shows a **ZONE REPORT** checklist that ticks in row by row and pays **coins** (and bonus score):
+
+| Row | Reward |
+|---|---|
+| Hostiles eliminated | 5 coins per kill |
+| Headshots | 10 coins per headshot |
+| Headhunter — at least 40% of kills were headshots | 40 coins, 400 × zone pts |
+| Marksman — accuracy at least 35% | 30 coins, 300 × zone pts |
+| Explorer — every secret area in the zone found | 50 coins, 500 × zone pts |
+| Untouchable — took under 40 damage | 40 coins, 400 × zone pts |
+| Blitz — cleared within par time | 30 coins, 300 × zone pts |
+| Commander down | 60 coins, 600 × zone pts |
+
+- Coins are shown in the HUD and spent in the **field shop** on the upgrade screen: `[7]` ammo resupply (40), `[8]` medkit +50 HP (35), `[9]` reroll the upgrade cards (25).
+
 ### Zone Clear: upgrade + loadout screen
-- Clearing a zone opens a three-step screen: **1 choose one of 3 upgrade cards → 2 choose the weapon to deploy with → 3 deploy**.
-- Nothing happens until you decide: pick a card with `1` `2` `3` or a click (you can change your mind), choose the weapon with `TAB` / arrows or a click, then press `ENTER` or click **DEPLOY**. A 60-second fallback timer only moves an idle game on.
-- The mouse is released on this screen (visible cursor, hover highlights), and input from the fight that cleared the zone is ignored for the first second, so a stray shot, jump or number key can no longer pick a card or skip the screen.
+- After the report: **1 choose one of 3 upgrade cards → 2 choose the weapon to deploy with → 3 deploy**.
+- A gun you don't own yet is offered as an **unlock card** (e.g. *M4 CARBINE: FIELD ISSUE*). Picking any card also selects that gun in the *Deploy with* row, and **you start the next zone holding the chosen gun, loaded**.
+- Pick a card with `1` `2` `3` or a click (you can change your mind), choose the weapon with `TAB` / arrows or a click, then press `ENTER` or click **DEPLOY**. A 60-second fallback timer only moves an idle game on.
+- The mouse is released on this screen, and input from the fight that cleared the zone is ignored for the first second, so a stray shot, jump or number key can't pick a card or skip the screen.
+
+### 3D first-person weapons
+- Guns, the knife and the gloved hands are **real 3D models**: each side-profile polygon is extruded to its own thickness (barrel, receiver, scope, pump, grips…) and rendered with perspective, **back-face culling**, **Sutherland–Hodgman near-plane clipping**, flat **Lambert + Blinn specular** lighting and a **per-pixel z-buffer**. Forearms are 3D boxes.
+- Recoil, reload, sprint, swap, slide/pump and knife stab/slash animations are now 3D rotations (yaw / pitch / roll about the gun's own axes).
 
 ### Sound
 - **Every sound is synthesised in code at start-up** — no audio files, the same way no image files are used. Oscillators, filtered noise, envelopes, formant filters and a small room reverb build 52 effects (`audio.cpp`).
@@ -194,6 +221,7 @@ Everything visible is written into `m_pixels[y*W + x]` by our own code:
 | Sprites | Inverse camera-matrix projection, painter's sort, per-column z-buffer |
 | Hit detection | Screen-space hitscan with per-texel hit mask |
 | Polygons | Edge-function triangle rasterization, Gouraud colour interpolation, convex fan |
+| 3D weapon | Extrusion of 2D profiles, camera-space basis + Rodrigues rotations, back-face culling, Sutherland–Hodgman clipping at the near plane, perspective projection, 1/z depth buffer, Lambert + Blinn shading |
 | Lines | Bresenham; thick lines as quads |
 | Circles / glows | Scan-span discs, radial falloff glows, ring / arc masks |
 | Gun projection | One-point perspective (vanishing point on the crosshair) |

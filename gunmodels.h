@@ -171,6 +171,24 @@ static const GunModel KNIFE_MODEL = {
 
 static const GunModel *const GUN_MODELS[4] = { &KNIFE_MODEL, &PISTOL_MODEL, &SHOTGUN_MODEL, &RIFLE_MODEL };
 
+// --- 3D view model: thickness of each part (gun units), parallel to *_PARTS ----
+// Recessed details are a touch wider than their parent so they show on its side.
+static const float RIFLE_W[]   = { 5.0f, 5.4f, 3.4f, 3.6f, 4.4f, 5.6f, 5.9f, 5.6f, 5.9f, 6.4f, 4.0f, 6.7f, 2.6f, 2.2f, 3.4f, 3.2f, 3.2f, 5.2f, 4.0f, 3.2f, 6.4f, 5.8f };
+static const float SHOTGUN_W[] = { 4.4f, 4.6f, 5.4f, 5.7f, 5.6f, 3.0f, 3.2f, 3.4f, 6.0f, 6.3f, 6.3f, 1.4f };
+static const float PISTOL_W[]  = { 4.2f, 5.0f, 4.8f, 5.1f, 2.6f, 5.2f, 5.5f, 5.5f, 4.6f, 1.6f, 4.4f, 3.8f };
+static const float KNIFE_W[]   = { 3.6f, 3.4f, 3.7f, 3.7f, 3.7f, 4.4f, 1.2f, 1.0f, 1.15f, 1.0f, 1.0f, 0.6f, 0.5f };
+static_assert(sizeof(RIFLE_W) / sizeof(float) == sizeof(RIFLE_PARTS) / sizeof(GunPart), "rifle widths");
+static_assert(sizeof(SHOTGUN_W) / sizeof(float) == sizeof(SHOTGUN_PARTS) / sizeof(GunPart), "shotgun widths");
+static_assert(sizeof(PISTOL_W) / sizeof(float) == sizeof(PISTOL_PARTS) / sizeof(GunPart), "pistol widths");
+static_assert(sizeof(KNIFE_W) / sizeof(float) == sizeof(KNIFE_PARTS) / sizeof(GunPart), "knife widths");
+struct GunGeom3D { const float *partW; int count; float handW; float scale; };   // scale: metres per gun unit
+static const GunGeom3D GUN_GEOM3D[4] = {
+    { KNIFE_W,   int(sizeof(KNIFE_W) / sizeof(float)),   6.0f, 0.0042f },
+    { PISTOL_W,  int(sizeof(PISTOL_W) / sizeof(float)),  8.0f, 0.0042f },
+    { SHOTGUN_W, int(sizeof(SHOTGUN_W) / sizeof(float)), 9.5f, 0.0072f },
+    { RIFLE_W,   int(sizeof(RIFLE_W) / sizeof(float)),   9.5f, 0.0062f },
+};
+
 // Flat (orthographic) rasterization of a gun profile — used for HUD icons and
 // pickup textures. (ox,oy) = screen position of u=0,h=0; s = pixels per unit.
 inline void drawGunFlat(rs::Canvas &cv, const GunModel &m, float ox, float oy, float s,

@@ -208,7 +208,9 @@ private:
     void spawnBlood(float wx, float wy, float wz, int count, float force);
     void spawnImpact(float wx, float wy, float wz, bool floor);
     bool posValid(float x, float y, float r = 0.28f) const;
-    bool canStep(float x, float y, float fromZ, float maxUp, float r = 0.28f) const;
+    // (ox,oy) = current position: a move that doesn't worsen an existing overlap with
+    // a ledge is allowed, so the player can never get wedged against a corner
+    bool canStep(float x, float y, float fromZ, float maxUp, float r = 0.28f, float ox = -1.f, float oy = -1.f) const;
     bool hasLOS(float x0, float y0, float z0, float x1, float y1, float z1) const;
     void tryOpenDoor();
     void updateDoors(float dt);
@@ -248,6 +250,23 @@ private:
     void  computeReachable(float sx, float sy);
     bool  reachable(int cx, int cy) const { return cx >= 0 && cy >= 0 && cx < MAP_W && cy < MAP_H && !m_reach.empty() && m_reach[size_t(cy) * MAP_W + cx]; }
     float m_probeDepth = 1e9f;
+    std::vector<float> m_vmDepth;      // z-buffer for the 3D first-person weapon
+
+    // -- Zone objectives, report & coins ---------------------------------------------
+    int   m_reinforceLeft = 0;         // reinforcements still to come this zone
+    int   aliveEnemies() const;
+    int   m_ixPage = 0;                // intermission: 0 = zone report, 1 = upgrades & loadout
+    float m_ixPageStart = 0.f;
+    struct ReportItem { QString label, detail; bool done; int coins, score; };
+    std::vector<ReportItem> m_report;
+    int   m_reportCoins = 0, m_reportScore = 0;
+    QString m_ixMsg; float m_ixMsgT = 0.f;
+    void  buildZoneReport();
+    void  renderZoneReport();
+    void  selectUpgradeCard(int i);
+    QRect ixShopRect(int i) const;
+    void  buyShopItem(int i);
+    void  dropReward(float x, float y, bool boss);
 
     // -- Weapon Upgrade / Attachment System ----------------------------------------
     struct UpgradeCard {

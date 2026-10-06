@@ -213,7 +213,11 @@ float MainWindow::effectiveAdsFov(int w) const
 void MainWindow::applyUpgrade(int weapon, int slot)
 {
     Player &pl = m_gs.player;
-    if (weapon >= 0 && weapon < WPN_COUNT) {
+    if (weapon >= 0 && weapon < WPN_COUNT && slot == 4) {             // unlock a new gun
+        pl.owned[weapon] = true;
+        pl.mag[weapon] = effectiveMagSize(weapon);
+        pl.reserve[weapon] = std::min(pl.reserve[weapon] + WEAPONS[weapon].magSize * 2, WEAPONS[weapon].maxReserve);
+    } else if (weapon >= 0 && weapon < WPN_COUNT) {
         if (slot == 0) {
             pl.upgradeExtMag[weapon] = true;
             pl.mag[weapon] = effectiveMagSize(weapon);
@@ -242,25 +246,33 @@ void MainWindow::generateUpgradeChoices()
     struct Possible { int weapon, slot; QString title, desc, bonus; };
     std::vector<Possible> pool;
 
-    // Rifle
-    if (!pl.upgradeSpecial[WPN_RIFLE])
-        pool.push_back({WPN_RIFLE, 3, "M4: ACOG 3X OPTIC", "Equips precision magnified 3x optic. Hold RMB to engage sniper scope.", "3.0x Magnification & Mil-Dot Reticle"});
-    if (!pl.upgradeExtMag[WPN_RIFLE])
-        pool.push_back({WPN_RIFLE, 0, "M4: EXTENDED 45-RND MAG", "High-capacity magazine for sustained fire superiority.", "Magazine: 30 -> 45 Rounds (+50%)"});
-    if (!pl.upgradeCompensator[WPN_RIFLE])
-        pool.push_back({WPN_RIFLE, 1, "M4: QUAD COMPENSATOR", "Vented muzzle brake reduces vertical kick and spread.", "-48% Recoil & -42% Spread"});
-    if (!pl.upgradeAmmo[WPN_RIFLE])
-        pool.push_back({WPN_RIFLE, 2, "M4: 5.56 AP MATCH AMMO", "High-penetration tungsten-core rounds counter enemy armor.", "+45% Bullet Damage (22 -> 32)"});
+    // Rifle: unlock it first, upgrades once owned
+    if (!pl.owned[WPN_RIFLE])
+        pool.push_back({WPN_RIFLE, 4, "M4 CARBINE: FIELD ISSUE", "Unlock the automatic M4 carbine. It will be in your hands when you deploy.", "NEW WEAPON  +2 MAGAZINES"});
+    else {
+        if (!pl.upgradeSpecial[WPN_RIFLE])
+            pool.push_back({WPN_RIFLE, 3, "M4: ACOG 3X OPTIC", "Equips precision magnified 3x optic. Hold RMB to engage sniper scope.", "3.0x Magnification & Mil-Dot Reticle"});
+        if (!pl.upgradeExtMag[WPN_RIFLE])
+            pool.push_back({WPN_RIFLE, 0, "M4: EXTENDED 45-RND MAG", "High-capacity magazine for sustained fire superiority.", "Magazine: 30 -> 45 Rounds (+50%)"});
+        if (!pl.upgradeCompensator[WPN_RIFLE])
+            pool.push_back({WPN_RIFLE, 1, "M4: QUAD COMPENSATOR", "Vented muzzle brake reduces vertical kick and spread.", "-48% Recoil & -42% Spread"});
+        if (!pl.upgradeAmmo[WPN_RIFLE])
+            pool.push_back({WPN_RIFLE, 2, "M4: 5.56 AP MATCH AMMO", "High-penetration tungsten-core rounds counter enemy armor.", "+45% Bullet Damage (22 -> 32)"});
+    }
 
     // Shotgun
-    if (!pl.upgradeCompensator[WPN_SHOTGUN])
-        pool.push_back({WPN_SHOTGUN, 1, "M870: COMPETITION CHOKE", "Constricts pellet spread for devastating mid-range precision.", "-45% Pellet Spread & Tight Grouping"});
-    if (!pl.upgradeExtMag[WPN_SHOTGUN])
-        pool.push_back({WPN_SHOTGUN, 0, "M870: EXTENDED TUBE", "Extended underbarrel tube allows continuous shotgun fire.", "Capacity: 6 -> 9 Shells (+50%)"});
-    if (!pl.upgradeAmmo[WPN_SHOTGUN])
-        pool.push_back({WPN_SHOTGUN, 2, "M870: MAGNUM 00-BUCK", "High-brass heavy charge inflicts massive trauma.", "+42% Pellet Damage (24 -> 34)"});
-    if (!pl.upgradeSpecial[WPN_SHOTGUN])
-        pool.push_back({WPN_SHOTGUN, 3, "M870: RAPID CYCLE SLIDE", "Polished receiver rails and lightened pump action slide.", "+45% Fire Rate (0.58s -> 0.40s Delay)"});
+    if (!pl.owned[WPN_SHOTGUN])
+        pool.push_back({WPN_SHOTGUN, 4, "M870 SHOTGUN: FIELD ISSUE", "Unlock the M870 pump shotgun. It will be in your hands when you deploy.", "NEW WEAPON  +2 TUBES OF SHELLS"});
+    else {
+        if (!pl.upgradeCompensator[WPN_SHOTGUN])
+            pool.push_back({WPN_SHOTGUN, 1, "M870: COMPETITION CHOKE", "Constricts pellet spread for devastating mid-range precision.", "-45% Pellet Spread & Tight Grouping"});
+        if (!pl.upgradeExtMag[WPN_SHOTGUN])
+            pool.push_back({WPN_SHOTGUN, 0, "M870: EXTENDED TUBE", "Extended underbarrel tube allows continuous shotgun fire.", "Capacity: 6 -> 9 Shells (+50%)"});
+        if (!pl.upgradeAmmo[WPN_SHOTGUN])
+            pool.push_back({WPN_SHOTGUN, 2, "M870: MAGNUM 00-BUCK", "High-brass heavy charge inflicts massive trauma.", "+42% Pellet Damage (24 -> 34)"});
+        if (!pl.upgradeSpecial[WPN_SHOTGUN])
+            pool.push_back({WPN_SHOTGUN, 3, "M870: RAPID CYCLE SLIDE", "Polished receiver rails and lightened pump action slide.", "+45% Fire Rate (0.58s -> 0.40s Delay)"});
+    }
 
     // Pistol
     if (!pl.upgradeAmmo[WPN_PISTOL])
@@ -283,6 +295,8 @@ void MainWindow::generateUpgradeChoices()
     for (size_t i = pool.size(); i > 1; i--)
         std::swap(pool[i - 1], pool[size_t(rand()) % i]);
 
+    // Always offer a new gun while one is still locked
+    for (size_t i = 0; i < pool.size(); i++) if (pool[i].slot == 4) { std::swap(pool[0], pool[i]); break; }
     for (size_t i = 0; i < std::min(size_t(3), pool.size()); i++) {
         m_upgradeCards.push_back(UpgradeCard{pool[i].weapon, pool[i].slot, pool[i].title, pool[i].desc, pool[i].bonus});
     }
@@ -338,6 +352,9 @@ void MainWindow::loadLevel(int lv)
     const DiffConfig &dc  = DIFF_CFG[m_difficulty];
 
     m_gs.level = lv; m_gs.killsThisLevel = 0;
+    m_gs.zoneKills = m_gs.zoneHeadshots = m_gs.zoneShots = m_gs.zoneHits = m_gs.zoneDamage = m_gs.zoneSecrets = 0;
+    m_gs.zoneTime = 0; m_gs.zoneHadBoss = m_gs.zoneBossKilled = false;
+    m_ixPage = 0;
     int nEnemies = cfg.numEnemies + (lv > 1 ? (lv - 1) * 3 : 0);
     m_gs.killsNeeded = std::min(nEnemies, 4 + (lv - 1) * 2);
 
@@ -455,8 +472,27 @@ void MainWindow::loadLevel(int lv)
             secretIdx++;
         }
     }
-    m_gs.killsNeeded = std::min(m_gs.killsNeeded, int(m_gs.enemies.size()));
+    // Zone commander: a boss on the far side of the map
+    {
+        float bestD = -1, bx = 0, by = 0;
+        for (const auto &t : validFloorTiles) {
+            float dsq = (t.first - pl.posX) * (t.first - pl.posX) + (t.second - pl.posY) * (t.second - pl.posY);
+            if (dsq > bestD && posValid(t.first, t.second, 0.4f)) { bestD = dsq; bx = t.first; by = t.second; }
+        }
+        if (bestD > 0) {
+            static const EnemyType bossTypes[3] = { ET_RIFLEMAN, ET_SHOTGUNNER, ET_SNIPER };
+            spawnEnemy(bx, by, true, bossTypes[(lv - 1) % 3]);
+            Enemy &b = m_gs.enemies.back();
+            b.boss = true; b.scale = 1.35f;
+            b.hp = b.maxHp = int(b.maxHp * 1.8f);
+            b.aggroRange += 3.f;
+            m_gs.zoneHadBoss = true;
+        }
+    }
+    // The zone is cleared only when every enemy is dead (vault guards and the commander included)
+    m_gs.killsNeeded = int(m_gs.enemies.size());
     m_reinforceTimer = frand(14.f, 22.f);
+    m_reinforceLeft = lv >= 2 ? std::min(1 + lv, 5) : 0;
 
     // Pickups placed by the level designer (medkit count scales with difficulty)
     for (int i = 0; i < std::min(dc.numKits, int(kits.size())); i++) {
@@ -465,6 +501,7 @@ void MainWindow::loadLevel(int lv)
     }
     m_gs.secretsTotal = 0;
     for (int y = 0; y < MAP_H; y++) for (int x = 0; x < MAP_W; x++) if (m_map[y][x] == CELL_SECRET) m_gs.secretsTotal++;
+    m_gs.zoneSecretsTotal = m_gs.secretsTotal;
     for (const Marker &mk : pm.markers) {
         WeaponPickup wp; wp.x = mk.x; wp.y = mk.y; wp.bobPhase = frand(0, 6.28f);
         if (mk.kind == 'a') wp.type = PICKUP_AMMO;
@@ -663,7 +700,10 @@ void MainWindow::updateAmbience()
 std::vector<int> MainWindow::loadoutChoices() const
 {
     std::vector<int> v;
-    for (int w = 0; w < WPN_COUNT; w++) if (m_gs.player.owned[w]) v.push_back(w);
+    int unlock = -1;
+    if (m_selectedUpgradeCard >= 0 && m_selectedUpgradeCard < int(m_upgradeCards.size()) && m_upgradeCards[m_selectedUpgradeCard].slot == 4)
+        unlock = m_upgradeCards[m_selectedUpgradeCard].weapon;
+    for (int w = 0; w < WPN_COUNT; w++) if (m_gs.player.owned[w] || w == unlock) v.push_back(w);
     return v;
 }
 QRect MainWindow::ixCardRect(int i) const
@@ -702,10 +742,111 @@ void MainWindow::deployNextZone()
     }
     int lw = m_loadoutWeapon;
     loadLevel(m_gs.level + 1);
-    if (lw >= 0 && lw < WPN_COUNT && pl.owned[lw]) { pl.curWeapon = lw; m_pendingWeapon = -1; pl.switchTimer = 0.4f; }
+    if (lw >= 0 && lw < WPN_COUNT && pl.owned[lw]) {
+        pl.curWeapon = lw; m_pendingWeapon = -1; pl.switchTimer = 0.4f; pl.reloadTimer = 0;
+        if (lw != WPN_KNIFE && pl.mag[lw] == 0) {                   // arrive with a loaded weapon
+            int take = std::min(effectiveMagSize(lw), pl.reserve[lw]);
+            pl.mag[lw] += take; pl.reserve[lw] -= take;
+        }
+    }
     if (!title.isEmpty()) pushFeed("UPGRADE EQUIPPED: " + title, 4.f, true);
     pushFeed(QString("ZONE %1 - DEPLOYED WITH %2").arg(m_gs.level).arg(WEAPONS[pl.curWeapon].shortName), 4.f);
     sfx(SND_DEPLOY, 0.7f);
+}
+
+int MainWindow::aliveEnemies() const
+{
+    int n = 0;
+    for (const Enemy &e : m_gs.enemies) if (e.alive) n++;
+    return n;
+}
+
+// Picking a card also picks the gun it is for, so that gun is in your hands on deploy
+void MainWindow::selectUpgradeCard(int i)
+{
+    if (i < 0 || i >= int(m_upgradeCards.size())) return;
+    m_selectedUpgradeCard = i; m_upgradePicked = true;
+    const UpgradeCard &c = m_upgradeCards[i];
+    if (c.weapon >= WPN_PISTOL && c.weapon < WPN_COUNT) m_loadoutWeapon = c.weapon;
+    else {
+        std::vector<int> ch = loadoutChoices();
+        if (std::find(ch.begin(), ch.end(), m_loadoutWeapon) == ch.end()) m_loadoutWeapon = m_gs.player.curWeapon;
+    }
+    sfx(SND_UPGRADE, 0.6f);
+}
+
+QRect MainWindow::ixShopRect(int i) const { return QRect(W / 2 - 312 + i * 212, 552, 200, 24); }
+
+void MainWindow::buyShopItem(int i)
+{
+    static const int cost[3] = { 40, 35, 25 };
+    if (i < 0 || i > 2) return;
+    if (m_gs.coins < cost[i]) { sfx(SND_UI_BACK, 0.6f); m_ixMsg = "NOT ENOUGH COINS"; m_ixMsgT = 2.f; return; }
+    Player &pl = m_gs.player;
+    m_gs.coins -= cost[i];
+    if (i == 0) {
+        for (int w = WPN_PISTOL; w < WPN_COUNT; w++) if (pl.owned[w])
+            pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize * 2, WEAPONS[w].maxReserve);
+        sfx(SND_PICKUP_AMMO, 0.7f); m_ixMsg = "AMMO RESUPPLIED  +2 MAGAZINES PER GUN";
+    } else if (i == 1) {
+        pl.hp = std::min(pl.hp + 50, CHAR_PROFILES[m_charChoice].hp);
+        sfx(SND_PICKUP_HEALTH, 0.7f); m_ixMsg = "MEDKIT USED  +50 HP";
+    } else {
+        generateUpgradeChoices();
+        m_selectedUpgradeCard = -1;
+        sfx(SND_UPGRADE, 0.6f); m_ixMsg = "NEW UPGRADE CARDS";
+    }
+    m_ixMsgT = 2.f;
+}
+
+// Bosses and elites always drop a gun (one you don't own yet if possible)
+void MainWindow::dropReward(float x, float y, bool boss)
+{
+    const Player &pl = m_gs.player;
+    std::vector<PickupType> unowned;
+    if (!pl.owned[WPN_SHOTGUN]) unowned.push_back(PICKUP_SHOTGUN);
+    if (!pl.owned[WPN_RIFLE]) unowned.push_back(PICKUP_RIFLE);
+    WeaponPickup wp;
+    wp.x = x; wp.y = y; wp.bobPhase = frand(0, 6.28f); wp.reward = true;
+    wp.type = !unowned.empty() ? unowned[size_t(rand()) % unowned.size()] : (rand() % 2 ? PICKUP_RIFLE : PICKUP_SHOTGUN);
+    m_gs.weaponPickups.push_back(wp);
+    if (boss) {                                                   // commanders also leave supplies
+        HealthKit k; k.x = x + 0.45f; k.y = y; k.bobPhase = 0.f;
+        if (!posValid(k.x, k.y, 0.1f)) k.x = x - 0.45f;
+        if (posValid(k.x, k.y, 0.1f)) m_gs.healthKits.push_back(k);
+        WeaponPickup am; am.x = x; am.y = y + 0.45f; am.type = PICKUP_AMMO; am.reward = false;
+        if (posValid(am.x, am.y, 0.1f)) m_gs.weaponPickups.push_back(am);
+    }
+    pushFeed(QString("%1 DROPPED  %2").arg(boss ? "COMMANDER" : "ELITE").arg(wp.type == PICKUP_RIFLE ? "M4 CARBINE" : "M870 SHOTGUN"), 4.5f, true);
+    sfx(SND_RADIO, 0.5f);
+}
+
+// Zone report: kills, headshots and bonus objectives pay out coins and score
+void MainWindow::buildZoneReport()
+{
+    const GameState &g = m_gs;
+    m_report.clear();
+    const int lv = g.level;
+    auto add = [&](const QString &label, const QString &detail, bool done, int coins, int score) {
+        m_report.push_back(ReportItem{label, detail, done, done ? coins : 0, done ? score : 0});
+    };
+    auto mmss = [](float s) { int t = int(s); return QString("%1:%2").arg(t / 60).arg(t % 60, 2, 10, QChar('0')); };
+    add("HOSTILES ELIMINATED", QString("%1 kills  x 5 coins").arg(g.zoneKills), g.zoneKills > 0, g.zoneKills * 5, 0);
+    add("HEADSHOTS", QString("%1 headshots  x 10 coins").arg(g.zoneHeadshots), g.zoneHeadshots > 0, g.zoneHeadshots * 10, 0);
+    float hsRate = g.zoneKills ? float(g.zoneHeadshots) / g.zoneKills : 0.f;
+    add("HEADHUNTER", QString("%1% of kills were headshots  (need 40%)").arg(int(hsRate * 100)), hsRate >= 0.4f, 40, 400 * lv);
+    float acc = g.zoneShots ? float(g.zoneHits) / g.zoneShots : 0.f;
+    add("MARKSMAN", QString("accuracy %1%  (need 35%)").arg(int(acc * 100)), acc >= 0.35f && g.zoneShots >= 5, 30, 300 * lv);
+    if (g.zoneSecretsTotal > 0)
+        add("EXPLORER", QString("%1 / %2 secret areas found").arg(g.zoneSecrets).arg(g.zoneSecretsTotal), g.zoneSecrets >= g.zoneSecretsTotal, 50, 500 * lv);
+    add("UNTOUCHABLE", QString("%1 damage taken  (need under 40)").arg(g.zoneDamage), g.zoneDamage < 40, 40, 400 * lv);
+    float par = 150.f + 30.f * lv;
+    add("BLITZ", QString("cleared in %1  (par %2)").arg(mmss(g.zoneTime)).arg(mmss(par)), g.zoneTime <= par, 30, 300 * lv);
+    if (g.zoneHadBoss) add("COMMANDER DOWN", "zone commander eliminated", g.zoneBossKilled, 60, 600 * lv);
+    m_reportCoins = m_reportScore = 0;
+    for (const ReportItem &it : m_report) { m_reportCoins += it.coins; m_reportScore += it.score; }
+    m_gs.coins += m_reportCoins;
+    m_gs.score += m_reportScore;
 }
 
 void MainWindow::gameStep(float dt)
@@ -716,10 +857,16 @@ void MainWindow::gameStep(float dt)
         // The player decides at their own pace; the long fallback timer only
         // exists so an idle game still moves on.
         m_intermissionT += dt;
-        m_upgradeDecisionTimer -= dt;
-        if (m_upgradeDecisionTimer <= 0.0f) deployNextZone();
+        m_ixMsgT = std::max(0.f, m_ixMsgT - dt);
+        if (m_ixPage == 0) {
+            if (m_intermissionT > 30.f) { m_ixPage = 1; m_ixPageStart = m_intermissionT; }   // idle: move on
+        } else {
+            m_upgradeDecisionTimer -= dt;
+            if (m_upgradeDecisionTimer <= 0.0f) deployNextZone();
+        }
         return;
     }
+    m_gs.zoneTime += dt;
     if (pl.attackCooldown > 0) pl.attackCooldown -= dt;
     if (pl.flashTimer > 0)     pl.flashTimer -= dt;
     if (pl.damageFlash > 0)    pl.damageFlash -= dt;
@@ -884,10 +1031,10 @@ float ny = pl.posY + pl.velY * dt;
 
 // Preserve the existing terrain and step-height checks.
 bool canMoveX =
-    canStep(nx, pl.posY, m_footZ, 0.32f);
+    canStep(nx, pl.posY, m_footZ, 0.32f, 0.28f, pl.posX, pl.posY);
 
 bool canMoveY =
-    canStep(pl.posX, ny, m_footZ, 0.32f);
+    canStep(pl.posX, ny, m_footZ, 0.32f, 0.28f, pl.posX, pl.posY);
 
 // Preserve the existing wall-sliding suppression.
 //
@@ -939,7 +1086,7 @@ if (canMoveY) {
         m_acidSndT -= dt;
         if (m_acidSndT <= 0) { sfx(SND_ACID, 0.6f, frand(0.9f, 1.1f)); m_acidSndT = 0.35f; }
         if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.45f, frand(0.95f, 1.05f)); m_hurtSndT = 1.0f; }
-        if (m_acidAcc >= 1.f) { int d = int(m_acidAcc); m_acidAcc -= d; pl.hp -= d; pl.damageFlash = std::max(pl.damageFlash, 0.2f); }
+        if (m_acidAcc >= 1.f) { int d = int(m_acidAcc); m_acidAcc -= d; pl.hp -= d; m_gs.zoneDamage += d; pl.damageFlash = std::max(pl.damageFlash, 0.2f); }
         if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
     }
     if (moving) pl.bobPhase += dt * (pl.sprinting ? 9.f : 5.5f); else pl.bobPhase *= 0.9f;
@@ -1023,7 +1170,7 @@ if (canMoveY) {
         if (dx * dx + dy * dy < 0.15f && b.z > m_footZ - 0.1f && b.z < m_footZ + 0.95f) {
             b.alive = false;
             int dmg = b.damage > 0 ? b.damage : int((10 + 4 * (m_gs.level - 1)) * (1.f - pl.damageReduction) * dc.dmgReceivedMult);
-            pl.hp -= dmg; pl.damageFlash = 0.45f; pl.shakeY = -9.f;
+            pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = 0.45f; pl.shakeY = -9.f;
             sfx(SND_HIT_FLESH, 0.6f, frand(0.9f, 1.1f));
             if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.85f, frand(0.93f, 1.07f)); m_hurtSndT = 0.35f; }
             m_damageAngle = std::atan2(-b.dy, -b.dx); m_damageDirTimer = 2.0f;
@@ -1063,7 +1210,7 @@ if (canMoveY) {
     for (auto &d : m_gs.damageNums) { d.life -= dt; d.z += dt * 0.5f; }
     m_gs.damageNums.erase(std::remove_if(m_gs.damageNums.begin(), m_gs.damageNums.end(), [](const DamageNum &d) { return d.life <= 0; }), m_gs.damageNums.end());
 
-    if (!m_gs.levelComplete && m_gs.killsThisLevel >= m_gs.killsNeeded) {
+    if (!m_gs.levelComplete && !m_gs.enemies.empty() && aliveEnemies() == 0) {
         m_gs.levelComplete = true;
         m_upgradeDecisionTimer = 60.0f;
         m_intermissionT = 0.f;
@@ -1073,6 +1220,8 @@ if (canMoveY) {
         m_hoverCard = m_hoverChip = -1;
         m_gs.score += 500 * m_gs.level;
         generateUpgradeChoices();
+        buildZoneReport();
+        m_ixPage = 0;
         // Stop combat input carrying over into the menu (held trigger, aim)
         m_lmb = false; pl.adsMode = false; m_showArmory = false;
         m_loadoutWeapon = pl.curWeapon;
@@ -1280,7 +1429,7 @@ void MainWindow::spawnEnemy(float x, float y, bool elite, EnemyType type)
 void MainWindow::checkReinforcements(float dt)
 {
     // In higher procedural zones (level >= 2), periodically spawn out-of-sight reinforcements
-    if (m_gs.level < 2 || m_gs.levelComplete || m_gs.gameOver) return;
+    if (m_gs.level < 2 || m_gs.levelComplete || m_gs.gameOver || m_reinforceLeft <= 0) return;
     m_reinforceTimer -= dt;
     if (m_reinforceTimer > 0) return;
 
@@ -1303,6 +1452,7 @@ void MainWindow::checkReinforcements(float dt)
 
         EnemyType rt = (rand() % 100 < 40) ? ET_SCOUT : (rand() % 100 < 70) ? ET_RIFLEMAN : ET_SHOTGUNNER;
         spawnEnemy(fx, fy, false, rt);
+        m_reinforceLeft--; m_gs.killsNeeded++;
         pushFeed("HOSTILE REINFORCEMENTS INBOUND", 3.0f);
         sfx(SND_RADIO, 0.6f);
         m_reinforceTimer = frand(20.f, 32.f);
@@ -1347,14 +1497,14 @@ void MainWindow::fireWeapon()
         sfx(SND_KNIFE_SWING, 0.8f, frand(0.9f, 1.15f));
         m_camKick += (m_knifeSwing ? 1.0f : -0.8f);
         m_kick = std::min(1.2f, m_kick + 0.35f);
-        m_gs.shotsFired++;
+        m_gs.shotsFired++; m_gs.zoneShots++;
 
         computeView();
         float ax, ay; aimPoint(ax, ay);
         HitResult h = hitscan(ax, ay);
 
         if (h.enemy >= 0 && h.depth <= 2.2f) {
-            m_gs.shotsHit++;
+            m_gs.shotsHit++; m_gs.zoneHits++;
             sfx(SND_KNIFE_HIT, 0.9f, frand(0.9f, 1.1f), 0.05f);
             float headMult = (pl.upgradeSpecial[WPN_KNIFE] ? 3.5f : wd.headMult);
             float mult = h.part == PART_HEAD ? headMult : (h.part == PART_LIMB ? wd.limbMult : 1.0f);
@@ -1392,7 +1542,7 @@ void MainWindow::fireWeapon()
     m_pitch = rs::clampf(m_pitch + climb, -0.75f, 0.75f);
     m_recoilPitch += climb * 0.85f;
     turn(frand(-1.f, 1.f) * 0.004f * recoil);
-    m_gs.shotsFired++;
+    m_gs.shotsFired++; m_gs.zoneShots++;
 
     computeView();
     float ax, ay; aimPoint(ax, ay);
@@ -1438,7 +1588,7 @@ void MainWindow::fireWeapon()
             if (h.wall) stampWallDecal(h.cx, h.cy, h.face, h.u, h.v, wd.pellets > 1);
         }
     }
-    if (anyHit) m_gs.shotsHit++;
+    if (anyHit) { m_gs.shotsHit++; m_gs.zoneHits++; }
 
     // Brass
     Casing c; c.x = m_ejectX; c.y = m_ejectY; c.vx = frand(260, 380); c.vy = frand(-420, -300);
@@ -1490,14 +1640,17 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
         e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0; e.killedByHeadshot = head;
         sfx(SND_KILL, 0.7f, 1.f, 0.05f);
         sfxAt(SND_ENEMY_DEATH, e.x, e.y, 0.9f, frand(0.85f, 1.15f));
-        m_gs.kills++; m_gs.killsThisLevel++;
+        m_gs.kills++; m_gs.killsThisLevel++; m_gs.zoneKills++;
+        if (head) m_gs.zoneHeadshots++;
         m_gs.score += 100 * m_gs.level + (head ? 50 * m_gs.level : 0);
         if (head) { m_gs.headshots++; m_headshotBanner = 1.3f; }
         m_killMarker = 0.5f;
         m_combo++; m_comboTimer = 3.5f; m_comboDisplay = 1.8f;
         pushFeed((m_combo > 1 ? QString("x%1  ").arg(m_combo) : QString()) + (head ? "HEADSHOT KILL" : "ENEMY DOWN"), 4.5f, head);
         addDecal(m_blood, e.x, e.y, 0.42f, 170);
-        if (rand() % 3 == 0) spawnPickup(e.x, e.y);
+        if (e.boss) { m_gs.zoneBossKilled = true; m_gs.score += 1000 * m_gs.level; }
+        if (e.boss || e.elite) dropReward(e.x, e.y, e.boss);      // bosses and elites always drop a gun
+        else if (rand() % 3 == 0) spawnPickup(e.x, e.y);
     }
 }
 
@@ -2006,11 +2159,17 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     // Keys pressed in the first moments are ignored so combat input can't skip the screen.
     if (m_gs.levelComplete && !m_paused && !m_gs.gameOver && k != Qt::Key_Escape) {
         if (m_intermissionT < 0.9f) return;
-        if (k >= Qt::Key_1 && k <= Qt::Key_3) {
-            int idx = k - Qt::Key_1;
-            if (idx < int(m_upgradeCards.size())) { m_selectedUpgradeCard = idx; m_upgradePicked = true; sfx(SND_UPGRADE, 0.6f); }
+        if (m_ixPage == 0) {                                     // zone report: ENTER skips the tally, then continues
+            if (k == Qt::Key_Return || k == Qt::Key_Enter) {
+                float full = 0.6f + 0.3f * float(m_report.size()) + 0.6f;
+                if (m_intermissionT < full) m_intermissionT = full;
+                else { m_ixPage = 1; m_ixPageStart = m_intermissionT; sfx(SND_UI_SELECT, 0.6f); }
+            }
             return;
         }
+        if (m_intermissionT - m_ixPageStart < 0.25f) return;
+        if (k >= Qt::Key_1 && k <= Qt::Key_3) { selectUpgradeCard(k - Qt::Key_1); return; }
+        if (k >= Qt::Key_7 && k <= Qt::Key_9) { buyShopItem(k - Qt::Key_7); return; }
         if (k == Qt::Key_Tab || k == Qt::Key_Right || k == Qt::Key_Left) {
             std::vector<int> ch = loadoutChoices();
             if (!ch.empty()) {
@@ -2108,11 +2267,19 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
         if (m_intermissionT < 0.9f) return;                     // ignore the shot that cleared the zone
         QPointF f = widgetToFrame(e->position());
         QPoint pt(int(f.x()), int(f.y()));
-        for (int i = 0; i < int(m_upgradeCards.size()) && i < 3; i++) {
-            if (!ixCardRect(i).contains(pt)) continue;
-            m_selectedUpgradeCard = i; m_upgradePicked = true; sfx(SND_UPGRADE, 0.6f);
+        if (m_ixPage == 0) {
+            float full = 0.6f + 0.3f * float(m_report.size()) + 0.6f;
+            if (m_intermissionT < full) m_intermissionT = full;
+            else if (ixDeployRect().contains(pt)) { m_ixPage = 1; m_ixPageStart = m_intermissionT; sfx(SND_UI_SELECT, 0.6f); }
             return;
         }
+        if (m_intermissionT - m_ixPageStart < 0.25f) return;
+        for (int i = 0; i < int(m_upgradeCards.size()) && i < 3; i++) {
+            if (!ixCardRect(i).contains(pt)) continue;
+            selectUpgradeCard(i);
+            return;
+        }
+        for (int i = 0; i < 3; i++) if (ixShopRect(i).contains(pt)) { buyShopItem(i); return; }
         std::vector<int> ch = loadoutChoices();
         for (int s = 0; s < int(ch.size()); s++) {
             if (!ixChipRect(s, int(ch.size())).contains(pt)) continue;
@@ -2308,7 +2475,8 @@ bool MainWindow::snapshot(const QString &dir)
     {
         Player &pl = m_gs.player;
         place(10.5f, 13.6f, -1.5708f);                          // ~2 units from the brick bunker's south wall
-        for (auto &e : m_gs.enemies) { e.alive = false; e.corpseFade = 0; }
+        // keep one enemy alive (killing them all would now clear the zone)
+        for (size_t i = 1; i < m_gs.enemies.size(); i++) { m_gs.enemies[i].alive = false; m_gs.enemies[i].corpseFade = 0; }
         pl.owned[WPN_RIFLE] = true; pl.mag[WPN_RIFLE] = 30; pl.reserve[WPN_RIFLE] = 90;
         pl.curWeapon = WPN_RIFLE; run(2);
         for (int i = 0; i < 9; i++) {
@@ -2426,7 +2594,9 @@ bool MainWindow::snapshot(const QString &dir)
         start(1);
         Player &pl = m_gs.player;
         pl.owned[WPN_SHOTGUN] = true; pl.mag[WPN_SHOTGUN] = 6; pl.reserve[WPN_SHOTGUN] = 12;
-        m_gs.killsThisLevel = m_gs.killsNeeded;
+        m_gs.zoneKills = 9; m_gs.zoneHeadshots = 5; m_gs.zoneShots = 20; m_gs.zoneHits = 11; m_gs.zoneTime = 140.f; m_gs.zoneDamage = 25;
+        for (auto &en : m_gs.enemies) { en.alive = false; en.hp = 0; en.corpseFade = 0; }
+        m_gs.zoneBossKilled = true;
         advance(1.f / 60.f);                                     // zone clears this frame
         // The player is still shooting / jumping / pressing 1 at that moment
         QMouseEvent click(QEvent::MouseButtonPress, QPointF(400, 300), QPointF(400, 300), QPointF(400, 300), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
@@ -2438,23 +2608,70 @@ bool MainWindow::snapshot(const QString &dir)
         m_keys.clear();
         log(QString("intermission after stray input: level=%1 complete=%2 selected=%3 (expect 1, 1, -1)")
                 .arg(m_gs.level).arg(m_gs.levelComplete).arg(m_selectedUpgradeCard));
-        for (int i = 0; i < 20; i++) advance(1.f / 60.f);
-        render(); save("60_intermission_fadein");
         for (int i = 0; i < 60; i++) advance(1.f / 60.f);
+        render(); save("59_zone_report_tally");
+        for (int i = 0; i < 180; i++) advance(1.f / 60.f);
+        render(); save("60_zone_report");
+        log(QString("zone report: %1 rows, +%2 coins, +%3 score, coins now %4").arg(m_report.size()).arg(m_reportCoins).arg(m_reportScore).arg(m_gs.coins));
+        keyPressEvent(&enter); m_keys.clear();                    // -> upgrade page
+        for (int i = 0; i < 30; i++) advance(1.f / 60.f);
         render(); save("61_intermission");
+        log(QString("page after ENTER on report: %1 (expect 1)").arg(m_ixPage));
         keyPressEvent(&enter); m_keys.clear();
         log(QString("enter without a pick: level=%1 (expect 1)").arg(m_gs.level));
         QKeyEvent two(QEvent::KeyPress, Qt::Key_2, Qt::NoModifier), tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
-        keyPressEvent(&two); keyPressEvent(&tab); m_keys.clear();
+        // pick the rifle unlock card if offered, otherwise card 2
+        int unlockIdx = -1;
+        for (int i = 0; i < int(m_upgradeCards.size()); i++) if (m_upgradeCards[i].slot == 4) unlockIdx = i;
+        if (unlockIdx >= 0) { QKeyEvent kk(QEvent::KeyPress, Qt::Key(Qt::Key_1 + unlockIdx), Qt::NoModifier); keyPressEvent(&kk); }
+        else keyPressEvent(&two);
+        m_keys.clear();
+        log(QString("picked card %1 (unlock card index %2) -> loadout weapon %3").arg(m_selectedUpgradeCard).arg(unlockIdx).arg(m_loadoutWeapon));
+        QKeyEvent seven(QEvent::KeyPress, Qt::Key_7, Qt::NoModifier); keyPressEvent(&seven); m_keys.clear();
+        log(QString("shop ammo: coins now %1").arg(m_gs.coins));
         int chosen = m_loadoutWeapon;
+        (void)tab;
         m_mouseWidget = QPointF(ixCardRect(1).center()); updateIntermissionHover(m_mouseWidget);
         render(); save("62_intermission_selected");
         float t0 = m_upgradeDecisionTimer;
         for (int i = 0; i < 600; i++) advance(1.f / 60.f);      // 10 s of thinking: must not auto-deploy
         log(QString("after 10 s idle with a pick: level=%1 timer %2 -> %3 (expect level 1)").arg(m_gs.level).arg(t0).arg(m_upgradeDecisionTimer));
         keyPressEvent(&enter); m_keys.clear();
-        log(QString("deploy: level=%1 weapon=%2 chosen=%3 complete=%4 (expect 2, chosen, 0)")
-                .arg(m_gs.level).arg(pl.curWeapon).arg(chosen).arg(m_gs.levelComplete));
+        log(QString("deploy: level=%1 weapon=%2 chosen=%3 owned=%4 mag=%5 complete=%6 (expect 2, chosen, 1, >0, 0)")
+                .arg(m_gs.level).arg(pl.curWeapon).arg(chosen).arg(pl.owned[pl.curWeapon]).arg(pl.mag[pl.curWeapon]).arg(m_gs.levelComplete));
+        for (int i = 0; i < 40; i++) advance(1.f / 60.f);
+        render(); save("63_deployed_with_choice");
+        // Boss: look at the commander, then kill it and see the loot beam
+        int bi = -1;
+        for (int i = 0; i < int(m_gs.enemies.size()); i++) if (m_gs.enemies[i].boss) bi = i;
+        log(QString("boss present: %1").arg(bi >= 0));
+        if (bi >= 0) {
+            Enemy &b = m_gs.enemies[bi];
+            b.fireCooldown = 999; b.state = ES_ALERT;
+            for (auto &en : m_gs.enemies) en.fireCooldown = 999;
+            float ang = frand(0, 6.28f);
+            for (int t = 0; t < 32; t++) {
+                float a2 = ang + t * 0.196f, px = b.x - std::cos(a2) * 4.5f, py = b.y - std::sin(a2) * 4.5f;
+                if (posValid(px, py, 0.3f) && hasLOS(px, py, floorH(px, py) + 0.5f, b.x, b.y, floorH(b.x, b.y) + 0.8f)) { place(px, py, a2); break; }
+            }
+            m_aimX = W / 2.f; m_aimY = H / 2.f;
+            run(5); save("64_boss");
+            damageEnemy(bi, 99999, PART_BODY, b.x, b.y, floorH(b.x, b.y) + 0.8f);
+            for (int i = 0; i < 90; i++) advance(1.f / 60.f);
+            render(); save("65_boss_loot");
+            int rewards = 0; for (const auto &wp2 : m_gs.weaponPickups) if (wp2.reward && wp2.active) rewards++;
+            log(QString("boss loot: reward guns on the ground = %1").arg(rewards));
+        }
+        // 3D weapon views
+        for (int wv = 0; wv < WPN_COUNT; wv++) {
+            pl.owned[wv] = true; pl.curWeapon = wv; pl.switchTimer = 0; pl.reloadTimer = 0; m_pendingWeapon = -1;
+            if (wv != WPN_KNIFE && pl.mag[wv] == 0) pl.mag[wv] = effectiveMagSize(wv);
+            for (size_t i = 1; i < m_gs.enemies.size(); i++) m_gs.enemies[i].alive = false;
+            run(10); save(QString("8%1_gun3d_%2").arg(wv).arg(WEAPONS[wv].shortName));
+        }
+        pl.curWeapon = WPN_KNIFE; tryFire(); for (int i = 0; i < 6; i++) advance(1.f / 60.f); render(); save("84_knife_slash");
+        pl.curWeapon = WPN_RIFLE; pl.attackCooldown = 0; tryFire(); for (int i = 0; i < 2; i++) advance(1.f / 60.f); render(); save("85_rifle_fire");
+        pl.curWeapon = WPN_RIFLE; pl.mag[WPN_RIFLE] = 3; pl.reserve[WPN_RIFLE] = 60; startReload(); for (int i = 0; i < 50; i++) advance(1.f / 60.f); render(); save("86_rifle_reload");
     }
 
     // ── Bot playtest: random movement + aiming at enemies, invariants checked every frame ──
@@ -2522,7 +2739,7 @@ bool MainWindow::snapshot(const QString &dir)
                 int free = 0;                                    // can the player move in ANY direction?
                 for (int k = 0; k < 16; k++) {
                     float an = k * 0.3927f;
-                    if (canStep(pl.posX + std::cos(an) * 0.06f, pl.posY + std::sin(an) * 0.06f, m_footZ, 0.32f)) free++;
+                    if (canStep(pl.posX + std::cos(an) * 0.06f, pl.posY + std::sin(an) * 0.06f, m_footZ, 0.76f, 0.28f, pl.posX, pl.posY)) free++;   // a jump clears 0.76
                 }
                 if (free == 0) { hardStuck++; log(QString("  HARD STUCK at (%1,%2) z=%3").arg(pl.posX).arg(pl.posY).arg(m_footZ)); }
                 turn(2.5f);

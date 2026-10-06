@@ -1,11 +1,13 @@
 // =============================================================================
 //  render_weapon.cpp  -  First-person weapon, hands, optics
 //
-//  The gun is a set of 2D side-profile polygons (gunmodels.h) pushed through a
-//  one-point perspective mapping: points along the barrel converge toward a
-//  vanishing point placed on the crosshair, and heights shrink with distance.
-//  Every polygon is filled by the edge-function triangle rasterizer with
-//  Gouraud shading (lighter toward the top), plus a Bresenham specular rim.
+//  The gun is a real 3D model: every side-profile polygon in gunmodels.h is
+//  extruded to its thickness (GUN_GEOM3D) into a solid block, placed in camera
+//  space by a forward/up/right frame aimed at the crosshair, then:
+//    back-face culling -> Sutherland-Hodgman near-plane clipping ->
+//    perspective projection -> flat Lambert + Blinn specular shading ->
+//    edge-function triangle fill with a per-pixel z-buffer (1/z).
+//  Forearms are tapered 3D boxes.
 //
 //  Animations: walk bob, mouse-lag sway, recoil kick + muzzle climb, slide /
 //  pump cycling, magazine-out reload, weapon-swap drop, sprint carry pose.
@@ -20,16 +22,6 @@ using namespace rs;
 static inline float smoothstep01(float x) { x = clampf(x, 0.f, 1.f); return x * x * (3 - 2 * x); }
 
 namespace {
-struct GunProj {
-    float Rx, Ry, Vx, Vy, k, s0, L, upX, upY;
-    void map(float u, float h, float &x, float &y, float &s) const {
-        float f = 1.f / (1.f + k * u / L);
-        s = s0 * f;
-        x = Vx + (Rx - Vx) * f + upX * h * s;
-        y = Vy + (Ry - Vy) * f + upY * h * s;
-    }
-};
-
 // A tapered limb: quad from (ax,ay) width wa to (bx,by) width wb, Gouraud
 void limb(Canvas &cv, float ax, float ay, float wa, float bx, float by, float wb, uint32_t ca, uint32_t cb)
 {
@@ -40,6 +32,127 @@ void limb(Canvas &cv, float ax, float ay, float wa, float bx, float by, float wb
     uint32_t cols[4] = { scaleCol(ca, 1.25f), scaleCol(cb, 1.25f), scaleCol(cb, 0.7f), scaleCol(ca, 0.7f) };
     cv.poly(xy, cols, 4);
 }
+
+// ── Minimal 3D maths (camera space: x right, y down, z forward, metres) ─────
+struct V3 { float x, y, z; };
+inline V3 operator+(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+inline V3 operator-(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline V3 operator*(V3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
+inline float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline V3 cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+inline V3 norm(V3 a) { float l = std::sqrt(dot(a, a)) + 1e-9f; return a * (1.f / l); }
+// Rodrigues rotation of v about unit axis k by angle a
+inline V3 rotate(V3 v, V3 k, float a) {
+    float c = std::cos(a), s = std::sin(a);
+    return v * c + cross(k, v) * s + k * (dot(k, v) * (1 - c));
+}
+
+// ── View-model rasterizer: perspective projection, near-plane clipping,
+//    back-face culling, flat Lambert + Blinn shading, per-pixel z-buffer ────
+struct ViewModelRaster {
+    Canvas &cv;
+    float *zb;                       // stores 1/z, 0 = empty
+    static constexpr float F = 560.f, NEAR = 0.03f;
+    V3 light = norm(V3{-0.35f, -0.85f, -0.45f});
+
+    bool project(V3 p, float &sx, float &sy) const {
+        if (p.z < NEAR) return false;
+        sx = W / 2.f + F * p.x / p.z; sy = H / 2.f + F * p.y / p.z;
+        return true;
+    }
+    // Depth-tested, flat-coloured triangle (edge functions, 1/z interpolated)
+    void tri(float x0, float y0, float z0, float x1, float y1, float z1, float x2, float y2, float z2, uint32_t col, bool blend) {
+        float area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+        if (std::fabs(area) < 1e-4f) return;
+        if (area < 0) { std::swap(x1, x2); std::swap(y1, y2); std::swap(z1, z2); area = -area; }
+        int minX = std::max(0, int(std::floor(std::min({x0, x1, x2})))), maxX = std::min(W - 1, int(std::ceil(std::max({x0, x1, x2}))));
+        int minY = std::max(0, int(std::floor(std::min({y0, y1, y2})))), maxY = std::min(H - 1, int(std::ceil(std::max({y0, y1, y2}))));
+        float inv = 1.f / area;
+        for (int y = minY; y <= maxY; y++) {
+            float py = y + 0.5f;
+            for (int x = minX; x <= maxX; x++) {
+                float px = x + 0.5f;
+                float w0 = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+                float w1 = (x0 - x2) * (py - y2) - (y0 - y2) * (px - x2);
+                float w2 = (x1 - x0) * (py - y0) - (y1 - y0) * (px - x0);
+                if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+                float iz = (w0 * z0 + w1 * z1 + w2 * z2) * inv;          // interpolated 1/z
+                float &d = zb[y * W + x];
+                if (iz <= d) continue;
+                if (blend) cv.blend(x, y, col);
+                else { cv.p[y * W + x] = col; d = iz; }
+            }
+        }
+    }
+    // One planar face: cull, light, clip to the near plane, project, fill
+    void face(const V3 *pts, int n, V3 normal, uint32_t base, float specK, bool glass = false) {
+        V3 c{0, 0, 0};
+        for (int i = 0; i < n; i++) c = c + pts[i];
+        c = c * (1.f / n);
+        if (dot(normal, c) >= 0.f) return;                            // back-face culling
+        float diff = std::max(0.f, dot(normal, light));
+        V3 view = norm(c * -1.f), half = norm(light + view);
+        float spec = std::pow(std::max(0.f, dot(normal, half)), 28.f) * specK;
+        float rim = std::pow(1.f - std::max(0.f, dot(normal, view)), 3.f) * 0.18f;
+        float shade = 0.30f + 0.95f * diff + rim;
+        uint32_t col;
+        if (glass) col = withAlpha(lerpCol(base, rgb(235, 245, 255), 0.25f + 0.5f * diff + spec), 215);
+        else col = rgb(int(R(base) * shade * 1.35f + 255 * spec), int(G(base) * shade * 1.35f + 255 * spec), int(B(base) * shade * 1.35f + 255 * spec));
+        // Sutherland–Hodgman against z = NEAR
+        V3 clip[16]; int m = 0;
+        for (int i = 0; i < n && m < 14; i++) {
+            V3 a = pts[i], b = pts[(i + 1) % n];
+            bool ain = a.z >= NEAR, bin = b.z >= NEAR;
+            if (ain) clip[m++] = a;
+            if (ain != bin) { float t = (NEAR - a.z) / (b.z - a.z); clip[m++] = a + (b - a) * t; }
+        }
+        if (m < 3) return;
+        float sx[16], sy[16], iz[16];
+        for (int i = 0; i < m; i++) { project(clip[i], sx[i], sy[i]); iz[i] = 1.f / clip[i].z; }
+        for (int i = 1; i + 1 < m; i++) tri(sx[0], sy[0], iz[0], sx[i], sy[i], iz[i], sx[i + 1], sy[i + 1], iz[i + 1], col, glass);
+    }
+    // Extruded convex profile: 2 caps + one quad per edge
+    template <class Map>
+    void extrude(const float *uh, int n, float width, Map map, V3 Fd, V3 Ud, V3 Rd, uint32_t col, float specK, bool glass = false) {
+        V3 front[6], back[6];
+        float area = 0;
+        for (int k = 0; k < n; k++) {
+            front[k] = map(uh[2 * k], uh[2 * k + 1], width * 0.5f);
+            back[k]  = map(uh[2 * k], uh[2 * k + 1], -width * 0.5f);
+            int j = (k + 1) % n;
+            area += uh[2 * k] * uh[2 * j + 1] - uh[2 * j] * uh[2 * k + 1];
+        }
+        face(front, n, Rd, col, specK, glass);
+        face(back, n, Rd * -1.f, col, specK, glass);
+        if (glass) return;
+        for (int k = 0; k < n; k++) {
+            int j = (k + 1) % n;
+            float eu = uh[2 * j] - uh[2 * k], eh = uh[2 * j + 1] - uh[2 * k + 1];
+            float nu = area > 0 ? eh : -eh, nh = area > 0 ? -eu : eu;
+            float l = std::sqrt(nu * nu + nh * nh);
+            if (l < 1e-5f) continue;
+            V3 q[4] = { front[k], front[j], back[j], back[k] };
+            face(q, 4, norm(Fd * (nu / l) + Ud * (nh / l)), col, specK);
+        }
+    }
+    // Tapered box from a (half-size ra) to b (half-size rb): sleeves, forearms
+    void box(V3 a, V3 b, float ra, float rb, uint32_t col, float specK) {
+        V3 ax = norm(b - a), ref = std::fabs(ax.y) > 0.9f ? V3{1, 0, 0} : V3{0, -1, 0};
+        V3 s1 = norm(cross(ax, ref)), s2 = cross(s1, ax);
+        V3 A[4] = { a + s1 * ra + s2 * ra, a - s1 * ra + s2 * ra, a - s1 * ra - s2 * ra, a + s1 * ra - s2 * ra };
+        V3 B[4] = { b + s1 * rb + s2 * rb, b - s1 * rb + s2 * rb, b - s1 * rb - s2 * rb, b + s1 * rb - s2 * rb };
+        V3 nrm[4] = { s2, s1 * -1.f, s2 * -1.f, s1 };
+        for (int k = 0; k < 4; k++) {
+            int j = (k + 1) % 4;
+            V3 q[4] = { A[k], A[j], B[j], B[k] };
+            face(q, 4, nrm[k], col, specK);
+        }
+        face(A, 4, ax * -1.f, col, specK);
+        face(B, 4, ax, col, specK);
+    }
+};
+
+bool isWoodOrCloth(uint32_t c) { return R(c) > G(c) + 20; }
 } // namespace
 
 void MainWindow::renderViewModel()
@@ -48,7 +161,9 @@ void MainWindow::renderViewModel()
     const int w = pl.curWeapon;
     if (effectiveScope(w) && m_adsT > 0.6f) return;                     // scope overlay replaces the gun
     const GunModel &M = *GUN_MODELS[w];
+    const GunGeom3D &G3 = GUN_GEOM3D[w];
     const CharProfile &cp = CHAR_PROFILES[m_charChoice];
+    const float S = G3.scale;                                           // metres per gun unit
 
     // --- Animation state --------------------------------------------------------
     bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
@@ -60,66 +175,44 @@ void MainWindow::renderViewModel()
     float drop = 0;
     if (pl.switchTimer > 0) { float s = pl.switchTimer / 0.4f; drop = s > 0.5f ? (1.f - s) * 2.f : s * 2.f; }
     float spr = m_sprintT;
-    float aimHide = effectiveScope(w) ? 0.f : m_adsT;                    // reflex weapons lower as the sight rises
+    float aimHide = effectiveScope(w) ? 0.f : m_adsT;                  // reflex weapons lower as the sight rises
 
-    // --- Anchors: rear of the gun (R, off-screen bottom-right) and the
-    //     vanishing point (V, on the crosshair) -------------------------------------
-    // --- Anchors: rear of the gun (R, off-screen bottom-right) and the
-    //     vanishing point (V, on the crosshair) -------------------------------------
-    struct Base { float rx, ry, k, s0; };
-    const Base bases[WPN_COUNT] = {
-        {W * 0.74f, H * 0.82f, 0.8f, 5.2f}, // WPN_KNIFE
-        {W * 0.78f, H * 0.82f, 0.7f, 5.0f}, // WPN_PISTOL
-        {W * 1.00f, H * 0.98f, 1.5f, 5.8f}, // WPN_SHOTGUN
-        {W * 1.00f, H * 0.98f, 1.7f, 5.6f}  // WPN_RIFLE
-    };
-    const Base &b = bases[w];
-    GunProj gp;
-    gp.k = b.k; gp.s0 = b.s0; gp.L = M.length;
-    gp.Vx = m_aimX + m_swayX * 0.5f; gp.Vy = m_aimY + m_swayY * 0.5f + 25.f;
-    gp.Rx = b.rx + bx + m_swayX; gp.Ry = b.ry + by + breathe + m_swayY;
-    // Rifle ADS: swing toward the centre line before the scope takes over
-    if (effectiveScope(w) && m_adsT > 0) { gp.Rx += (W * 0.62f - gp.Rx) * m_adsT; gp.Ry += 30 * m_adsT; }
-    // recoil: gun slams back toward the camera, muzzle climbs
-    gp.Rx += (gp.Rx - gp.Vx) * 0.08f * m_kick; gp.Ry += (gp.Ry - gp.Vy) * 0.08f * m_kick;
-    gp.Vy -= 50.f * m_kick;
-    float cant = -0.04f + 0.05f * m_kick;
+    // --- Hand position (camera space, metres) and orientation ---------------------
+    const V3 gripPos[WPN_COUNT] = { {0.15f, 0.20f, 0.31f}, {0.13f, 0.19f, 0.33f}, {0.175f, 0.27f, 0.38f}, {0.17f, 0.27f, 0.38f} };
+    V3 Hg = gripPos[w];
+    Hg.x += (bx + m_swayX * 0.7f) * 0.0007f;
+    Hg.y += (by + breathe + m_swayY * 0.7f) * 0.0007f;
+    Hg.y += (drop + aimHide) * 0.32f;
+    Hg.x -= 0.02f * spr; Hg.y += 0.05f * spr;
+    Hg.y += 0.03f * rl;
+    Hg.z -= 0.035f * m_kick; Hg.y += 0.008f * m_kick;
+    if (effectiveScope(w) && m_adsT > 0) Hg = Hg + (V3{0.0f, 0.11f, 0.27f} - Hg) * m_adsT;
+    float yaw = 0.10f + 0.55f * spr + 0.35f * rl;                       // + = muzzle swings left
+    float pitch = 0.03f + 0.11f * m_kick - 0.35f * spr + 0.15f * rl;
+    float roll = -0.06f + 0.05f * m_kick + 0.40f * spr + 0.60f * rl;
 
-    // Knife unique stabbing and slashing animations
+    float thrust = 0, slash = 0, kt = 0;
     if (w == WPN_KNIFE && m_actionT > 0.f) {
-        float t = 1.0f - m_actionT;
-        if (m_knifeSwing == 1) {
-            // STAB ANIMATION: Forward piercing lunge directly into the crosshair
-            float thrust = std::sin(t * 3.14159f);
-            gp.Rx += (gp.Vx - gp.Rx) * 0.48f * thrust;
-            gp.Ry += (gp.Vy - gp.Ry) * 0.48f * thrust;
-            gp.s0 *= (1.f + 0.35f * thrust);
-            cant += -0.25f * thrust;
-        } else {
-            // SLASH ANIMATION: Sweeping diagonal cut across the screen with blade tilt
-            float slash = std::sin(t * 3.14159f);
-            gp.Rx += std::cos(t * 3.14159f) * 120.f * slash;
-            gp.Ry -= std::sin(t * 3.14159f) * 75.f * slash;
-            cant += (t - 0.5f) * 1.4f * slash;
+        kt = 1.0f - m_actionT;
+        if (m_knifeSwing == 1) { thrust = std::sin(kt * 3.14159f); roll -= 0.25f * thrust; pitch += 0.08f * thrust; }
+        else {
+            slash = std::sin(kt * 3.14159f);
+            Hg.x += std::cos(kt * 3.14159f) * 0.10f * slash - 0.04f * slash;
+            Hg.y -= std::sin(kt * 3.14159f) * 0.06f * slash;
+            roll += (kt - 0.5f) * 1.6f * slash; yaw += (0.5f - kt) * 0.8f * slash;
         }
     }
-
-    // reload: tilt the gun in and up so the magazine well faces the camera
-    gp.Ry += rl * 30; gp.Vy += rl * 120; gp.Vx -= rl * 70; cant += rl * 0.45f;
-    // sprint carry
-    gp.Rx += 20 * spr; gp.Ry += 40 * spr; gp.Vx -= 200 * spr; gp.Vy += 200 * spr; cant += 0.35f * spr;
-    // swap / reflex-ADS drop
-    float dropPx = (drop + aimHide) * 340.f;
-    gp.Ry += dropPx; gp.Vy += dropPx;
-    // Gun "up": mostly screen-up, a little perpendicular to the barrel, rotated by cant
-    {
-        float ax = gp.Vx - gp.Rx, ay = gp.Vy - gp.Ry, al = std::sqrt(ax * ax + ay * ay) + 1e-3f;
-        float px = ay / al, py = -ax / al; if (py > 0) { px = -px; py = -py; }
-        float ux = px * 0.18f, uy = -0.82f + py * 0.18f, ul = std::sqrt(ux * ux + uy * uy);
-        ux /= ul; uy /= ul;
-        float c = std::cos(cant), s = std::sin(cant);
-        gp.upX = ux * c - uy * s; gp.upY = ux * s + uy * c;
-    }
+    // Barrel points at the crosshair (converging a few metres ahead)
+    V3 aim = norm(V3{(m_aimX + m_swayX * 0.5f - W / 2.f) / ViewModelRaster::F, (m_aimY + m_swayY * 0.5f - H / 2.f) / ViewModelRaster::F, 1.f});
+    V3 Fd = norm(aim * 3.0f - Hg);
+    V3 Ud = norm(V3{0, -1, 0} - Fd * dot(V3{0, -1, 0}, Fd));
+    V3 Rd = norm(cross(Fd, Ud));
+    Fd = rotate(Fd, Ud, yaw);   Rd = rotate(Rd, Ud, yaw);              // yaw about up
+    Fd = rotate(Fd, Rd, pitch); Ud = rotate(Ud, Rd, pitch);           // pitch about right (positive = muzzle up)
+    Ud = rotate(Ud, Fd, roll);  Rd = rotate(Rd, Fd, roll);             // roll about the barrel
+    if (thrust > 0) Hg = Hg + Fd * (0.16f * thrust);
+    const V3 O = Hg - Fd * (M.gripU * S) - Ud * (M.gripH * S);         // gun-space origin
+    auto map = [&](float u, float h, float wz) { return O + Fd * (u * S) + Ud * (h * S) + Rd * (wz * S); };
 
     // --- Moving parts -----------------------------------------------------------------
     float actionU = 0;
@@ -133,100 +226,79 @@ void MainWindow::renderViewModel()
         else if (rp < 0.8f) magH = -45.f * (1.f - (rp - 0.58f) / 0.22f);
     }
 
-    // Rasterize one convex part through the perspective mapping (Gouraud + rim)
-    auto drawPart = [&](const GunPart &part, float du, float dh) {
-        float xy[12]; uint32_t cols[6];
-        float hmin = 1e9f, hmax = -1e9f;
-        for (int k = 0; k < part.n; k++) { hmin = std::min(hmin, part.pts[2 * k + 1]); hmax = std::max(hmax, part.pts[2 * k + 1]); }
-        for (int k = 0; k < part.n; k++) {
-            float u = part.pts[2 * k] + du, h = part.pts[2 * k + 1], s;
-            gp.map(u, h + dh, xy[2 * k], xy[2 * k + 1], s);
-            float local = hmax > hmin ? (h - hmin) / (hmax - hmin) : 0.5f;
-            float global = (h - M.hMin) / (M.hMax - M.hMin);
-            float lt = (0.62f + 0.55f * local + 0.25f * global) * (1.f + 0.25f * u / M.length);
-            if (part.flags & GP_GLASS) cols[k] = lerpCol(part.col, rgb(220, 240, 255), local * 0.6f);
-            else cols[k] = scaleCol(part.col, lt * 1.2f);
-        }
-        m_cv.poly(xy, cols, part.n);
-        if (part.flags & GP_NORIM) return;
-        float area = 0;
-        for (int k = 0; k < part.n; k++) { int j = (k + 1) % part.n; area += part.pts[2 * k] * part.pts[2 * j + 1] - part.pts[2 * j] * part.pts[2 * k + 1]; }
-        for (int k = 0; k < part.n; k++) {
-            int j = (k + 1) % part.n;
-            float eu = part.pts[2 * j] - part.pts[2 * k], eh = part.pts[2 * j + 1] - part.pts[2 * k + 1];
-            float nh = area > 0 ? -eu : eu;             // outward normal's height component
-            float el = std::sqrt(eu * eu + eh * eh);
-            if (el < 0.01f || nh / el < 0.6f) continue;
-            m_cv.line(int(xy[2 * k]), int(xy[2 * k + 1]), int(xy[2 * j]), int(xy[2 * j + 1]), withAlpha(scaleCol(part.col, 3.4f), 160));
-        }
+    m_vmDepth.assign(size_t(W) * H, 0.f);
+    ViewModelRaster vr{m_cv, m_vmDepth.data()};
+
+    auto drawPart = [&](const GunPart &part, float width, float du, float dh, bool hand) {
+        float uh[12];
+        for (int k = 0; k < part.n; k++) { uh[2 * k] = part.pts[2 * k] + du; uh[2 * k + 1] = part.pts[2 * k + 1] + dh; }
+        bool glass = (part.flags & GP_GLASS) != 0;
+        float specK = hand ? 0.12f : glass ? 0.8f : isWoodOrCloth(part.col) ? 0.12f : 0.45f;
+        vr.extrude(uh, part.n, width, map, Fd, Ud, Rd, part.col, specK, glass);
     };
 
-    // --- Sleeves (behind everything) ---------------------------------------------------
-    float rwx, rwy, rws, lwx, lwy, lws;
-    gp.map(M.rWristU, M.rWristH, rwx, rwy, rws);
-    gp.map(M.lWristU + (w == WPN_SHOTGUN ? actionU : 0), M.lWristH, lwx, lwy, lws);
-    float lsx = (w == WPN_PISTOL ? W * 0.55f : W * 0.30f) + bx * 0.5f + m_swayX, lsy = H + 150.f + dropPx * 0.5f;
-    float rsx = W + 90.f + bx + m_swayX, rsy = H + 110.f + dropPx * 0.6f;
-
+    // --- Arms (3D boxes): elbows sit below / behind the camera -----------------------
+    V3 wr = map(M.rWristU, M.rWristH, 0.f);
+    V3 er = wr + V3{0.13f, 0.24f, -0.20f};
+    vr.box(er, wr, 0.050f, 0.030f, cp.sleeve, 0.08f);
+    vr.box(wr + (er - wr) * 0.16f, wr + (er - wr) * 0.02f, 0.034f, 0.031f, cp.sleeveHi, 0.08f);
     if (w == WPN_KNIFE) {
-        // Right arm drives the combat knife
-        limb(m_cv, rsx, rsy, 60, rwx, rwy, 9.f * rws, cp.sleeve, cp.sleeveHi);
-        limb(m_cv, rwx + (rsx - rwx) * 0.12f, rwy + (rsy - rwy) * 0.12f, 10.f * rws, rwx, rwy, 8.5f * rws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
-        // Left hand in tactical ready guard
-        float glx = W * 0.20f + bx * 0.3f, gly = H + 80.f + dropPx * 0.4f;
-        float gwx = W * 0.28f + bx * 0.4f, gwy = H * 0.88f + dropPx * 0.4f;
-        limb(m_cv, glx, gly, 46, gwx, gwy, 28, cp.sleeve, cp.sleeveHi);
-        m_cv.fillCircle(int(gwx), int(gwy), 14, GLOVE);
+        V3 lw{-0.14f + bx * 0.0004f, 0.23f + (drop + aimHide) * 0.3f, 0.36f};
+        V3 le = lw + V3{-0.08f, 0.24f, -0.16f};
+        vr.box(le, lw, 0.05f, 0.032f, cp.sleeve, 0.08f);
+        vr.box(lw, lw + V3{0.02f, -0.03f, 0.05f}, 0.034f, 0.03f, GLOVE, 0.1f);
     } else {
-        limb(m_cv, lsx, lsy, 54, lwx, lwy, 8.5f * lws, cp.sleeve, cp.sleeveHi);
-        limb(m_cv, lwx + (lsx - lwx) * 0.12f, lwy + (lsy - lwy) * 0.12f, 9.5f * lws, lwx, lwy, 8.f * lws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
-        limb(m_cv, rsx, rsy, 60, rwx, rwy, 9.f * rws, cp.sleeve, cp.sleeveHi);
-        limb(m_cv, rwx + (rsx - rwx) * 0.12f, rwy + (rsy - rwy) * 0.12f, 10.f * rws, rwx, rwy, 8.5f * rws, scaleCol(cp.sleeveHi, 1.2f), cp.sleeveHi);
+        V3 wl = map(M.lWristU + (w == WPN_SHOTGUN ? actionU : 0.f), M.lWristH, 0.f);
+        V3 el = wl + (w == WPN_PISTOL ? V3{-0.06f, 0.24f, -0.16f} : V3{-0.12f, 0.26f, -0.26f});
+        vr.box(el, wl, 0.050f, 0.029f, cp.sleeve, 0.08f);
+        vr.box(wl + (el - wl) * 0.16f, wl + (el - wl) * 0.02f, 0.033f, 0.030f, cp.sleeveHi, 0.08f);
     }
 
-    // --- Gun / Knife, then gloves wrapped around it ---------------------------------------------
+    // --- Gun body ---------------------------------------------------------------------
     for (int i = 0; i < M.count; i++) {
         const GunPart &part = M.parts[i];
         if ((part.flags & GP_MAG) && magHidden) continue;
-        drawPart(part, (part.flags & GP_ACTION) ? actionU : 0.f, (part.flags & GP_MAG) ? magH : 0.f);
+        float width = i < G3.count ? G3.partW[i] : 4.f;
+        drawPart(part, width, (part.flags & GP_ACTION) ? actionU : 0.f, (part.flags & GP_MAG) ? magH : 0.f, false);
     }
+    // --- Gloved hands wrapped around it -------------------------------------------------
     for (int i = 0; i < M.handCount; i++) {
         const GunPart &part = M.hands[i];
         bool support = w == WPN_PISTOL ? i == 0 : i < 4;
         float du = (part.flags & GP_ACTION) ? actionU : 0.f, dh = 0;
-        if (support && w == WPN_RIFLE) dh = -10.f * rl;          // support hand reaches for a fresh mag
-        drawPart(part, du, dh);
+        if (support && w == WPN_RIFLE) dh = -10.f * rl;                 // support hand reaches for a fresh mag
+        drawPart(part, G3.handW, du, dh, true);
+    }
+    // Fresh magazine in the support hand mid-reload
+    if (pl.reloadTimer > 0 && w != WPN_SHOTGUN && w != WPN_KNIFE && rp > 0.38f && rp < 0.62f) {
+        V3 a = map(M.lWristU - 6, M.lWristH - 10, 0.f), b = map(M.lWristU - 4, M.lWristH - 34, 0.f);
+        vr.box(a, b, 3.f * S, 3.f * S, rgb(56, 58, 62), 0.4f);
     }
 
     // Slashing arc / thrust streak effect for knife
     if (w == WPN_KNIFE && m_actionT > 0.08f && m_actionT < 0.92f) {
-        float act = m_actionT;
-        float t = 1.0f - act;
-        float s0x, s0y, ss0, s1x, s1y, ss1;
-        gp.map(M.length * 0.4f, 0.f, s0x, s0y, ss0);
-        gp.map(M.length + 8.f, 2.f, s1x, s1y, ss1);
-        int alpha = int(220 * std::sin(t * 3.14159f));
-        uint32_t streakCol = m_knifeSwing == 1 ? withAlpha(0xFFFFFFFF, alpha) : withAlpha(0xFFDDE8F8, alpha);
-        m_cv.thickLine(int(s0x), int(s0y), int(s1x), int(s1y), streakCol, 3);
-    }
-
-    // Fresh magazine in the support hand mid-reload
-    if (pl.reloadTimer > 0 && w != WPN_SHOTGUN && w != WPN_KNIFE && rp > 0.38f && rp < 0.62f) {
-        float mx, my, ms; gp.map(M.lWristU - 6, M.lWristH - 22, mx, my, ms);
-        m_cv.quad(mx - 4 * ms, my - 12 * ms, mx + 4 * ms, my - 12 * ms, mx + 6 * ms, my + 10 * ms, mx - 3 * ms, my + 10 * ms, rgb(56, 58, 62));
+        float s0x, s0y, s1x, s1y;
+        if (vr.project(map(M.length * 0.4f, 0.f, 0.f), s0x, s0y) && vr.project(map(M.length + 8.f, 2.f, 0.f), s1x, s1y)) {
+            int alpha = int(220 * std::sin(kt * 3.14159f));
+            uint32_t streakCol = m_knifeSwing == 1 ? withAlpha(0xFFFFFFFF, alpha) : withAlpha(0xFFDDE8F8, alpha);
+            m_cv.thickLine(int(s0x), int(s0y), int(s1x), int(s1y), streakCol, 3);
+        }
     }
 
     // --- Muzzle / ejection points for effects -------------------------------------------------
-    float s;
-    float ex, ey; gp.map(M.ejectU, M.ejectH, ex, ey, s); m_ejectX = ex; m_ejectY = ey;
-    gp.map(M.muzzleU, M.muzzleH, m_muzzleX, m_muzzleY, s);
+    float ex, ey;
+    if (vr.project(map(M.ejectU, M.ejectH, -G3.partW[0] * 0.5f), ex, ey)) { m_ejectX = ex; m_ejectY = ey; }
+    V3 muzzle3 = map(M.muzzleU, M.muzzleH, 0.f);
+    vr.project(muzzle3, m_muzzleX, m_muzzleY);
 
     // --- Muzzle flash ---------------------------------------------------------------------------
     if (pl.flashTimer > 0 && w != WPN_KNIFE) {
         float t = pl.flashTimer / (w == WPN_SHOTGUN ? 0.09f : 0.06f);
-        float ax2, ay2, s2; gp.map(M.muzzleU + 12, M.muzzleH, ax2, ay2, s2);
+        float ax2 = m_muzzleX, ay2 = m_muzzleY;
+        vr.project(map(M.muzzleU + 12, M.muzzleH, 0.f), ax2, ay2);
         float dx = ax2 - m_muzzleX, dy = ay2 - m_muzzleY, dl = std::sqrt(dx * dx + dy * dy) + 1e-3f;
         dx /= dl; dy /= dl;
+        float s = ViewModelRaster::F * S / std::max(0.05f, muzzle3.z);   // pixels per gun unit at the muzzle
         float sc = s * (w == WPN_SHOTGUN ? 1.6f : 1.f) * (0.7f + 0.5f * t);
         unsigned seed = unsigned(m_flashSeed);
         auto rnd = [&seed]() { seed = seed * 1103515245u + 12345u; return float((seed >> 16) & 0x7FFF) / 32767.f; };

@@ -144,7 +144,7 @@ struct Particle {
 // --- Pickups -----------------------------------------------------------------
 struct HealthKit { float x, y, bobPhase=0; bool active=true; bool emergency=false; };
 enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE, PICKUP_INTEL };
-struct WeaponPickup { float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; bool emergency=false; };
+struct WeaponPickup { float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; bool emergency=false; bool reward=false; };
 
 // --- Player ------------------------------------------------------------------
 struct Player {
@@ -190,6 +190,8 @@ struct Enemy {
     bool  elite=false;           // vault guard: tougher, faster, darker kit
     float alertDirX=0.f, alertDirY=0.f, alertDist=0.f;
     float hpShow=0.f;             // seconds left to show the floating health bar
+    bool  boss=false;             // zone commander: big, tough, drops a weapon
+    float scale=1.f;              // sprite / hit-box size in world units
 };
 
 // --- Projectiles -------------------------------------------------------------
@@ -220,6 +222,11 @@ struct GameState {
     int   kills=0,killsThisLevel=0,killsNeeded=4,level=1,score=0,frameNum=0;
     int   headshots=0, shotsFired=0, shotsHit=0, secretsFound=0, secretsTotal=0;
     float levelTransTimer=0,enemyBulletSpeed=4.5f,enemyFireRate=3.f;
+    // Per-zone tallies for the zone report / bonus checklist
+    int   coins=0;
+    int   zoneKills=0, zoneHeadshots=0, zoneShots=0, zoneHits=0, zoneDamage=0, zoneSecrets=0, zoneSecretsTotal=0;
+    float zoneTime=0;
+    bool  zoneHadBoss=false, zoneBossKilled=false;
     bool  levelComplete=false,gameOver=false;
     int   mapChoice=0;
     CharClass charClass=CLS_ASSAULT;

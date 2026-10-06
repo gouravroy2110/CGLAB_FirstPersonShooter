@@ -286,11 +286,18 @@ bool MainWindow::posValid(float x, float y, float r) const
 }
 
 // Walkable if no wall is touched and no ground under the body rises more than maxUp
-bool MainWindow::canStep(float x, float y, float fromZ, float maxUp, float r) const
+bool MainWindow::canStep(float x, float y, float fromZ, float maxUp, float r, float ox, float oy) const
 {
     if (!posValid(x, y, r)) return false;
-    float h = std::max({floorH(x, y), floorH(x - r, y - r), floorH(x + r, y - r), floorH(x - r, y + r), floorH(x + r, y + r)});
-    return h <= fromZ + maxUp;
+    auto footMax = [&](float px, float py) {
+        return std::max({floorH(px, py), floorH(px - r, py - r), floorH(px + r, py - r), floorH(px - r, py + r), floorH(px + r, py + r)});
+    };
+    float h = footMax(x, y);
+    if (h <= fromZ + maxUp) return true;
+    // Already overlapping a ledge (e.g. after dropping down beside it): allow moves that
+    // keep the centre off the ledge and don't push further into higher ground
+    if (ox < 0) return false;
+    return floorH(x, y) <= fromZ + maxUp && h <= footMax(ox, oy) + 1e-4f;
 }
 
 bool MainWindow::hasLOS(float x0, float y0, float z0, float x1, float y1, float z1) const
@@ -327,7 +334,7 @@ void MainWindow::tryOpenDoor()
         sfxAt(SND_DOOR, nx + 0.5f, ny + 0.5f, 0.9f);
         if (t == CELL_SECRET) sfx(SND_SECRET, 0.8f, 1.f, 0.3f);
         if (t == CELL_SECRET) {
-            m_gs.secretsFound++;
+            m_gs.secretsFound++; m_gs.zoneSecrets++;
             m_gs.score += 500;
             pushFeed("SECRET AREA FOUND  +500", 4.5f, true);
             m_secretBanner = 2.5f;
@@ -440,8 +447,8 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay) const
         if (txY < 0.1f || txY >= res.depth) continue;
         float base = floorH(e.x, e.y);
         float scrX = W / 2.f * (1.f + txX / txY);
-        float sz = m_K / txY;
-        float top = m_hor + (m_eye - base - 1.f) * m_K / txY;
+        float sz = m_K * e.scale / txY;
+        float top = m_hor + (m_eye - base - e.scale) * m_K / txY;
         float u = (ax - (scrX - sz / 2)) / sz, v = (ay - top) / sz;
         if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
         int f = enemyFrame(e);

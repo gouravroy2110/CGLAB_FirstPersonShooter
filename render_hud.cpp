@@ -190,6 +190,20 @@ void MainWindow::renderHUD()
     renderHealthPanel();
     renderWeaponPanel();
     if (!scoped) renderTargetInfo();
+    for (const Enemy &e : m_gs.enemies) {
+        if (!e.alive || !e.boss) continue;
+        float dx = e.x - pl.posX, dy = e.y - pl.posY;
+        if (e.state != ES_ALERT && dx * dx + dy * dy > 18.f * 18.f) break;
+        const int bw = 320, bx = W / 2 - bw / 2, by = 134;
+        float frac = float(e.hp) / float(std::max(1, e.maxHp));
+        m_cv.blendRect(bx - 6, by - 16, bw + 12, 30, withAlpha(UI_BG, 190));
+        m_cv.blendRect(bx, by, bw, 8, withAlpha(0xFFFFFFFF, 30));
+        m_cv.fillRect(bx, by, int(bw * frac), 8, RED);
+        m_cv.blendRect(bx, by, int(bw * frac), 2, withAlpha(0xFFFFFFFF, 90));
+        text(bx, by - 15, bw, 14, Qt::AlignLeft, "COMMANDER", QColor(255, 120, 100), 11, 900, false);
+        text(bx, by - 15, bw, 14, Qt::AlignRight, QString("%1 / %2").arg(e.hp).arg(e.maxHp), QColor(220, 220, 220), 10, 700, false);
+        break;
+    }
     renderDamageDirection();
     renderCrosshair();
     renderHitMarkers();
@@ -262,7 +276,7 @@ void MainWindow::renderCompass()
     }
     // Alerted enemies show as red pips on the compass
     for (const Enemy &e : m_gs.enemies) {
-        if (!e.alive || e.state != ES_ALERT) continue;
+        if (!e.alive || (e.state != ES_ALERT && aliveEnemies() > 3)) continue;
         float ea = std::atan2(e.y - pl.posY, e.x - pl.posX) * 180.f / PI;
         float dlt = std::fmod(ea - a + 540.f, 360.f) - 180.f;
         if (std::fabs(dlt) > 88) continue;
@@ -309,7 +323,7 @@ void MainWindow::renderCompass()
     for (int w = WPN_PISTOL; w < WPN_COUNT; ++w) if (pl.owned[w]) curTotalAmmo += pl.mag[w] + pl.reserve[w];
     for (const WeaponPickup &wp : m_gs.weaponPickups) {
         if (!wp.active) continue;
-        if (!wp.emergency && (curTotalAmmo > 0 || wp.type != PICKUP_AMMO)) continue;
+        if (!wp.emergency && !wp.reward && (curTotalAmmo > 0 || wp.type != PICKUP_AMMO)) continue;
         float dx = wp.x - pl.posX, dy = wp.y - pl.posY;
         float dist = std::sqrt(dx * dx + dy * dy);
         float wa = std::atan2(dy, dx) * 180.f / PI;
@@ -344,8 +358,16 @@ void MainWindow::renderCompass()
     m_cv.tri(cx - 6, y0 - 1, cx + 6, y0 - 1, cx, y0 + 6, AMBER);
     text(cx - 40, y0 + hgt + 4, 80, 14, Qt::AlignCenter, QString::number(int(head)) + QChar(0x00B0), QColor(230, 230, 230), 11, 600);
     text(cx - 160, y0 + hgt + 20, 320, 16, Qt::AlignCenter,
-         QString("ELIMINATE HOSTILES   %1 / %2      SECRETS   %3 / %4").arg(m_gs.killsThisLevel).arg(m_gs.killsNeeded)
+         QString("HOSTILES REMAINING   %1      SECRETS   %2 / %3").arg(aliveEnemies())
              .arg(m_gs.secretsFound).arg(m_gs.secretsTotal), QColor(255, 210, 140), 12, 700);
+    // Every remaining enemy hidden behind an unopened secret wall: tell the player where to look
+    int alive = 0, hidden = 0;
+    for (const Enemy &e : m_gs.enemies) if (e.alive) { alive++; if (!reachable(int(e.x), int(e.y))) hidden++; }
+    if (alive > 0 && hidden == alive)
+        text(cx - 220, y0 + hgt + 36, 440, 14, Qt::AlignCenter, "LAST HOSTILES ARE IN A HIDDEN AREA  -  SEARCH WALLS WITH [E]",
+             QColor(255, 120, 90, int(190 + 60 * std::sin(m_time * 5))), 11, 800);
+    else if (alive > 0 && alive <= 3)
+        text(cx - 220, y0 + hgt + 36, 440, 14, Qt::AlignCenter, "LAST HOSTILES MARKED ON RADAR", QColor(255, 160, 120), 11, 700);
 }
 
 void MainWindow::renderMinimap()
@@ -399,7 +421,7 @@ void MainWindow::renderMinimap()
     bool blink = int(m_time * 4) % 2 == 0;
     for (const auto &e : m_gs.enemies) {
         if (!e.alive) continue;
-        bool alert = e.state == ES_ALERT;
+        bool alert = e.state == ES_ALERT || aliveEnemies() <= 3;   // stragglers are revealed
         if (toMap(e.x, e.y, sx, sy, alert)) m_cv.fillCircle(int(sx), int(sy), alert && blink ? 4 : 3, alert ? RED : rgb(220, 120, 110));
     }
     // player arrow
@@ -609,20 +631,94 @@ void MainWindow::renderKillFeed()
 {
     text(W - 220, 8, 204, 18, Qt::AlignRight, QString("SCORE  %1").arg(m_gs.score), QColor(255, 210, 140), 15, 800);
     text(W - 220, 26, 204, 14, Qt::AlignRight, QString("%1 FPS").arg(int(m_fps)), QColor(140, 140, 140), 10, 500, false);
+    // coins
+    m_cv.fillCircle(W - 150, 33, 5, rgb(255, 200, 60)); m_cv.ring(W - 150, 33, 3.f, 4.f, rgb(200, 140, 30));
+    text(W - 142, 26, 70, 14, Qt::AlignLeft, QString::number(m_gs.coins), QColor(255, 215, 110), 10, 800, false);
     int y = 46;
     for (const auto &kf : m_killFeed) {
         float t = std::min(1.f, kf.life / 0.5f);
         int a = int(255 * t);
         m_cv.blendRect(W - 226, y, 210, 22, withAlpha(UI_BG, int(170 * t)));
         m_cv.blendRect(W - 226, y, 3, 22, withAlpha(kf.head ? RED : AMBER, a));
-        text(W - 218, y, 200, 22, Qt::AlignLeft | Qt::AlignVCenter, kf.text, kf.head ? QColor(255, 120, 100, a) : QColor(240, 240, 240, a), 12, 700, false);
+        text(W - 218, y, 200, 22, Qt::AlignLeft | Qt::AlignVCenter, kf.text.size() > 33 ? kf.text.left(31) + ".." : kf.text, kf.head ? QColor(255, 120, 100, a) : QColor(240, 240, 240, a), 12, 700, false);
         y += 25;
     }
+}
+
+// Zone report: checklist rows tick in one by one, coins and score count up
+void MainWindow::renderZoneReport()
+{
+    float fade = clampf(m_intermissionT / 0.6f, 0.f, 1.f);
+    float ease = fade * fade * (3 - 2 * fade);
+    int ta = int(255 * ease);
+    m_cv.blendRect(0, 0, W, H, withAlpha(0x06090D, int(228 * ease)));
+    m_cv.blendRect(0, 14, W, 74, withAlpha(UI_BG, int(200 * ease)));
+    m_cv.blendRect(0, 14, W, 2, withAlpha(AMBER, ta));
+    m_cv.blendRect(0, 88, W, 2, withAlpha(AMBER, ta));
+    text(0, 18, W, 34, Qt::AlignCenter, QString("ZONE %1 CLEARED").arg(m_gs.level), QColor(255, 215, 80, ta), 30, 900);
+    text(0, 54, W, 20, Qt::AlignCenter, QString("ALL HOSTILES ELIMINATED      ZONE BONUS +%1      SCORE %2").arg(500 * m_gs.level).arg(m_gs.score),
+         QColor(220, 225, 230, ta), 12, 700);
+    text(0, 94, W, 18, Qt::AlignCenter, "ZONE REPORT  -  BONUS CHECKLIST", QColor(255, 220, 90, ta), 12, 800, false);
+
+    const int px = 86, pw = W - 172, rowH = 34, y0 = 120;
+    int n = int(m_report.size());
+    m_cv.blendRect(px, y0 - 4, pw, n * rowH + 8, withAlpha(UI_BG, int(200 * ease)));
+    m_cv.rectOutline(px, y0 - 4, pw, n * rowH + 8, withAlpha(0xFFFFFFFF, int(30 * ease)));
+    float lastReveal = 0.6f + 0.3f * n;
+    for (int i = 0; i < n; i++) {
+        const ReportItem &it = m_report[i];
+        float rt = 0.6f + 0.3f * i;
+        if (m_intermissionT < rt) break;
+        int a = int(255 * clampf((m_intermissionT - rt) / 0.25f, 0.f, 1.f));
+        int y = y0 + i * rowH;
+        if (i % 2) m_cv.blendRect(px + 2, y, pw - 4, rowH - 2, withAlpha(0xFFFFFFFF, a / 24));
+        // checkbox: green tick or grey cross, drawn with thick Bresenham strokes
+        int bx = px + 14, by = y + 7;
+        if (it.done) {
+            m_cv.blendRect(bx, by, 20, 20, withAlpha(0xFF1D6638, a));
+            m_cv.thickLine(bx + 4, by + 10, bx + 8, by + 15, withAlpha(0xFF7CFFA8, a), 3);
+            m_cv.thickLine(bx + 8, by + 15, bx + 16, by + 5, withAlpha(0xFF7CFFA8, a), 3);
+        } else {
+            m_cv.blendRect(bx, by, 20, 20, withAlpha(0xFF2A2F36, a));
+            m_cv.thickLine(bx + 5, by + 5, bx + 15, by + 15, withAlpha(0xFF8A8F96, a), 2);
+            m_cv.thickLine(bx + 15, by + 5, bx + 5, by + 15, withAlpha(0xFF8A8F96, a), 2);
+        }
+        text(px + 46, y + 3, 300, 16, Qt::AlignLeft, it.label, it.done ? QColor(240, 240, 240, a) : QColor(150, 155, 160, a), 13, 800, false);
+        text(px + 46, y + 19, 380, 12, Qt::AlignLeft, it.detail, QColor(150, 160, 170, a), 10, 600, false);
+        int cxr = px + pw - 190;
+        if (it.coins > 0) {
+            m_cv.fillCircle(cxr + 8, y + 16, 6, withAlpha(rgb(255, 200, 60), a));
+            m_cv.ring(cxr + 8, y + 16, 3.5f, 5.f, withAlpha(rgb(200, 140, 30), a));
+        }
+        text(cxr + 20, y + 8, 70, 16, Qt::AlignLeft, it.coins > 0 ? QString("+%1").arg(it.coins) : QString("--"),
+             it.coins > 0 ? QColor(255, 215, 110, a) : QColor(110, 115, 120, a), 13, 800, false);
+        text(cxr + 90, y + 8, 90, 16, Qt::AlignRight, it.score > 0 ? QString("+%1 PTS").arg(it.score) : QString(""),
+             QColor(140, 220, 255, a), 11, 700, false);
+    }
+    // Totals count up once every row is in
+    float k = clampf((m_intermissionT - lastReveal) / 0.6f, 0.f, 1.f);
+    int ty = y0 + n * rowH + 12;
+    int shownCoins = int(m_reportCoins * k), shownScore = int(m_reportScore * k);
+    m_cv.fillCircle(W / 2 - 150, ty + 10, 7, withAlpha(rgb(255, 200, 60), ta));
+    m_cv.ring(W / 2 - 150, ty + 10, 4.f, 6.f, withAlpha(rgb(200, 140, 30), ta));
+    text(W / 2 - 138, ty, 300, 20, Qt::AlignLeft | Qt::AlignVCenter,
+         QString("+%1 COINS    (WALLET %2)").arg(shownCoins).arg(m_gs.coins - m_reportCoins + shownCoins), QColor(255, 215, 110, ta), 15, 900);
+    text(0, ty + 22, W, 16, Qt::AlignCenter, QString("BONUS SCORE  +%1").arg(shownScore), QColor(140, 220, 255, ta), 12, 800, false);
+
+    QRect dr = ixDeployRect();
+    bool done = m_intermissionT >= lastReveal + 0.6f;
+    m_cv.blendRect(dr.x(), dr.y(), dr.width(), dr.height(), withAlpha(done ? 0xFF1D6638 : 0xFF1B2635, 235));
+    m_cv.rectOutline(dr.x(), dr.y(), dr.width(), dr.height(), done ? 0xFF45F07E : withAlpha(0xFFFFFFFF, 60), done ? 2 : 1);
+    text(dr.x(), dr.y(), dr.width(), dr.height(), Qt::AlignCenter, done ? "CONTINUE  >>   [ENTER]" : "[ENTER]  SKIP",
+         done ? QColor(255, 255, 255) : QColor(170, 175, 180), 13, 900);
+    text(0, 502, W, 16, Qt::AlignCenter, "Next: choose an upgrade, your weapon and spend coins in the field shop",
+         QColor(170, 175, 180, ta), 11, 600, false);
 }
 
 void MainWindow::renderLevelBanner()
 {
     if (!m_gs.levelComplete) return;
+    if (m_ixPage == 0) { renderZoneReport(); return; }
     const Player &pl = m_gs.player;
     // Fade in over 0.6 s; the cards slide up into place
     float fade = clampf(m_intermissionT / 0.6f, 0.f, 1.f);
@@ -700,7 +796,8 @@ void MainWindow::renderLevelBanner()
         const GunModel &M = *GUN_MODELS[wpn];
         float sc = std::min(44.f / M.length, 30.f / (M.hMax - M.hMin));   // fit both width and height
         drawGunFlat(m_cv, M, x + 8 + (44.f - M.length * sc) * 0.5f, y + h * 0.5f + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, sel ? 235 : 150));
-        text(x + 56, y + 6, w - 60, 16, Qt::AlignLeft, WEAPONS[wpn].shortName, sel ? QColor(255, 215, 80) : QColor(225, 225, 225), 12, 800, false);
+        text(x + 56, y + 6, w - 60, 16, Qt::AlignLeft, pl.owned[wpn] ? QString(WEAPONS[wpn].shortName) : QString("%1 (NEW)").arg(WEAPONS[wpn].shortName),
+             sel ? QColor(255, 215, 80) : QColor(225, 225, 225), 12, 800, false);
         QString stat = wpn == WPN_KNIFE ? QString("DMG %1  MELEE").arg(effectiveDamage(wpn))
                                         : QString("DMG %1  MAG %2").arg(effectiveDamage(wpn)).arg(effectiveMagSize(wpn));
         text(x + 56, y + 24, w - 60, 14, Qt::AlignLeft, stat, QColor(160, 170, 180), 9, 600, false);
@@ -722,10 +819,25 @@ void MainWindow::renderLevelBanner()
         m_cv.rectOutline(bx, by, bw, bh, withAlpha(0xFFFFFFFF, 50), 1);
         text(bx, by, bw, bh, Qt::AlignCenter, "PICK AN UPGRADE FIRST", QColor(150, 155, 160), 12, 800);
     }
-    text(0, 502, W, 16, Qt::AlignCenter, "[1] [2] [3] or click a card      TAB weapon      ENTER deploy      U armory",
+    text(0, 500, W, 16, Qt::AlignCenter, "[1] [2] [3] or click a card      TAB weapon      ENTER deploy",
          QColor(200, 205, 210, ta), 11, 600, false);
-    text(0, 522, W, 14, Qt::AlignCenter, QString("Take your time  -  auto-deploy in %1 s").arg(std::max(1, int(m_upgradeDecisionTimer) + 1)),
+    text(0, 516, W, 14, Qt::AlignCenter, QString("Take your time  -  auto-deploy in %1 s").arg(std::max(1, int(m_upgradeDecisionTimer) + 1)),
          QColor(130, 140, 150, ta), 10, 600, false);
+
+    // Field shop: spend coins earned from the zone report
+    m_cv.fillCircle(W / 2 + 12, 539, 5, rgb(255, 200, 60)); m_cv.ring(W / 2 + 12, 539, 3.f, 4.f, rgb(200, 140, 30));
+    text(W / 2 - 160, 532, 320, 16, Qt::AlignCenter, QString("FIELD SHOP     %1 COINS").arg(m_gs.coins), QColor(255, 215, 110, ta), 11, 800, false);
+    static const char *items[3] = { "[7] AMMO RESUPPLY  40", "[8] FIELD MEDKIT  35", "[9] REROLL CARDS  25" };
+    static const int cost[3] = { 40, 35, 25 };
+    for (int i = 0; i < 3; i++) {
+        QRect sr = ixShopRect(i);
+        bool afford = m_gs.coins >= cost[i];
+        m_cv.blendRect(sr.x(), sr.y(), sr.width(), sr.height(), withAlpha(afford ? 0xFF1E2A1A : 0xFF1B1F25, 230));
+        m_cv.rectOutline(sr.x(), sr.y(), sr.width(), sr.height(), afford ? withAlpha(AMBER, 200) : withAlpha(0xFFFFFFFF, 40), 1);
+        text(sr.x(), sr.y(), sr.width(), sr.height(), Qt::AlignCenter, items[i], afford ? QColor(255, 225, 150) : QColor(120, 125, 130), 10, 800, false);
+    }
+    if (m_ixMsgT > 0)
+        text(0, 582, W, 14, Qt::AlignCenter, m_ixMsg, QColor(140, 255, 160, int(255 * std::min(1.f, m_ixMsgT))), 11, 800, false);
 }
 
 void MainWindow::renderArmoryOverlay()
@@ -810,7 +922,7 @@ void MainWindow::renderGameOver()
     int acc = m_gs.shotsFired ? int(100.f * m_gs.shotsHit / m_gs.shotsFired) : 0;
     struct Stat { const char *k; QString v; };
     const Stat st[6] = { {"KILLS", QString::number(m_gs.kills)}, {"HEADSHOTS", QString::number(m_gs.headshots)}, {"ACCURACY", QString("%1%").arg(acc)},
-                         {"SCORE", QString::number(m_gs.score)}, {"ZONE", QString::number(m_gs.level)}, {"SECRETS", QString("%1 / %2").arg(m_gs.secretsFound).arg(m_gs.secretsTotal)} };
+                         {"SCORE", QString::number(m_gs.score)}, {"ZONE", QString::number(m_gs.level)}, {"COINS", QString::number(m_gs.coins)} };
     for (int i = 0; i < 6; i++) {
         int cx = x + 30 + (i % 3) * 136, cy = y + 84 + (i / 3) * 62;
         m_cv.blendRect(cx, cy, 128, 54, withAlpha(0xFFFFFFFF, 12));

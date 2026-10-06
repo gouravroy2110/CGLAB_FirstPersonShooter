@@ -399,10 +399,10 @@ void MainWindow::renderSprites()
                                                  e.type == ET_SCOUT ? m_scoutAtlas :
                                                  e.type == ET_SHOTGUNNER ? m_shotgunAtlas :
                                                  e.type == ET_SNIPER ? m_sniperAtlas : m_enemyAtlas;
-            blit(e.x, e.y, base, 1.f, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive);
+            blit(e.x, e.y, base, e.scale, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive);
             if (e.alive && e.hpShow > 0) {
                 float sx, sy, d;
-                if (project(e.x, e.y, base + 1.08f, sx, sy, d) && d < depthAt(int(sx), int(sy)) + 0.5f) {
+                if (project(e.x, e.y, base + 1.08f * e.scale, sx, sy, d) && d < depthAt(int(sx), int(sy)) + 0.5f) {
                     float a = std::min(1.f, e.hpShow / 0.4f);
                     int bw = clampi(int(70 / std::max(1.f, d * 0.4f)), 28, 70), bx = int(sx) - bw / 2, by = int(sy) - 6;
                     float frac = float(e.hp) / float(std::max(1, e.maxHp));
@@ -429,8 +429,26 @@ void MainWindow::renderSprites()
             float bob = 0.06f + std::sin(wp.bobPhase) * 0.04f;
             float sx, sy, d;
             uint32_t gc = ti == 1 ? rgb(255, 200, 80) : ti == 4 ? rgb(255, 230, 60) : rgb(90, 170, 255);
-            if (project(wp.x, wp.y, base, sx, sy, d) && d > 0.1f && d < depthAt(int(sx), int(sy)) + 0.4f)
-                m_cv.glow(int(sx), int(sy), int((ti == 4 ? 0.55f : 0.38f) * m_K / d), gc, 0.35f + 0.15f * std::sin(wp.bobPhase * 2));
+            if (wp.reward) gc = rgb(255, 205, 60);
+            if (project(wp.x, wp.y, base, sx, sy, d) && d > 0.1f && d < depthAt(int(sx), int(sy)) + 0.4f) {
+                m_cv.glow(int(sx), int(sy), int((ti == 4 || wp.reward ? 0.55f : 0.38f) * m_K / d), gc, 0.35f + 0.15f * std::sin(wp.bobPhase * 2));
+                // Loot beam for boss / elite drops: an additive light column, depth-tested per pixel
+                float tx, ty, td;
+                if (wp.reward && project(wp.x, wp.y, base + 2.6f, tx, ty, td)) {
+                    int x0 = int(sx), y0 = int(sy), y1 = std::max(0, int(ty));
+                    int half = std::max(1, int(0.05f * m_K / d));
+                    for (int yy = std::min(H - 1, y0); yy >= y1; yy--) {
+                        float k = float(y0 - yy) / std::max(1, y0 - y1);
+                        int xx = x0 + int((tx - sx) * k);
+                        for (int ox = -half * 2; ox <= half * 2; ox++) {
+                            int px = xx + ox;
+                            if (px < 0 || px >= W || d >= m_depth[yy * W + px]) continue;
+                            float fall = 1.f - std::fabs(float(ox)) / (half * 2 + 1);
+                            m_cv.add(px, yy, withAlpha(gc, int(150 * fall * fall * (1.f - k))));
+                        }
+                    }
+                }
+            }
             blit(wp.x, wp.y, base + bob, ti == 1 || ti == 4 ? 0.42f : 0.62f, &m_pickupTex[size_t(ti) * PICKUP_TS * PICKUP_TS], PICKUP_TS, 1.2f, 0, 1.f, false);
             break;
         }
