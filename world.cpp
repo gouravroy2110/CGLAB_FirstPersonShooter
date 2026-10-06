@@ -418,7 +418,10 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay) const
         if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
         int f = enemyFrame(e);
         int tx = int(u * ENEMY_TS), ty = int(v * ENEMY_TS);
-        const std::vector<uint8_t> &mask = e.elite ? m_eliteMask : m_enemyMask;
+        const std::vector<uint8_t> &mask = e.elite ? m_eliteMask :
+                                            e.type == ET_SCOUT ? m_scoutMask :
+                                            e.type == ET_SHOTGUNNER ? m_shotgunMask :
+                                            e.type == ET_SNIPER ? m_sniperMask : m_enemyMask;
         uint8_t part = mask[size_t(f) * ENEMY_TS * ENEMY_TS + ty * ENEMY_TS + tx];
         if (!part) continue;
         res.enemy = i; res.part = HitPart(part); res.depth = txY;

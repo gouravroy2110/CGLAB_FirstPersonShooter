@@ -13,13 +13,16 @@
 |---|---|---|
 | **Terrain** | Flat checkerboard floor | Heightfield terrain: rolling hills, steps, ledges, pits and acid pools, rendered by a per-column ray-march with a y-buffer and a full per-pixel z-buffer |
 | **Movement** | Flat walking, cosmetic jump | Gravity, real jumping and landing, 0.32-unit step-up limit (ledges need a jump), falling into pits, acid damage |
-| **Maps** | 24×24, doors only for show | Three hand-authored **40×40** maps; doors sink into the floor and lead to rooms; **secret walls** open onto hidden vaults guarded by **elite soldiers** with intel rewards; acid-crossing and ledge-climbing challenge areas |
+| **Maps & Spawning** | 24×24, static spawns | Three hand-authored **40×40** maps; **50/50 Hybrid Spawning** (fixed tactical designer positions + dynamic safe floor spawns >8 units away); doors sink into the floor; **secret walls** with procedurally engraved **runic sigils** and proximity HUD prompt (`[E] INSPECT WALL`); diverse vault guards |
 | **Bullet impacts** | Nothing on walls | **Bullet holes** stamped on wall and cliff faces (hole, burnt rim, chipped ring, cracks); shotgun leaves a spread pattern; scorch marks and blood on the ground |
 | **Aiming** | Crosshair fixed at the centre | **Free-aim crosshair** moving inside a dead-zone; pushing past the edge turns or tilts the camera (V toggles classic) |
 | **Damage** | Every hit = 1 HP | **Pixel-perfect hitscan** against head / body / limb masks; **headshots ×2–3**, limbs reduced; damage numbers, headshot banner and markers |
-| **Weapons** | Single flat pistol drawing | Pistol, pump shotgun and automatic carbine with magazines, reload, recoil, spread; perspective, Gouraud-shaded view models with gloved hands; slide/pump/reload/sprint animations, muzzle flash, ejected brass |
-| **Optics** | FOV squeeze | **4× rifle scope** (2–8× on the wheel, breathing sway, hold breath) plus reflex / holographic sights |
-| **Enemies** | Static 24×24 sprite | Procedurally painted soldiers with an 11-frame animation (walk, shoot, flinch, death fall, dithered corpse fade); patrol / chase / strafe AI; elite variant |
+| **Weapons & Melee** | Single flat pistol | **Combat Knife** (slot 1, tactical slash/stab, high headshot crit); **M870 Shotgun overhauled** (pellet damage 15→24, pump delay 0.85s→0.58s, tighter spread, 18m range falloff); M4 Carbine starts with Reflex Sight and upgrades to ACOG 3× Optical Scope |
+| **Attachments & Upgrades** | Fixed static weapon stats | **Modular Attachment System**: Extended Mags (+50–66%), Recoil Compensators (-48% kick, -42% spread), High-Caliber AP Ammo (+42–45% dmg), Hair Trigger / Rapid Pump / Stiletto Edge; **Field Armory modal (`[U]`)** and active HUD badges |
+| **Zone Clear Supply Drops** | 3s instant transition | **Tactical Supply Drop 3-Card Draft**: 30-second decision timer to inspect and pick cards, prominent clickable **[ CONTINUE / DEPLOY ]** button, and 3-second deployment countdown with instant deploy shortcuts (`Space`). Reserve ammo refilled for **all owned weapons** |
+| **Tactical Enemy AI** | Oscillating sideways jitter | **Smart Stop-and-Shoot AI**: hostiles halt to stabilize aim when ready to fire (`fireCooldown ≤ 0.35s`), engage targets up to realistic weapon ranges (up to 22 units for Snipers) |
+| **Enemy Archetypes** | Uniform troopers | **4 distinct hostile archetypes**: Scouts (rapid pistols, high agility), Riflemen (burst fire), Shotgunners (heavy armor/HP, 5-pellet blasts), Snipers (elevated perches, extreme range) |
+| **Optics** | FOV squeeze | **ACOG 3× Optical Scope** (figure-8 breathing sway, hold breath) plus Reflex Red Dot and Holographic sights |
 | **Lighting & sky** | Linear fog to black | Terrain-aware sun shadows, slope lighting, ambient occlusion, per-face wall lighting, haze fog, angular sky with sun bloom and lens flare; three themes (overcast, midday, dusk) |
 | **Textures** | 64² procedural | 128²/256² procedural textures with mip-maps (cobblestone, grass/dirt, flagstones, stone, brick, concrete, doors, secret walls) |
 | **HUD & menus** | Basic panels | Compass with enemy pips, rotating minimap, slanted health/ammo panels, kill feed, target panel, secrets counter; menus show the map live in 3D with mouse support |
@@ -35,65 +38,73 @@
 | **W / S / A / D** | Move / strafe |
 | **Shift** | Sprint (drains stamina) — or **hold breath** while scoped |
 | **Mouse** | **Free-aim crosshair** — moves freely inside a dead-zone; pushing past its edge turns / tilts the camera |
-| **LMB / F** | Fire (the carbine is fully automatic) |
-| **RMB / Tab** | Aim down sights — reflex sight (pistol), holographic sight (shotgun), **4× scope** (carbine) |
-| **Mouse wheel** | **Raster magnifier** 1×→32× around the cursor (menus) or crosshair (in game): every framebuffer pixel becomes a box, with a pixel grid and a coordinate/colour readout. While scoped with the carbine it changes scope power instead |
+| **LMB / F** | Fire / Slash (the carbine is fully automatic) |
+| **RMB / Tab** | Aim down sights — reflex sight (pistol/carbine), holographic sight (shotgun), **ACOG 3× optical scope** (carbine with optics upgrade) |
+| **Mouse wheel** | **Raster magnifier** 1×→32× around the cursor (menus) or crosshair (in game): every framebuffer pixel becomes a box, with a pixel grid and a coordinate/colour readout. |
 | **R** | Reload · resume (paused) · redeploy (game over) |
-| **1 / 2 / 3** | Pistol / shotgun / carbine (once picked up) |
-| **Space** | Jump — onto ledges, out of pits, across acid |
-| **E** | Open a door · search a suspicious wall for a secret passage |
+| **1 / 2 / 3 / 4** | Knife / Pistol / Shotgun / Carbine (once picked up) |
+| **U** | **Field Armory** — inspect weapon stats, attachment slots, and upgrade status |
+| **9** | **Debug Weapon Range** — toggle all attachments across all weapons |
+| **Space** | Jump — onto ledges, out of pits, across acid · **Deploy immediately** on Zone Clear screen |
+| **E** | Open a door · **inspect a suspicious wall** for a secret passage |
 | **V** | Toggle free-aim ↔ classic centred crosshair |
 | **C** | Re-centre crosshair and view |
 | **← / →** | Turn |
 | **[ / ]** | Pixel-block size 1–8 (raster proof) |
 | **ESC** | Pause (ESC again quits) · **M** main menu · **Q** quit |
 
-Menus work with keyboard (arrows / 1-3 / Enter / Esc) **and mouse** (hover + click, right-click = back).
+Menus work with keyboard (arrows / 1-4 / Enter / Esc / Space) **and mouse** (hover + click, right-click = back).
 
 ---
 
 ## What's in the game
 
-### Combat
+### Combat & Arsenal
 - **Pixel-perfect hitscan.** A shot resolves exactly what is drawn under the crosshair pixel: walls (with their real heights — you can shoot over a wall top), the floor, and enemy sprites tested **texel by texel** against a per-texel hit mask.
-- **Headshots.** The enemy sprite atlas carries a mask of `HEAD / BODY / LIMB` per texel. Damage multipliers: head **×3.0** pistol, **×2.0** shotgun, **×2.5** carbine; limbs ×0.7–0.75. A pistol headshot one-taps a level-1 hostile on Easy/Medium.
+- **Headshots & Criticals.** The enemy sprite atlas carries a mask of `HEAD / BODY / LIMB` per texel. Damage multipliers: head **×3.0** pistol, **×2.0** shotgun, **×2.5** carbine, **×3.5** knife criticals; limbs ×0.7–0.75. A pistol headshot one-taps a level-1 hostile on Easy/Medium.
+- **Four weapons in arsenal**:
+  - **Slot 1 — Combat Knife**: Fast tactical melee slashes and lunges (90 base damage, alternate slash/stab animations, stagger, 3.5× headshot multiplier).
+  - **Slot 2 — M9 Tactical Pistol**: Accurate semi-automatic sidearm with fast handling and reflex red dot sight.
+  - **Slot 3 — M870 Tactical Shotgun**: Overhauled heavy pump shotgun firing 8 high-velocity pellets (24 damage per pellet, up to 192 point-blank damage, snappy 0.58s pump cycle delay, extended 18m range falloff, and tight choke).
+  - **Slot 4 — M4 Automatic Carbine**: Fully automatic assault rifle equipped standard with a Reflex Red Dot Sight, upgradable into a designated marksman rifle via the ACOG 3× Optical Scope attachment.
+- **Full Inventory Ammo Replenishment**: Upon clearing any combat zone and advancing to the next tier, reserve ammunition is replenished for **all owned weapons** in the operative's loadout.
 - Feedback: crosshair turns red (with a ring when over a head), target panel shows `HEAD ×3.0 / BODY / LIMB`, floating damage numbers (red for headshots), hit / headshot / kill markers, a `HEADSHOT` banner with a raster skull, kill-feed entries and bonus score.
-- **Three weapons** with magazines, reserve ammo, reload, spread, recoil, automatic fire and shotgun pellets with damage fall-off. Enemies drop ammo crates and weapon pickups.
 - **Tracers** fly along every resolved shot; impacts throw sparks, debris and dust; floor hits leave scorch marks; blood soaks into the floor.
 
-### Free-aim crosshair
-The crosshair moves freely with the mouse inside a dead-zone box (shown faintly as you near it). Pushing past the box edge yaws the camera (sideways) or pitches it (up/down), like Arma-style free aim. The gun physically swings to point at the crosshair. Aiming down sights smoothly folds the crosshair offset into the camera so the aimed point stays put. **V** switches to a classic centred crosshair.
+### Modular Weapon Upgrades & Field Armory
+- **4 Modular Upgrade Slots per Weapon**:
+  - **Extended Magazines**: Increases magazine capacity by +50% to +66% (M9: 15 → 22 rounds, M870: 8 → 12 shells, M4: 30 → 45 rounds).
+  - **Recoil Compensator & Tactical Choke**: Reduces vertical recoil climb by 48% and narrows hipfire/ADS pellet spread by 42%.
+  - **High-Caliber Armor Piercing (AP) Ammo**: Boosts bullet and pellet damage output by +42% to +45% across all firearms.
+  - **Special Modules / Optics**:
+    - **M4 Carbine**: Unlockable **ACOG 3× Optical Scope** transforming the weapon from red dot into a scoped rifle.
+    - **M870 Shotgun**: **Rapid Cycling Pump Module** reducing cycling delay by 35%.
+    - **M9 Pistol**: **Hair Trigger Assembly** reducing semi-automatic delay by 35%.
+    - **Combat Knife**: **Serrated Stiletto Blade** granting lethal 3.5× headshot critical damage.
+- **Field Armory Overlay (`[U]`)**: Press `[U]` at any time during gameplay to view detailed operative weapon stats, installed attachment modules, and upgrade status across all slots.
+- **HUD Attachment Badges**: The bottom weapon HUD badge displays active attachment abbreviations (`[MAG]`, `[COMP]`, `[AP]`, `[ACOG]`, `[PUMP]`, `[TRIG]`).
+- **Debug Weapon Range (`[9]`)**: Press `[9]` in-game to instantly toggle all attachments across all weapons for testing and tuning.
 
-### Maps, doors & secrets
-- Three hand-authored **40×40** maps (`maps.h`, readable ASCII layouts) — almost 3× the old area.
-- **Doors** (`E`) sink into the floor and lead to rooms with enemies and supplies.
-- **Secret walls** look like ordinary stone (a faint seam and cracks are the only hint). Searching one with `E` opens a **hidden vault** — `SECRET AREA FOUND +500` — guarded by **elite soldiers** (black kit, red goggles, 2× HP, faster and more accurate fire) and holding an **intel case** (+1000, full ammo and health).
-- Challenge areas: an **acid vault** you cross by jumping between stepping stones to reach the carbine, a fortified **mesa** you climb by steps and a jump, an altar ledge, and **pits** you can only leave by jumping. Acid burns while you stand in it.
-- HUD tracks secrets found; the game-over screen reports them.
+### Zone Clear Supply Drop Draft & Progression
+- **Post-Arena Supply Drop**: Clearing an arena presents 3 procedurally drafted tactical upgrade cards.
+- **30-Second Decision Timer**: Provides ample time to read weapon descriptions, stat bonuses, and card choices without rushing.
+- **Clickable Continue / Deploy Button**: A dedicated button plate `[ CONTINUE >> ]` / `[ DEPLOY NOW >> ]` on screen, with keyboard shortcuts (`Space` / `Enter` / `1`, `2`, `3`).
+- **2-Stage Deployment Flow**: Selecting a card locks in the attachment and begins a 3-second deployment countdown with an option to deploy immediately. If the 30-second timer expires, the first card is auto-equipped.
 
-### Terrain that goes up and down
-- The ground is a continuous **heightfield**: rolling hills (fBm noise at the cell corners, bilinear in between) plus per-cell **ledges, steps and pits** with vertical rock faces.
-- Player physics: gravity, jumping, landing shake, sticking to slopes; you can step up 0.32 units — anything taller needs a jump. Enemies, pickups, blood and bullets all follow the ground height.
-- Line of sight, enemy fire and the sun shadows are fully 3D: hills and ledges hide you and cast shadows; slopes facing the sun are brighter.
+### Tactical Enemy AI & Hostile Archetypes
+- **Smart Stop-and-Shoot AI**: Hostiles halt movement when ready to fire (`fireCooldown ≤ 0.35s`), take aim, and engage the operative up to true weapon ranges (up to 22 units), completely replacing erratic sideways jitter with grounded tactical gunplay.
+- **Four Distinct Hostile Archetypes**:
+  - **Scouts**: Fast, light skirmishers with high mobility and rapid pistol fire.
+  - **Riflemen**: Versatile mid-range troopers firing automatic bursts.
+  - **Shotgunners**: Heavy close-quarters breachers (+35% HP) firing devastating 5-pellet shotgun cones.
+  - **Snipers**: Stationed on elevated ledges and towers with extreme range (22 units) and pinpoint accuracy.
+- **Infinite Survival Scaling**: Enemy health, armor, count, and kill quotas scale progressively each zone; out-of-sight reinforcement waves deploy in later zones.
 
-### Bullet holes
-- Every shot that lands on a wall or rock face stamps a **bullet-hole decal** onto that face: dark hole, burnt rim, chipped plaster ring, powder speckle and Bresenham-drawn radial cracks (shotgun pellets leave smaller holes, so a blast leaves a spray pattern). Stored as sparse 96-texels-per-unit textures per wall face, rendered with perspective like the wall itself.
-
-### Optics
-- **4× rifle scope** — the scene is re-rendered at the magnified FOV; outside the eyepiece is black with a lens vignette, chromatic fringe and glint; duplex reticle with mil-dots, bullet-drop ladder and illuminated centre. **Breathing sway** (figure-8) — hold Shift to steady it. Wheel changes magnification 2×–8×.
-- **Reflex sight** (pistol) and **holographic sight** (shotgun) rise into view with tinted glass and an illuminated dot / ring.
-
-### Weapon & animation
-- Guns are side-profile polygons pushed through a **one-point perspective mapping** (the barrel converges toward the crosshair) and filled with a **Gouraud-shaded triangle rasterizer** plus a Bresenham specular rim.
-- Gloved hands are polygons in gun-space, so they move with the gun; sleeves use the operative's colours.
-- Animations: walk bob, mouse-lag sway, breathing idle, recoil kick + muzzle climb (camera recovers), pistol slide cycling, shotgun pump, **magazine-out reload**, weapon-swap drop, sprint carry pose.
-- Muzzle flash: additive flame petals + bloom, plus a screen-space muzzle light; ejected brass / red shotgun shells tumble with gravity.
-
-### Characters & enemies
-- Soldiers are **painted procedurally** from shaded primitives (spheres, capsules, rounded boxes with Lambert lighting, camouflage noise, rim darkening): helmet, goggles, scarf, vest + pouches, rifle.
-- **11-frame animation atlas**: aim, 4-frame walk cycle, shooting (with muzzle flash), hit flinch, 4-frame death fall. Corpses dissolve away with an **ordered-dither (Bayer)** fade.
-- Enemy AI: idle wander → alert on sight / when shot → chase, keep their distance, strafe, and fire with difficulty-scaled accuracy; separation so they don't stack. Ground contact shadows; lit by the baked sun map.
-- Operative portraits on the character screen are rendered by the same soldier painter.
+### Tactical Spawning & Secret Vaults
+- **50/50 Hybrid Spawning**: 50% fixed spawns on hand-authored chokepoints and elevated nests (`'e'`), plus 50% dynamic spawns placed on safe floor tiles (>8 units away from player spawn).
+- **Procedural Secret Sigils**: Secret walls feature an engraved, weathered **runic sigil** carved into the rock face.
+- **Interactive Proximity HUD Prompt**: Walking up to a secret wall displays `[E] INSPECT WALL` on the HUD (and `[E] OPEN DOOR` for doors).
+- **Varied Vault Guardians**: Secret vaults are guarded by diverse hostile combinations (Shotgunners, Riflemen, Snipers) protecting the intel cache.
 
 ### Realistic terrain & lighting
 - Three themed maps: **Dungeon** (overcast, mossy stone, cobblestones), **Arena** (midday, grass/dirt with pebbles), **Crypt** (dusk, flagstones with cracks).

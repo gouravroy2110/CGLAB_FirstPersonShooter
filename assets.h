@@ -39,7 +39,7 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme);
 struct SoldierLook {
     uint32_t uniform, uniformDark, uniformAlt, vest, vestDark, helmet, skin, mask, lens, boots, gloves;
 };
-extern const SoldierLook ENEMY_LOOK, ELITE_LOOK;
+extern const SoldierLook ENEMY_LOOK, ELITE_LOOK, SCOUT_LOOK, SHOTGUN_LOOK, SNIPER_LOOK;
 SoldierLook lookForClass(int cls);
 
 enum SoldierPose { POSE_AIM, POSE_WALK, POSE_SHOOT, POSE_HIT };

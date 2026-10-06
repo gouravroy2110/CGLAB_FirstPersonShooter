@@ -102,6 +102,7 @@ void MainWindow::render()
     renderHUD();
     flushText();
     renderLevelBanner();
+    if (m_showArmory) renderArmoryOverlay();
     renderPauseMenu();
     if (m_gs.gameOver) renderGameOver();
     flushText();
@@ -183,7 +184,7 @@ void MainWindow::renderPostFX()
 void MainWindow::renderHUD()
 {
     const Player &pl = m_gs.player;
-    bool scoped = WEAPONS[pl.curWeapon].scope && m_adsT > 0.6f;
+    bool scoped = effectiveScope(pl.curWeapon) && m_adsT > 0.6f;
     if (!scoped) { renderCompass(); renderMinimap(); renderKillFeed(); }
     renderHealthPanel();
     renderWeaponPanel();
@@ -193,11 +194,13 @@ void MainWindow::renderHUD()
     renderHitMarkers();
 
     float ax, ay; aimPoint(ax, ay);
-    const WeaponDef &wd = WEAPONS[pl.curWeapon];
     int mag = pl.mag[pl.curWeapon], res = pl.reserve[pl.curWeapon];
+    int maxMag = effectiveMagSize(pl.curWeapon);
     if (pl.curWeapon != WPN_KNIFE && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !m_gs.gameOver) {
         if (mag == 0 && res == 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "NO AMMO", QColor(255, 70, 60), 14, 800);
-        else if (mag <= wd.magSize / 4 && res > 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "[R]  RELOAD", QColor(255, 190, 80, int(180 + 75 * std::sin(m_time * 8))), 13, 700);
+        else if (mag <= maxMag / 4 && res > 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "[R]  RELOAD", QColor(255, 190, 80, int(180 + 75 * std::sin(m_time * 8))), 13, 700);
+        else if (m_nearSecret) text(ax - 150, ay + 34, 300, 20, Qt::AlignCenter, "[E]  INSPECT WALL", QColor(255, 215, 100, int(210 + 45 * std::sin(m_time * 9))), 14, 800);
+        else if (m_nearDoor) text(ax - 150, ay + 34, 300, 20, Qt::AlignCenter, "[E]  OPEN DOOR", QColor(220, 220, 220, int(190 + 50 * std::sin(m_time * 6))), 13, 700);
     }
     if (m_headshotBanner > 0) {
         float t = m_headshotBanner / 1.3f;
@@ -463,13 +466,33 @@ void MainWindow::renderWeaponPanel()
         text(x + 118, y + 37, 134, 13, Qt::AlignRight, wd.name, QColor(170, 170, 170), 10, 600, false);
     } else {
         int mag = pl.mag[pl.curWeapon];
-        uint32_t mc = mag == 0 ? RED : mag <= wd.magSize / 4 ? AMBER : 0xFFFFFFFF;
+        int maxMag = effectiveMagSize(pl.curWeapon);
+        uint32_t mc = mag == 0 ? RED : mag <= maxMag / 4 ? AMBER : 0xFFFFFFFF;
         text(x + 118, y + 2, 70, 36, Qt::AlignRight | Qt::AlignVCenter, QString::number(mag), qc(mc), 26, 800);
         text(x + 192, y + 14, 60, 20, Qt::AlignLeft | Qt::AlignVCenter, QString("/ %1").arg(pl.reserve[pl.curWeapon]), QColor(190, 190, 190), 15, 600);
         text(x + 118, y + 37, 134, 13, Qt::AlignRight, wd.name, QColor(170, 170, 170), 10, 600, false);
         // rounds in the magazine
-        int pips = wd.magSize, pw = std::max(2, std::min(5, 100 / pips));
+        int pips = maxMag, pw = std::max(2, std::min(5, 100 / pips));
         for (int i = 0; i < pips; i++) m_cv.fillRect(x + 18 + i * (pw + 1), y + h - 8, pw, 4, i < mag ? withAlpha(AMBER, 230) : withAlpha(0xFFFFFFFF, 35));
+    }
+
+    // Attachment badges for active weapon
+    int bx = x + 10;
+    auto badge = [&](const char *label, bool active, uint32_t col) {
+        m_cv.blendRect(bx, y - 10, 27, 9, withAlpha(active ? col : 0xFF1E2228, active ? 220 : 100));
+        text(bx, y - 11, 27, 9, Qt::AlignCenter, label, active ? QColor(255, 255, 255) : QColor(95, 100, 105), 8, 700, false);
+        bx += 30;
+    };
+    if (pl.curWeapon != WPN_KNIFE) {
+        badge("MAG", pl.upgradeExtMag[pl.curWeapon], GREEN);
+        badge("COMP", pl.upgradeCompensator[pl.curWeapon], 0xFF3AB4E8);
+        badge("AP", pl.upgradeAmmo[pl.curWeapon], AMBER);
+        const char *spName = (pl.curWeapon == WPN_RIFLE ? "ACOG" : pl.curWeapon == WPN_SHOTGUN ? "PUMP" : "HAIR");
+        badge(spName, pl.upgradeSpecial[pl.curWeapon], 0xFFFF7040);
+    } else {
+        badge("HILT", pl.upgradeCompensator[WPN_KNIFE], 0xFF3AB4E8);
+        badge("SERR", pl.upgradeAmmo[WPN_KNIFE], AMBER);
+        badge("STIL", pl.upgradeSpecial[WPN_KNIFE], 0xFFFF7040);
     }
     // reload progress
     if (pl.reloadTimer > 0) {
@@ -571,7 +594,11 @@ void MainWindow::renderTargetInfo()
     m_cv.blendRect(x, y, w, 26, withAlpha(UI_BG, 160));
     m_cv.blendRect(x + 8, y + 17, w - 16, 4, withAlpha(0xFFFFFFFF, 30));
     m_cv.blendRect(x + 8, y + 17, int((w - 16) * frac), 4, frac > 0.5f ? GREEN : frac > 0.25f ? AMBER : RED);
-    text(x + 8, y + 2, w - 16, 14, Qt::AlignLeft, "HOSTILE", QColor(255, 110, 90), 11, 800, false);
+    const char *typeStr = e.elite ? "ELITE GUARD" :
+                          e.type == ET_SCOUT ? "SCOUT" :
+                          e.type == ET_SHOTGUNNER ? "SHOTGUNNER" :
+                          e.type == ET_SNIPER ? "SNIPER" : "INFANTRY";
+    text(x + 8, y + 2, w - 16, 14, Qt::AlignLeft, typeStr, e.elite ? QColor(255, 60, 50) : e.type == ET_SNIPER ? QColor(255, 90, 70) : QColor(255, 160, 90), 11, 800, false);
     text(x + 8, y + 2, w - 16, 14, Qt::AlignRight, m_probePart == PART_HEAD ? QString("HEAD  x%1").arg(WEAPONS[m_gs.player.curWeapon].headMult, 0, 'f', 1)
                                                    : m_probePart == PART_LIMB ? "LIMB" : "BODY",
          m_probePart == PART_HEAD ? QColor(255, 80, 60) : QColor(200, 200, 200), 11, 700, false);
@@ -595,16 +622,165 @@ void MainWindow::renderKillFeed()
 void MainWindow::renderLevelBanner()
 {
     if (!m_gs.levelComplete) return;
-    float t = m_gs.levelTransTimer / 4.f;
-    int a = int(220 * std::min(1.f, (1.f - t) * 4.f));
-    m_cv.blendRect(0, H / 2 - 70, W, 140, withAlpha(UI_BG, a));
-    m_cv.blendRect(0, H / 2 - 70, W, 2, withAlpha(AMBER, a));
-    m_cv.blendRect(0, H / 2 + 68, W, 2, withAlpha(AMBER, a));
-    text(0, H / 2 - 62, W, 50, Qt::AlignCenter, "ZONE CLEARED", QColor(255, 255, 255, a), 42, 900);
-    text(0, H / 2 - 8, W, 24, Qt::AlignCenter, QString("BONUS +%1      SCORE %2      HEADSHOTS %3").arg(500 * m_gs.level).arg(m_gs.score).arg(m_gs.headshots),
-         QColor(255, 200, 100, a), 16, 700);
-    text(0, H / 2 + 24, W, 24, Qt::AlignCenter, QString("Deploying to zone %1 in %2...").arg(m_gs.level + 1).arg(int(m_gs.levelTransTimer) + 1),
-         QColor(190, 200, 210, a), 14, 500);
+
+    // Dark tactical overlay covering entire view
+    m_cv.blendRect(0, 0, W, H, withAlpha(0x06090D, 225));
+
+    // Top Header Banner
+    m_cv.blendRect(0, 14, W, 74, withAlpha(UI_BG, 200));
+    m_cv.blendRect(0, 14, W, 2, withAlpha(AMBER, 255));
+    m_cv.blendRect(0, 88, W, 2, withAlpha(AMBER, 255));
+
+    text(0, 18, W, 34, Qt::AlignCenter, QString("ZONE %1 CLEARED").arg(m_gs.level), QColor(255, 215, 80), 30, 900);
+    text(0, 54, W, 20, Qt::AlignCenter,
+         QString("ZONE CLEAR BONUS +%1      SCORE %2      HEADSHOTS %3")
+             .arg(500 * m_gs.level).arg(m_gs.score).arg(m_gs.headshots),
+         QColor(220, 225, 230), 12, 700);
+
+    if (!m_upgradePicked) {
+        text(0, 94, W, 22, Qt::AlignCenter,
+             QString("FIELD SUPPLY DROP  -  CHOOSE 1 WEAPON UPGRADE  [ DECISION TIME: %1s ]")
+                 .arg(std::max(1, int(m_upgradeDecisionTimer) + 1)),
+             QColor(255, 220, 90), 13, 800);
+    } else {
+        text(0, 94, W, 22, Qt::AlignCenter,
+             QString("FIELD SUPPLY DROP  -  ATTACHMENT CONFIGURED  [ DEPLOYING IN %1s ]")
+                 .arg(QString::number(std::max(0.1f, m_deployTimer), 'f', 1)),
+             QColor(100, 255, 140), 13, 800);
+    }
+
+    // 3 Upgrade Cards
+    int cw = 232, ch = 280, cy = 122;
+    int spacing = 18;
+    int totalW = 3 * cw + 2 * spacing;
+    int startX = (W - totalW) / 2;
+
+    for (int i = 0; i < int(m_upgradeCards.size()) && i < 3; i++) {
+        const UpgradeCard &card = m_upgradeCards[i];
+        int cx = startX + i * (cw + spacing);
+        bool selected = (m_selectedUpgradeCard == i);
+
+        // Card backdrop panel
+        panel(cx, cy, cw, ch, selected, selected ? GREEN : 0xFF354050);
+
+        // Header key button: [ 1 ], [ 2 ], [ 3 ]
+        uint32_t keyBtnCol = selected ? GREEN : AMBER;
+        m_cv.fillRect(cx + 12, cy + 12, 42, 22, keyBtnCol);
+        text(cx + 12, cy + 12, 42, 22, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(15, 15, 15), 12, 900, false);
+
+        if (selected) {
+            m_cv.blendRect(cx + cw - 95, cy + 12, 85, 22, withAlpha(GREEN, 220));
+            text(cx + cw - 95, cy + 12, 85, 22, Qt::AlignCenter, "EQUIPPED", QColor(10, 10, 10), 11, 800, false);
+        }
+
+        // Weapon icon if weapon >= 0
+        if (card.weapon >= 0 && card.weapon < WPN_COUNT) {
+            const GunModel &M = *GUN_MODELS[card.weapon];
+            float sc = 70.f / M.length;
+            if (card.weapon == WPN_PISTOL) sc = 0.85f;
+            else if (card.weapon == WPN_KNIFE) sc = 0.90f;
+            drawGunFlat(m_cv, M, cx + cw / 2 - 30, cy + 62 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, selected ? 240 : 160));
+        }
+
+        // Title
+        text(cx + 10, cy + 98, cw - 20, 26, Qt::AlignCenter, card.title, selected ? QColor(255, 225, 90) : QColor(240, 240, 240), 13, 800);
+
+        // Description (Word wrapped)
+        m_cv.blendRect(cx + 10, cy + 130, cw - 20, 78, withAlpha(0, 130));
+        text(cx + 14, cy + 134, cw - 28, 70, Qt::AlignLeft | Qt::TextWordWrap, card.desc, QColor(185, 195, 205), 11, 500, false);
+
+        // Stat bonus plate at bottom
+        m_cv.blendRect(cx + 8, cy + ch - 54, cw - 16, 42, withAlpha(selected ? 0xFF0E3020 : 0xFF141F2C, 220));
+        m_cv.blendRect(cx + 8, cy + ch - 54, cw - 16, 2, withAlpha(selected ? GREEN : 0xFF3AB4E8, 220));
+        text(cx + 10, cy + ch - 50, cw - 20, 36, Qt::AlignCenter | Qt::TextWordWrap, card.bonus, selected ? QColor(100, 255, 140) : QColor(80, 210, 255), 11, 700, false);
+    }
+
+    // Bottom Action Prompt & Continue Button
+    int btnW = 240, btnH = 36;
+    int btnX = (W - btnW) / 2, btnY = 432;
+
+    if (!m_upgradePicked) {
+        text(0, 408, W, 18, Qt::AlignCenter,
+             QString("CLICK A CARD OR PRESS [1, 2, 3] TO EQUIP  -  AUTO-SELECT IN %1s")
+                 .arg(std::max(1, int(m_upgradeDecisionTimer) + 1)),
+             QColor(230, 235, 240), 11, 600);
+
+        m_cv.blendRect(btnX, btnY, btnW, btnH, withAlpha(0x1B2635, 230));
+        m_cv.blendRect(btnX, btnY, btnW, 2, withAlpha(AMBER, 220));
+        m_cv.blendRect(btnX, btnY + btnH - 2, btnW, 2, withAlpha(AMBER, 220));
+        m_cv.blendRect(btnX, btnY, 2, btnH, withAlpha(AMBER, 220));
+        m_cv.blendRect(btnX + btnW - 2, btnY, 2, btnH, withAlpha(AMBER, 220));
+        text(btnX, btnY + 7, btnW, 22, Qt::AlignCenter, "CONTINUE >>  [SPACE]", QColor(255, 220, 100), 13, 800);
+    } else {
+        text(0, 408, W, 18, Qt::AlignCenter,
+             QString("UPGRADE SECURED!  DEPLOYING TO ZONE %1 IN %2s  (CLICK TO SKIP)")
+                 .arg(m_gs.level + 1).arg(QString::number(std::max(0.1f, m_deployTimer), 'f', 1)),
+             QColor(100, 255, 140), 11, 700);
+
+        bool pulse = (int(m_time * 4.f) & 1) == 0;
+        uint32_t bgCol = pulse ? 0xFF1D6638 : 0xFF144D29;
+        uint32_t bdrCol = 0xFF45F07E;
+        m_cv.blendRect(btnX, btnY, btnW, btnH, withAlpha(bgCol, 240));
+        m_cv.blendRect(btnX, btnY, btnW, 2, withAlpha(bdrCol, 255));
+        m_cv.blendRect(btnX, btnY + btnH - 2, btnW, 2, withAlpha(bdrCol, 255));
+        m_cv.blendRect(btnX, btnY, 2, btnH, withAlpha(bdrCol, 255));
+        m_cv.blendRect(btnX + btnW - 2, btnY, 2, btnH, withAlpha(bdrCol, 255));
+        text(btnX, btnY + 7, btnW, 22, Qt::AlignCenter, "DEPLOY NOW >>  [SPACE]", QColor(255, 255, 255), 13, 900);
+    }
+}
+
+void MainWindow::renderArmoryOverlay()
+{
+    const Player &pl = m_gs.player;
+    // Dim background
+    for (int i = 0; i < W * H; i++) {
+        uint32_t c = m_pixels[i];
+        int l = (R(c) * 77 + G(c) * 150 + B(c) * 29) >> 9;
+        m_pixels[i] = rgb(l, l + 2, l + 5);
+    }
+
+    const int w = 560, h = 420, x = W / 2 - w / 2, y = H / 2 - h / 2;
+    panel(x, y, w, h, true, AMBER);
+
+    text(x, y + 14, w, 32, Qt::AlignCenter, "FIELD ARMORY & ATTACHMENTS", QColor(255, 215, 80), 22, 900);
+    text(x, y + 44, w, 16, Qt::AlignCenter, QString("ZONE %1 SURVIVAL LOADOUT  -  ALL UPGRADES ACTIVE").arg(m_gs.level), QColor(180, 190, 200), 11, 600);
+
+    for (int i = 0; i < WPN_COUNT; i++) {
+        int ry = y + 70 + i * 76;
+        bool owned = pl.owned[i];
+        m_cv.blendRect(x + 20, ry, w - 40, 68, withAlpha(0xFFFFFFFF, owned ? 16 : 6));
+        m_cv.blendRect(x + 20, ry, 4, 68, withAlpha(i == pl.curWeapon ? AMBER : owned ? 0xFF3AB4E8 : 0xFF555555, 240));
+
+        // Weapon name & stats
+        text(x + 32, ry + 6, 160, 20, Qt::AlignLeft, WEAPONS[i].name, owned ? QColor(255, 255, 255) : QColor(120, 120, 120), 13, 800);
+        text(x + 32, ry + 26, 160, 16, Qt::AlignLeft,
+             owned ? QString("DMG: %1  MAG: %2").arg(effectiveDamage(i)).arg(effectiveMagSize(i)) : "LOCKED / UNACQUIRED",
+             owned ? QColor(200, 210, 220) : QColor(100, 100, 100), 10, 600, false);
+
+        // Attachment slot badges
+        int ax = x + 195;
+        auto drawSlot = [&](const char *label, bool active, uint32_t col) {
+            m_cv.blendRect(ax, ry + 12, 78, 44, withAlpha(active ? col : 0xFF141920, active ? 210 : 130));
+            m_cv.blendRect(ax, ry + 12, 78, 2, withAlpha(active ? col : 0xFF2A3542, 255));
+            text(ax, ry + 16, 78, 14, Qt::AlignCenter, label, active ? QColor(255, 255, 255) : QColor(90, 95, 100), 9, 800, false);
+            text(ax, ry + 32, 78, 16, Qt::AlignCenter, active ? "ACTIVE" : "NONE", active ? QColor(100, 255, 140) : QColor(80, 85, 90), 8, 700, false);
+            ax += 84;
+        };
+
+        if (i == WPN_KNIFE) {
+            drawSlot("BALANCED HILT", pl.upgradeCompensator[i], 0xFF3AB4E8);
+            drawSlot("SERRATED EDGE", pl.upgradeAmmo[i], AMBER);
+            drawSlot("STILETTO TIP", pl.upgradeSpecial[i], 0xFFFF7040);
+        } else {
+            drawSlot("EXTENDED MAG", pl.upgradeExtMag[i], GREEN);
+            drawSlot(i == WPN_SHOTGUN ? "CHOKE" : "COMPENSATOR", pl.upgradeCompensator[i], 0xFF3AB4E8);
+            drawSlot("AP / +P AMMO", pl.upgradeAmmo[i], AMBER);
+            const char *sp = (i == WPN_RIFLE ? "ACOG 3X" : i == WPN_SHOTGUN ? "RAPID PUMP" : "HAIR TRIG");
+            drawSlot(sp, pl.upgradeSpecial[i], 0xFFFF7040);
+        }
+    }
+
+    text(x, y + h - 30, w, 18, Qt::AlignCenter, "[U] OR [ESC] RESUME COMBAT      [SPACE] CLOSE", QColor(255, 200, 100), 12, 700);
 }
 
 void MainWindow::renderPauseMenu()
@@ -718,17 +894,17 @@ void MainWindow::renderMenu()
     text(70, 182, 520, 30, Qt::AlignLeft | Qt::AlignVCenter, "T A C T I C A L   S H O O T E R", qc(AMBER), 18, 700);
     text(70, 212, 520, 18, Qt::AlignLeft, "Every pixel is computed on the CPU  -  pure software rasterization", QColor(170, 175, 180), 12, 500);
 
-    const char *opts[2] = { "NEW GAME", "EXIT" };
-    for (int i = 0; i < 2; i++) {
+    const char *opts[3] = { "NEW GAME", "DEBUG RANGE", "EXIT" };
+    for (int i = 0; i < 3; i++) {
         bool sel = m_menuCursor == i;
-        int x = 48, y = 280 + i * 58, w = 300, h = 48;
+        int x = 48, y = 270 + i * 54, w = 300, h = 46;
         m_menuRects.push_back({x, y, w, h, i});
         if (sel) {
             m_cv.hGrad(x, y, w, h, withAlpha(AMBER, 70), withAlpha(AMBER, 0));
             m_cv.fillRect(x, y, 4, h, AMBER);
         } else m_cv.hGrad(x, y, w, h, withAlpha(0xFFFFFFFF, 14), withAlpha(0xFFFFFFFF, 0));
-        text(x + 22, y, w, h, Qt::AlignLeft | Qt::AlignVCenter, opts[i], sel ? QColor(255, 255, 255) : QColor(175, 175, 175), 22, sel ? 800 : 600);
-        if (sel) text(x + w - 60, y, 50, h, Qt::AlignRight | Qt::AlignVCenter, ">", qc(AMBER), 22, 800, false);
+        text(x + 22, y, w, h, Qt::AlignLeft | Qt::AlignVCenter, opts[i], sel ? QColor(255, 255, 255) : QColor(175, 175, 175), 20, sel ? 800 : 600);
+        if (sel) text(x + w - 60, y, 50, h, Qt::AlignRight | Qt::AlignVCenter, ">", qc(AMBER), 20, 800, false);
     }
 
     // Controls card

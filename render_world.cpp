@@ -395,7 +395,10 @@ void MainWindow::renderSprites()
             float base = floorH(e.x, e.y);
             float light = (T.ambient + T.sunStrength * 0.8f * sunVisAt(e.x, e.y)) * 1.12f;
             float flash = e.alive && e.hitFlash > 0 ? std::min(1.f, e.hitFlash / 0.16f) * 0.35f : 0.f;
-            const std::vector<uint32_t> &atlas = e.elite ? m_eliteAtlas : m_enemyAtlas;
+            const std::vector<uint32_t> &atlas = e.elite ? m_eliteAtlas :
+                                                 e.type == ET_SCOUT ? m_scoutAtlas :
+                                                 e.type == ET_SHOTGUNNER ? m_shotgunAtlas :
+                                                 e.type == ET_SNIPER ? m_sniperAtlas : m_enemyAtlas;
             blit(e.x, e.y, base, 1.f, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive);
             if (e.alive && s.idx < 12 && m_enemyHPDisplay[s.idx] > 0) {
                 float sx, sy, d;

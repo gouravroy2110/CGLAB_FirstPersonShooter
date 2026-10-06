@@ -166,7 +166,7 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
 {
     const int S = WALL_TS;
     if (type == 5) {
-        // Secret wall: the stone texture plus a faint doorway seam and a few cracks
+        // Secret wall: the stone texture plus a faint doorway seam, cracks, and an engraved ancient sigil
         bakeWall(tex, 1, theme);
         for (int y = 14; y < S; y++) for (int x = 22; x < S - 22; x++) {
             bool seam = (x == 22 || x == S - 23 || y == 14);
@@ -178,6 +178,24 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
                 int ix = int(x), iy = int(y);
                 if (ix >= 0 && iy >= 0 && ix < S && iy < S) tex[size_t(iy) * S + ix] = scaleCol(tex[size_t(iy) * S + ix], 0.55f);
                 x += hash2(c, k, 405) * 2.f - 1.f; y += 1.f;
+            }
+        }
+        // Engraved mystic diamond sigil at the center of the secret wall
+        const int cx = S / 2, cy = S / 2;
+        for (int dy = -18; dy <= 18; dy++) for (int dx = -18; dx <= 18; dx++) {
+            int d = std::abs(dx) + std::abs(dy);
+            int px = cx + dx, py = cy + dy;
+            if (px < 0 || px >= S || py < 0 || py >= S) continue;
+            // Outer diamond ring and inner eye/dot
+            if (d == 16 || d == 15 || d == 8 || d == 7 || (d <= 2)) {
+                uint32_t orig = tex[size_t(py) * S + px];
+                // Deep carved groove with subtle amber/gold tint
+                uint32_t carved = scaleCol(orig, 0.40f);
+                carved = lerpCol(carved, rgb(215, 170, 75), 0.35f);
+                tex[size_t(py) * S + px] = carved;
+            } else if (d == 17) {
+                // Highlighted chisel edge on the outside
+                tex[size_t(py) * S + px] = scaleCol(tex[size_t(py) * S + px], 1.25f);
             }
         }
         return;
@@ -277,6 +295,24 @@ const SoldierLook ENEMY_LOOK = {
 const SoldierLook ELITE_LOOK = {
     rgb(46,48,54), rgb(26,27,32), rgb(70,72,80), rgb(30,32,36), rgb(20,21,24),
     rgb(34,36,40), rgb(180,136,104), rgb(20,20,22), rgb(255,60,40), rgb(22,20,20), rgb(18,18,20)
+};
+
+// Fast Scout: light urban grey-blue kit with cyan goggles
+const SoldierLook SCOUT_LOOK = {
+    rgb(72,78,92), rgb(44,48,60), rgb(96,102,118), rgb(46,50,62), rgb(32,34,44),
+    rgb(52,56,68), rgb(205,160,126), rgb(36,38,44), rgb(60,220,255), rgb(30,32,38), rgb(28,30,34)
+};
+
+// Heavy Shotgunner: rust / heavy brown armor with dark yellow goggles
+const SoldierLook SHOTGUN_LOOK = {
+    rgb(118,82,54), rgb(80,52,32), rgb(140,102,68), rgb(92,62,40), rgb(64,42,26),
+    rgb(102,70,44), rgb(188,142,108), rgb(48,40,34), rgb(255,190,50), rgb(38,32,26), rgb(34,30,26)
+};
+
+// Deadly Sniper: hooded woodland ghillie / dark green with crimson lens
+const SoldierLook SNIPER_LOOK = {
+    rgb(54,68,48), rgb(34,44,30), rgb(74,90,64), rgb(40,52,36), rgb(26,34,22),
+    rgb(44,56,38), rgb(175,135,102), rgb(30,36,28), rgb(240,40,60), rgb(24,28,22), rgb(22,26,20)
 };
 
 SoldierLook lookForClass(int cls)

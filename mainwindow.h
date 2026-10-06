@@ -66,8 +66,8 @@ private:
     std::vector<uint32_t> m_sky[3];
     MipTex                m_floorTex[3];
     MipTex                m_wallTex[3][6];
-    std::vector<uint32_t> m_enemyAtlas, m_eliteAtlas;
-    std::vector<uint8_t>  m_enemyMask, m_eliteMask;
+    std::vector<uint32_t> m_enemyAtlas, m_eliteAtlas, m_scoutAtlas, m_shotgunAtlas, m_sniperAtlas;
+    std::vector<uint8_t>  m_enemyMask, m_eliteMask, m_scoutMask, m_shotgunMask, m_sniperMask;
     std::vector<uint32_t> m_pickupTex;
     std::vector<uint32_t> m_portrait[3];
     static const int PORTRAIT = 160;
@@ -173,6 +173,7 @@ private:
     int   m_combo = 0;
     float m_comboTimer = 0, m_comboDisplay = 0;
     int   m_probeEnemy = -1, m_probePart = 0;
+    bool  m_nearSecret = false, m_nearDoor = false;
     float m_enemyHPDisplay[12] = {};
     struct KFEntry { QString text; float life; bool head; };
     std::vector<KFEntry> m_killFeed;
@@ -191,6 +192,7 @@ private:
 
     // -- Logic ---------------------------------------------------------------------
     void initGame();
+    void startDebugMode();
     void loadLevel(int lv);
     void gameStep(float dt);
     void updateEnemies(float dt);
@@ -213,6 +215,34 @@ private:
     void checkEmergencyDrops(float dt);
     int  enemyFrame(const Enemy &e) const;
     int  enemyMaxHP() const;
+    void spawnEnemy(float x, float y, bool elite, EnemyType type);
+    void checkReinforcements(float dt);
+    float m_reinforceTimer = 0.f;
+
+    // -- Weapon Upgrade / Attachment System ----------------------------------------
+    struct UpgradeCard {
+        int weapon = -1; // 0..3 (WPN_KNIFE..WPN_RIFLE) or -1
+        int slot = 0;    // 0: Ext Mag, 1: Compensator/Choke, 2: High Caliber AP Ammo, 3: Special/Optic
+        QString title;
+        QString desc;
+        QString bonus;
+    };
+    std::vector<UpgradeCard> m_upgradeCards;
+    int  m_selectedUpgradeCard = -1;
+    bool m_upgradePicked = false;
+    float m_upgradeDecisionTimer = 30.0f;
+    float m_deployTimer = 0.0f;
+    bool m_showArmory = false;
+    int  effectiveMagSize(int w) const;
+    int  effectiveDamage(int w) const;
+    float effectiveRecoil(int w) const;
+    float effectiveSpread(int w) const;
+    float effectiveFireDelay(int w) const;
+    bool  effectiveScope(int w) const;
+    float effectiveAdsFov(int w) const;
+    void applyUpgrade(int weapon, int slot);
+    void generateUpgradeChoices();
+    void renderArmoryOverlay();
 
     struct HitResult {
         int enemy = -1; HitPart part = PART_NONE;

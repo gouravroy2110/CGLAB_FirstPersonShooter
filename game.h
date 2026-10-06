@@ -129,8 +129,8 @@ struct WeaponDef {
 static const WeaponDef WEAPONS[WPN_COUNT] = {
     {"COMBAT KNIFE",  "KNIFE",   55, 2.5f, 0.80f, 0.35f, 1, 0.000f,  0, 0.00f, 0.1f, true,  1.00f, false,   0},
     {"M9 SIDEARM",    "PISTOL",  28, 3.0f, 0.75f, 0.24f, 1, 0.012f, 12, 1.25f, 1.0f, false, 0.70f, false,  96},
-    {"M870 SHOTGUN",  "SHOTGUN", 15, 2.0f, 0.75f, 0.85f, 8, 0.060f,  6, 2.20f, 2.4f, false, 0.80f, false,  36},
-    {"M4 CARBINE",    "RIFLE",   22, 2.5f, 0.70f, 0.10f, 1, 0.016f, 30, 1.90f, 0.8f, true,  0.25f, true,  180},
+    {"M870 SHOTGUN",  "SHOTGUN", 24, 2.0f, 0.75f, 0.58f, 8, 0.045f,  6, 2.00f, 2.0f, false, 0.80f, false,  48},
+    {"M4 CARBINE",    "RIFLE",   22, 2.5f, 0.70f, 0.10f, 1, 0.016f, 30, 1.90f, 0.8f, true,  0.65f, false,  180},
 };
 
 // --- Particles ---------------------------------------------------------------
@@ -162,16 +162,23 @@ struct Player {
     float reloadTimer=0;     // >0 while reloading
     float switchTimer=0;     // >0 while swapping weapons
     bool  triggerHeld=false;
+    // Weapon Upgrades & Attachments:
+    bool  upgradeExtMag[WPN_COUNT]      = {false, false, false, false};
+    bool  upgradeCompensator[WPN_COUNT] = {false, false, false, false};
+    bool  upgradeAmmo[WPN_COUNT]        = {false, false, false, false};
+    bool  upgradeSpecial[WPN_COUNT]     = {false, false, false, false};
 };
 
 // --- Enemy -------------------------------------------------------------------
 enum EnemyState { ES_IDLE, ES_ALERT, ES_DEAD };
+enum EnemyType  { ET_RIFLEMAN=0, ET_SCOUT=1, ET_SHOTGUNNER=2, ET_SNIPER=3 };
 struct Enemy {
     float x,y;
     int   hp=75, maxHp=75;
     float hitFlash=0, fireCooldown=3.f, aggroRange=5.f;
     bool  alive=true;
     EnemyState state=ES_IDLE;
+    EnemyType  type=ET_RIFLEMAN;
     float walkPhase=0, shootAnim=0, deathTime=0, corpseFade=1.f;
     float moveX=0, moveY=0, strafeTimer=0, wanderTimer=0;
     bool  moving=false, killedByHeadshot=false;
@@ -181,7 +188,7 @@ struct Enemy {
 
 // --- Projectiles -------------------------------------------------------------
 // Enemy rounds are slow glowing projectiles you can dodge.
-struct Bullet { float x,y,z,dx,dy,dz=0; float px=0,py=0,pz=0; BulletOwner owner=ENEMY_SHOT; bool alive=true; };
+struct Bullet { float x,y,z,dx,dy,dz=0; float px=0,py=0,pz=0; BulletOwner owner=ENEMY_SHOT; bool alive=true; int damage=0; };
 // Player rounds are hitscan; a tracer streak flies along the resolved path.
 struct Tracer { float x0,y0,z0, x1,y1,z1, t=0, len=1; };
 // Floating damage number

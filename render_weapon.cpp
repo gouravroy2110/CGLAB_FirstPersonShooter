@@ -268,8 +268,7 @@ void MainWindow::renderCasings()
 void MainWindow::renderReflexSight()
 {
     const Player &pl = m_gs.player;
-    const WeaponDef &wd = WEAPONS[pl.curWeapon];
-    if (wd.scope || m_adsT < 0.02f) return;
+    if (effectiveScope(pl.curWeapon) || m_adsT < 0.02f) return;
     float rise = 1.f - smoothstep01(m_adsT);
     float cx = W / 2.f + m_swayX * 0.4f, cy = H / 2.f + m_swayY * 0.4f + rise * H * 0.8f;
     bool holo = pl.curWeapon == WPN_SHOTGUN;
@@ -339,7 +338,7 @@ void MainWindow::renderReflexSight()
 void MainWindow::renderScope()
 {
     const Player &pl = m_gs.player;
-    if (!WEAPONS[pl.curWeapon].scope || m_adsT <= 0.6f) return;
+    if (!effectiveScope(pl.curWeapon) || m_adsT <= 0.6f) return;
     float open = smoothstep01((m_adsT - 0.6f) / 0.4f);
     float cx = W / 2.f + m_scopeSwayX, cy = H / 2.f + m_scopeSwayY;
     float Rr = H * 0.47f * (0.6f + 0.4f * open);
