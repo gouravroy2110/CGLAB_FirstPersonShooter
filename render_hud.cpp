@@ -6,6 +6,7 @@
 //  font in pixelfont.h. No vector drawing (QPainter paths/fonts) is used.
 // =============================================================================
 #include "mainwindow.h"
+#include "gunbuild.h"
 #include "gunmodels.h"
 #include "pixelfont.h"
 #include <cmath>
@@ -80,25 +81,34 @@ void MainWindow::render()
         case SCR_MAP_SELECT:  renderMapSelect();  break;
         case SCR_DIFF_SELECT: renderDiffSelect(); break;
         case SCR_CHAR_SELECT: renderCharSelect(); break;
+        case SCR_SETTINGS:    renderSettings();   break;
+        case SCR_ARSENAL:     renderArsenal();    break;
         default: break;
         }
         flushText();
         return;
     }
+    if (m_killcamActive) { renderKillcam(); return; }
     computeView();
     renderTerrain();
     renderSky();
+    renderActors3D();
     renderSprites();
     renderParticles();
+    renderWorldFX();
     renderTracers();
     renderLensFlare();
     pixelate();
     renderDamageNumbers();
-    renderViewModel();
-    renderCasings();
-    renderReflexSight();
+    if (!thirdPerson()) {
+        renderViewModel();
+        renderCasings();
+        renderReflexSight();
+    }
+    renderLaser();
     renderScope();
     renderPostFX();
+    renderScreenFlash();
     renderHUD();
     flushText();
     renderLevelBanner();
@@ -205,13 +215,15 @@ void MainWindow::renderHUD()
         break;
     }
     renderDamageDirection();
+    renderSquadTags();
     renderCrosshair();
     renderHitMarkers();
 
     float ax, ay; aimPoint(ax, ay);
-    int mag = pl.mag[pl.curWeapon], res = pl.reserve[pl.curWeapon];
-    int maxMag = effectiveMagSize(pl.curWeapon);
-    if (pl.curWeapon != WPN_KNIFE && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !m_gs.gameOver) {
+    int cwp = std::max(0, pl.curWeapon);
+    int mag = pl.mag[cwp], res = pl.reserve[cwp];
+    int maxMag = effectiveMagSize(cwp);
+    if (pl.curWeapon >= 0 && usesAmmo(pl.curWeapon) && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !m_gs.gameOver) {
         if (mag == 0 && res == 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "NO AMMO", QColor(255, 70, 60), 14, 800);
         else if (mag <= maxMag / 4 && res > 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "[R]  RELOAD", QColor(255, 190, 80, int(180 + 75 * std::sin(m_time * 8))), 13, 700);
         else if (m_nearSecret) text(ax - 150, ay + 34, 300, 20, Qt::AlignCenter, "[E]  INSPECT WALL", QColor(255, 215, 100, int(210 + 45 * std::sin(m_time * 9))), 14, 800);
@@ -320,7 +332,7 @@ void MainWindow::renderCompass()
 
     // Ammo drops on the compass
     int curTotalAmmo = 0;
-    for (int w = WPN_PISTOL; w < WPN_COUNT; ++w) if (pl.owned[w]) curTotalAmmo += pl.mag[w] + pl.reserve[w];
+    for (int w = 0; w < WPN_COUNT; ++w) if (pl.owned[w] && usesAmmo(w)) curTotalAmmo += pl.mag[w] + pl.reserve[w];
     for (const WeaponPickup &wp : m_gs.weaponPickups) {
         if (!wp.active) continue;
         if (!wp.emergency && !wp.reward && (curTotalAmmo > 0 || wp.type != PICKUP_AMMO)) continue;
@@ -383,7 +395,7 @@ void MainWindow::renderMinimap()
         float wx = pl.posX + (rx * ox - fx * oy) / scale, wy = pl.posY + (ry * ox - fy * oy) / scale;
         int cx = int(std::floor(wx)), cy = int(std::floor(wy));
         uint32_t c;
-        if (cx < 0 || cy < 0 || cx >= MAP_W || cy >= MAP_H) c = withAlpha(0xFF05070A, 200);
+        if (cx < 0 || cy < 0 || cx >= m_mapW || cy >= m_mapH) c = withAlpha(0xFF05070A, 200);
         else if (m_map[cy][cx] == CELL_DOOR && m_doorT[cy][cx] < 0.9f) c = withAlpha(rgb(170, 120, 60), 235);
         else if (solidCell(cx, cy)) c = withAlpha(rgb(150, 156, 164), 235);
         else if (m_acid[cy][cx]) c = withAlpha(rgb(90, 190, 50), 220);
@@ -392,7 +404,7 @@ void MainWindow::renderMinimap()
             c = withAlpha(rgb(14 + lift, 18 + lift, 22 + lift), 180);
         }
         // view cone
-        if (oy < 0 && std::fabs(float(ox)) < -oy * 0.66f) c = lerpCol(c, withAlpha(0xFFFFFFFF, R(c) > 100 ? 235 : 190), 0.09f);
+        if (oy < 0 && std::fabs(float(ox)) < -oy * m_planeLen) c = lerpCol(c, withAlpha(0xFFFFFFFF, R(c) > 100 ? 235 : 190), 0.09f);
         m_cv.blend(MX + ox, MY + oy, c);
     }
     m_cv.ring(MX, MY, MR, MR + 2.f, withAlpha(0xFFFFFFFF, 90));
@@ -424,6 +436,11 @@ void MainWindow::renderMinimap()
         bool alert = e.state == ES_ALERT || aliveEnemies() <= 3;   // stragglers are revealed
         if (toMap(e.x, e.y, sx, sy, alert)) m_cv.fillCircle(int(sx), int(sy), alert && blink ? 4 : 3, alert ? RED : rgb(220, 120, 110));
     }
+    for (const Actor &a : m_gs.actors) {
+        if (!a.alive) continue;
+        if (toMap(a.posX, a.posY, sx, sy, true)) { m_cv.fillCircle(int(sx), int(sy), 3, rgb(80, 170, 255)); m_cv.ring(int(sx), int(sy), 3.5f, 4.5f, withAlpha(0xFFFFFFFF, 160)); }
+    }
+    for (const Turret &t : m_gs.turrets) if (toMap(t.x, t.y, sx, sy, true)) m_cv.fillRect(int(sx) - 2, int(sy) - 2, 5, 5, rgb(96, 192, 255));
     // player arrow
     m_cv.tri(MX, MY - 7, MX - 5, MY + 5, MX + 5, MY + 5, 0xFFFFFFFF);
     m_cv.tri(MX, MY + 2, MX - 5, MY + 5, MX + 5, MY + 5, withAlpha(0, 120));
@@ -474,63 +491,139 @@ void MainWindow::renderHealthPanel()
 void MainWindow::renderWeaponPanel()
 {
     const Player &pl = m_gs.player;
-    const WeaponDef &wd = WEAPONS[pl.curWeapon];
+    if (pl.curWeapon < 0) return;
+    const int cw = pl.curWeapon;
+    const WeaponDef &wd = WEAPONS[cw];
+    const Loadout &L = pl.load[cw];
     const int w = 262, h = 54, x = W - w - 16, y = H - 74;
     plate(m_cv, x, y, w, h, 10, withAlpha(UI_BG, 175));
-    m_cv.blendRect(x + 10, y + h, w - 10, 2, withAlpha(AMBER, 200));
+    uint32_t rc = RARITY_COLORS[L.rarity];
+    m_cv.blendRect(x + 10, y + h, w - 10, 2, withAlpha(L.rarity ? rc : AMBER, 220));
     // weapon silhouette icon, rasterized from the same polygons as the view model
-    const GunModel &M = *GUN_MODELS[pl.curWeapon];
-    float sc = 92.f / M.length;
-    if (pl.curWeapon == WPN_PISTOL) sc = 1.0f;
-    else if (pl.curWeapon == WPN_KNIFE) sc = 1.05f;
-    drawGunFlat(m_cv, M, x + 18, y + 30 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, 210));
-    if (pl.curWeapon == WPN_KNIFE) {
+    const GunModel &M = gunModel(cw);
+    float sc = std::min(92.f / M.length, 36.f / std::max(1.f, M.hMax - M.hMin));
+    drawGunFlat(m_cv, M, x + 18, y + 28 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(L.rarity ? rc : 0xFFFFFFFF, 210));
+    static const char *MODE[] = { "SEMI", "AUTO", "BURST", "BOLT", "CHARGE", "BEAM", "MELEE" };
+    QString mode = MODE[wd.mode];
+    if (m_bipod) mode = "BIPOD";
+    if (isMelee(cw)) {
         text(x + 118, y + 4, 134, 30, Qt::AlignRight | Qt::AlignVCenter, "MELEE", QColor(255, 215, 80), 18, 800);
-        text(x + 118, y + 37, 134, 13, Qt::AlignRight, wd.name, QColor(170, 170, 170), 10, 600, false);
+    } else if (!usesAmmo(cw)) {
+        // energy weapon: heat gauge instead of rounds
+        bool hot = pl.overheatT > 0.f;
+        text(x + 118, y + 4, 134, 16, Qt::AlignRight, hot ? "OVERHEATED" : "HEAT", hot ? QColor(255, 90, 60) : QColor(180, 220, 255), 12, 800);
+        int gw = 120, gx = x + w - 10 - gw, gy = y + 24;
+        m_cv.blendRect(gx, gy, gw, 8, withAlpha(0xFFFFFFFF, 30));
+        uint32_t hc = lerpCol(rgb(80, 200, 255), rgb(255, 80, 40), pl.heat);
+        m_cv.fillRect(gx, gy, int(gw * pl.heat), 8, hot && int(m_time * 8) % 2 ? rgb(255, 255, 255) : hc);
     } else {
-        int mag = pl.mag[pl.curWeapon];
-        int maxMag = effectiveMagSize(pl.curWeapon);
+        int mag = pl.mag[cw];
+        int maxMag = effectiveMagSize(cw);
         uint32_t mc = mag == 0 ? RED : mag <= maxMag / 4 ? AMBER : 0xFFFFFFFF;
         text(x + 118, y + 2, 70, 36, Qt::AlignRight | Qt::AlignVCenter, QString::number(mag), qc(mc), 26, 800);
-        text(x + 192, y + 14, 60, 20, Qt::AlignLeft | Qt::AlignVCenter, QString("/ %1").arg(pl.reserve[pl.curWeapon]), QColor(190, 190, 190), 15, 600);
-        text(x + 118, y + 37, 134, 13, Qt::AlignRight, wd.name, QColor(170, 170, 170), 10, 600, false);
-        // rounds in the magazine
-        int pips = maxMag, pw = std::max(2, std::min(5, 100 / pips));
+        text(x + 192, y + 14, 60, 20, Qt::AlignLeft | Qt::AlignVCenter, QString("/ %1").arg(pl.reserve[cw]), QColor(190, 190, 190), 15, 600);
+        int pips = std::min(maxMag, 50), pw = std::max(1, std::min(5, 100 / std::max(1, pips)));
         for (int i = 0; i < pips; i++) m_cv.fillRect(x + 18 + i * (pw + 1), y + h - 8, pw, 4, i < mag ? withAlpha(AMBER, 230) : withAlpha(0xFFFFFFFF, 35));
     }
-
-    // Attachment badges for active weapon
-    int bx = x + 10;
-    auto badge = [&](const char *label, bool active, uint32_t col) {
-        m_cv.blendRect(bx, y - 10, 27, 9, withAlpha(active ? col : 0xFF1E2228, active ? 220 : 100));
-        text(bx, y - 11, 27, 9, Qt::AlignCenter, label, active ? QColor(255, 255, 255) : QColor(95, 100, 105), 8, 700, false);
-        bx += 30;
-    };
-    if (pl.curWeapon != WPN_KNIFE) {
-        badge("MAG", pl.upgradeExtMag[pl.curWeapon], GREEN);
-        badge("COMP", pl.upgradeCompensator[pl.curWeapon], 0xFF3AB4E8);
-        badge("AP", pl.upgradeAmmo[pl.curWeapon], AMBER);
-        const char *spName = (pl.curWeapon == WPN_RIFLE ? "ACOG" : pl.curWeapon == WPN_SHOTGUN ? "PUMP" : "HAIR");
-        badge(spName, pl.upgradeSpecial[pl.curWeapon], 0xFFFF7040);
-    } else {
-        badge("HILT", pl.upgradeCompensator[WPN_KNIFE], 0xFF3AB4E8);
-        badge("SERR", pl.upgradeAmmo[WPN_KNIFE], AMBER);
-        badge("STIL", pl.upgradeSpecial[WPN_KNIFE], 0xFFFF7040);
+    text(x + 100, y + 37, 152, 13, Qt::AlignRight, QString("%1  %2").arg(mode).arg(wd.name), L.rarity ? qc(rc) : QColor(170, 170, 170), 10, 700, false);
+    // charge bar
+    if (pl.charge > 0.f) {
+        m_cv.blendRect(x + 10, y - 8, w - 10, 4, withAlpha(0xFFFFFFFF, 40));
+        m_cv.fillRect(x + 10, y - 8, int((w - 10) * pl.charge), 4, pl.charge >= 1.f ? rgb(255, 255, 255) : rgb(90, 210, 255));
+        text(x + 10, y - 24, w - 10, 14, Qt::AlignRight, pl.charge >= 1.f ? "FULL CHARGE" : "CHARGING", QColor(140, 220, 255), 11, 800);
     }
     // reload progress
     if (pl.reloadTimer > 0) {
         float p = 1.f - pl.reloadTimer / std::max(0.01f, m_reloadTotal);
         m_cv.blendRect(x + 10, y - 8, w - 10, 3, withAlpha(0xFFFFFFFF, 40));
         m_cv.blendRect(x + 10, y - 8, int((w - 10) * p), 3, AMBER);
-        text(x + 10, y - 24, w - 10, 14, Qt::AlignRight, "RELOADING", QColor(255, 200, 100), 11, 800);
+        text(x + 10, y - 24, w - 10, 14, Qt::AlignRight, m_shellReload ? "LOADING  (FIRE TO STOP)" : "RELOADING", QColor(255, 200, 100), 11, 800);
     }
-    // weapon slots
-    for (int i = 0; i < WPN_COUNT; i++) {
-        int sx = x + 10 + i * 30, sy = y - 24;
-        if (pl.reloadTimer > 0) break;
-        bool cur = i == pl.curWeapon, own = pl.owned[i];
-        m_cv.blendRect(sx, sy, 24, 14, withAlpha(cur ? AMBER : UI_BG, cur ? 230 : own ? 170 : 80));
-        text(sx, sy, 24, 14, Qt::AlignCenter, QString::number(i + 1), cur ? QColor(20, 20, 20) : own ? QColor(220, 220, 220) : QColor(90, 90, 90), 10, 800, false);
+    // inventory slots 1..4
+    if (pl.reloadTimer <= 0 && pl.charge <= 0.f) {
+        for (int s = 0; s < SLOT_COUNT; s++) {
+            int sx = x + 10 + s * 62, sy = y - 24;
+            int sw = pl.slot[s];
+            bool cur = sw >= 0 && sw == cw;
+            m_cv.blendRect(sx, sy, 58, 14, withAlpha(cur ? AMBER : UI_BG, cur ? 230 : sw >= 0 ? 170 : 70));
+            if (sw >= 0 && pl.load[sw].rarity) m_cv.fillRect(sx, sy + 12, 58, 2, RARITY_COLORS[pl.load[sw].rarity]);
+            text(sx, sy, 58, 14, Qt::AlignCenter, sw >= 0 ? QString("%1 %2").arg(s + 1).arg(WEAPONS[sw].shortName) : QString("%1  -").arg(s + 1),
+                 cur ? QColor(20, 20, 20) : sw >= 0 ? QColor(220, 220, 220) : QColor(90, 90, 90), 8, 800, false);
+        }
+    }
+    // attachments on the gun in hand
+    int bx = x + 10;
+    for (int a = 0; a < AT_COUNT; a++) {
+        int o = L.att[a];
+        if (!o) continue;
+        static const char *ABBR[AT_COUNT][6] = { {"", "DOT", "HOLO", "2X", "4X", "8X"}, {"", "SUPP", "COMP", "", "", ""}, {"", "XMAG", "", "", "", ""},
+                                                 {"", "GRIP", "LASR", "", "", ""}, {"", "STCK", "", "", "", ""}, {"", "AP", "INC", "HP", "", ""} };
+        m_cv.blendRect(bx, y + 4, 30, 9, withAlpha(0xFF3AB4E8, 200));
+        text(bx, y + 3, 30, 9, Qt::AlignCenter, ABBR[a][o], QColor(255, 255, 255), 8, 700, false);
+        bx += 32;
+        if (bx > x + 108) break;
+    }
+
+    // Throwables + gadget, left of the weapon panel
+    int tx = x - 112, ty = y + 4;
+    plate(m_cv, tx, ty, 104, 46, 6, withAlpha(UI_BG, 165));
+    const ThrowDef &th = THROWS[pl.throwSel];
+    m_cv.fillCircle(tx + 14, ty + 12, 6, th.color);
+    m_cv.ring(tx + 14, ty + 12, 5.f, 6.5f, withAlpha(0, 160));
+    text(tx + 24, ty + 4, 78, 14, Qt::AlignLeft, QString("%1 x%2").arg(th.shortName).arg(pl.throwCount[pl.throwSel]),
+         pl.throwCount[pl.throwSel] ? QColor(230, 230, 230) : QColor(110, 110, 110), 10, 800, false);
+    text(tx + 24, ty + 15, 78, 10, Qt::AlignLeft, "G THROW  T NEXT", QColor(130, 140, 150), 7, 600, false);
+    const GadgetDef &gd = GADGETS[pl.gadget];
+    float cdk = pl.gadgetCd > 0.f ? pl.gadgetCd / gd.cooldown : 0.f;
+    m_cv.fillCircle(tx + 14, ty + 34, 6, cdk > 0.f ? rgb(70, 74, 80) : gd.color);
+    if (cdk > 0.f) m_cv.arc(tx + 14, ty + 34, 6.f, 8.f, -1.5708f, -1.5708f + 6.2832f * (1.f - cdk), gd.color);
+    text(tx + 24, ty + 26, 78, 14, Qt::AlignLeft, cdk > 0.f ? QString("%1 %2s").arg(gd.shortName).arg(int(std::ceil(pl.gadgetCd))) : QString("%1 READY").arg(gd.shortName),
+         cdk > 0.f ? QColor(140, 140, 140) : qc(gd.color), 9, 800, false);
+    text(tx + 24, ty + 37, 78, 10, Qt::AlignLeft, "Z USE", QColor(130, 140, 150), 7, 600, false);
+    // cooking: the predicted arc as projected dots (simulated with the same gravity)
+    if (m_cooking && pl.throwSel != TH_MINE) {
+        float vx, vy, vz; const_cast<MainWindow *>(this)->throwVelocity(vx, vy, vz);
+        float x = pl.posX + pl.dirX * 0.3f, y = pl.posY + pl.dirY * 0.3f, z = pl.footZ + 0.6f;
+        for (int i = 0; i < 60; i++) {
+            float h = 0.04f;
+            vz -= 9.8f * h; x += vx * h; y += vy * h; z += vz * h;
+            if (z < groundAt(x, y)) {
+                float sx, sy, d;
+                if (project(x, y, groundAt(x, y) + 0.02f, sx, sy, d)) { m_cv.ring(int(sx), int(sy), 5.f, 7.f, withAlpha(AMBER, 220)); m_cv.fillCircle(int(sx), int(sy), 2, AMBER); }
+                break;
+            }
+            float sx, sy, d;
+            if (i % 2 == 0 && project(x, y, z, sx, sy, d) && d > 0.3f) m_cv.fillCircle(int(sx), int(sy), std::max(1, int(3.f / std::max(1.f, d * 0.3f))), withAlpha(0xFFFFFFFF, 200 - i * 3));
+        }
+    }
+    // cooking a frag: fuse ring at the crosshair
+    if (m_cooking) {
+        float left = pl.throwSel == TH_FRAG ? 1.f - m_cookT / THROWS[TH_FRAG].fuse : 1.f;
+        float ax, ay; aimPoint(ax, ay);
+        m_cv.arc(int(ax), int(ay), 22.f, 25.f, -1.5708f, -1.5708f + 6.2832f * left, left < 0.3f ? RED : AMBER);
+        text(ax - 60, ay + 28, 120, 12, Qt::AlignCenter, pl.throwSel == TH_FRAG ? "COOKING - RELEASE G" : "RELEASE G TO THROW", QColor(255, 210, 120), 9, 800, false);
+    }
+    // a better / different gun underfoot
+    if (m_nearPickup >= 0 && m_nearPickup < int(m_gs.weaponPickups.size())) {
+        const WeaponPickup &wp = m_gs.weaponPickups[size_t(m_nearPickup)];
+        if (wp.active && wp.weapon >= 0) {
+            int s = targetSlotFor(wp.weapon);
+            int old = pl.owned[wp.weapon] ? wp.weapon : pl.slot[s];
+            QString msg = old == wp.weapon ? QString("[E]  UPGRADE TO %1 %2").arg(RARITY_NAMES[wp.load.rarity]).arg(WEAPONS[wp.weapon].name)
+                                           : QString("[E]  SWAP %1 FOR %2 %3").arg(old >= 0 ? WEAPONS[old].shortName : "").arg(RARITY_NAMES[wp.load.rarity]).arg(WEAPONS[wp.weapon].name);
+            int mw = 420, mx = W / 2 - mw / 2, my = H - 150;
+            plate(m_cv, mx, my, mw, 26, 6, withAlpha(UI_BG, 200));
+            m_cv.fillRect(mx, my + 24, mw, 2, RARITY_COLORS[wp.load.rarity]);
+            text(mx, my, mw, 26, Qt::AlignCenter, msg, qc(RARITY_COLORS[wp.load.rarity]), 11, 800);
+        }
+    }
+    if (m_inspectT > 0.f) {
+        int mw = 300, mx = W / 2 - mw / 2, my = 130;
+        text(mx, my, mw, 16, Qt::AlignCenter, QString("%1  %2").arg(RARITY_NAMES[L.rarity]).arg(wd.name), qc(rc), 13, 900);
+        QString st = isMelee(cw) ? QString("DMG %1   REACH %2").arg(effectiveDamage(cw)).arg(wd.reach, 0, 'f', 1)
+                   : QString("DMG %1%2   RPM %3   MAG %4").arg(effectiveDamage(cw)).arg(wd.pellets > 1 ? QString(" x%1").arg(wd.pellets) : QString())
+                     .arg(int(60.f / std::max(0.01f, wd.fireDelay))).arg(usesAmmo(cw) ? QString::number(effectiveMagSize(cw)) : QString("ENERGY"));
+        text(mx, my + 16, mw, 14, Qt::AlignCenter, st, QColor(200, 205, 210), 10, 700, false);
     }
 }
 
@@ -539,10 +632,11 @@ void MainWindow::renderCrosshair()
     const Player &pl = m_gs.player;
     if (m_adsT > 0.35f || m_gs.gameOver) return;
     int cx = int(m_aimX), cy = int(m_aimY);
+    if (pl.curWeapon < 0) return;
     const WeaponDef &wd = WEAPONS[pl.curWeapon];
 
-    if (pl.curWeapon == WPN_KNIFE) {
-        bool inRange = (m_probeEnemy >= 0 && m_probeDepth <= 2.2f);
+    if (isMelee(pl.curWeapon)) {
+        bool inRange = (m_probeEnemy >= 0 && m_probeDepth <= wd.reach);
         int gap = inRange ? 7 : 13;
         uint32_t col = inRange ? rgb(255, 50, 40) : 0xFFFFFFFF;
         m_cv.brackets(cx - gap, cy - gap, gap * 2 + 1, gap * 2 + 1, 4, withAlpha(col, inRange ? 255 : 180), 2);
@@ -554,13 +648,13 @@ void MainWindow::renderCrosshair()
     }
 
     bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
-    float spread = wd.spread * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f) * W;
+    float spread = effectiveSpread(pl.curWeapon) * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f) * (1.f + m_bloom * 0.5f) * W;
     int gap = int(5 + spread * 0.9f + m_kick * 10 + (pl.sprinting ? 10 : 0));
     const int len = 9;
     bool enemy = m_probeEnemy >= 0;
-    uint32_t col = enemy ? (m_probePart == PART_HEAD ? rgb(255, 60, 50) : rgb(255, 120, 90)) : 0xFFFFFFFF;
+    uint32_t col = enemy ? (m_probePart == PART_HEAD ? rgb(255, 60, 50) : rgb(255, 120, 90)) : crosshairColor();
     auto bar = [&](int x, int y, int w, int h) { m_cv.blendRect(x - 1, y - 1, w + 2, h + 2, withAlpha(0, 150)); m_cv.fillRect(x, y, w, h, col); };
-    if (pl.curWeapon == WPN_SHOTGUN) {
+    if (wd.cls == WC_SHOTGUN || wd.proj == PJ_FLAME) {
         m_cv.ring(cx, cy, gap + 3.f, gap + 5.f, withAlpha(0, 120));
         m_cv.ring(cx, cy, gap + 3.5f, gap + 4.5f, col);
     } else {
@@ -596,15 +690,39 @@ void MainWindow::renderHitMarkers()
     else if (m_hitMarker > 0) marker(m_hitMarker / 0.25f * 2, 6, 13, 0xFFFFFFFF, 2);
 }
 
+// Squad name tags + health over their heads (depth-tested against the world)
+void MainWindow::renderSquadTags()
+{
+    for (const Actor &a : m_gs.actors) {
+        if (!a.alive) continue;
+        float sx, sy, d;
+        if (!project(a.posX, a.posY, a.footZ + 1.05f, sx, sy, d) || d < 0.5f || d > 40.f) continue;
+        bool visible = d < m_depth[size_t(clampi(int(sy), 0, H - 1)) * W + clampi(int(sx), 0, W - 1)] + 0.5f;
+        int alpha = visible ? 230 : 110;
+        text(sx - 40, sy - 16, 80, 12, Qt::AlignCenter, a.name, QColor(110, 190, 255, alpha), 9, 800);
+        float frac = a.hp / 120.f;
+        m_cv.blendRect(int(sx) - 16, int(sy) - 3, 32, 4, withAlpha(0, alpha / 2));
+        m_cv.blendRect(int(sx) - 16, int(sy) - 3, int(32 * clampf(frac, 0.f, 1.f)), 4, withAlpha(rgb(90, 180, 255), alpha));
+    }
+}
+
 void MainWindow::renderDamageDirection()
 {
-    if (m_damageDirTimer <= 0) return;
     const Player &pl = m_gs.player;
-    float t = std::min(1.f, m_damageDirTimer / 1.2f);
-    float rel = m_damageAngle - std::atan2(pl.dirY, pl.dirX);
-    float sa = rel - PI / 2;
-    m_cv.arc(W / 2, H / 2, 118, 128, sa - 0.32f, sa + 0.32f, withAlpha(RED, int(200 * t)));
-    m_cv.arc(W / 2, H / 2, 112, 117, sa - 0.18f, sa + 0.18f, withAlpha(rgb(255, 150, 120), int(160 * t)));
+    float facing = std::atan2(pl.dirY, pl.dirX);
+    for (const DamageMark &dm : m_damageMarks) {
+        float t = std::min(1.f, dm.t / 1.2f);
+        // angle to the attacker recomputed every frame: the marker swings as you turn
+        float rel = std::atan2(dm.y - pl.posY, dm.x - pl.posX) - facing;
+        float sa = rel - PI / 2;
+        float wdt = 0.22f + 0.18f * dm.strength;
+        m_cv.arc(W / 2, H / 2, 116, 128, sa - wdt, sa + wdt, withAlpha(RED, int(210 * t)));
+        m_cv.arc(W / 2, H / 2, 110, 115, sa - wdt * 0.55f, sa + wdt * 0.55f, withAlpha(rgb(255, 150, 120), int(170 * t)));
+        // chevron pointing outward
+        float cx = W / 2 + std::cos(sa) * 136, cy = H / 2 + std::sin(sa) * 136;
+        float px = -std::sin(sa), py = std::cos(sa);
+        m_cv.tri(cx + std::cos(sa) * 9, cy + std::sin(sa) * 9, cx + px * 7, cy + py * 7, cx - px * 7, cy - py * 7, withAlpha(RED, int(220 * t)));
+    }
 }
 
 void MainWindow::renderTargetInfo()
@@ -630,7 +748,7 @@ void MainWindow::renderTargetInfo()
 void MainWindow::renderKillFeed()
 {
     text(W - 220, 8, 204, 18, Qt::AlignRight, QString("SCORE  %1").arg(m_gs.score), QColor(255, 210, 140), 15, 800);
-    text(W - 220, 26, 204, 14, Qt::AlignRight, QString("%1 FPS").arg(int(m_fps)), QColor(140, 140, 140), 10, 500, false);
+    if (m_showFps) text(W - 220, 26, 204, 14, Qt::AlignRight, QString("%1 FPS").arg(int(m_fps)), QColor(140, 140, 140), 10, 500, false);
     // coins
     m_cv.fillCircle(W - 150, 33, 5, rgb(255, 200, 60)); m_cv.ring(W - 150, 33, 3.f, 4.f, rgb(200, 140, 30));
     text(W - 142, 26, 70, 14, Qt::AlignLeft, QString::number(m_gs.coins), QColor(255, 215, 110), 10, 800, false);
@@ -769,11 +887,10 @@ void MainWindow::renderLevelBanner()
             text(cx + cw - 95, cy + 12, 85, 22, Qt::AlignCenter, "SELECTED", QColor(10, 10, 10), 11, 800, false);
         }
         if (card.weapon >= 0 && card.weapon < WPN_COUNT) {
-            const GunModel &M = *GUN_MODELS[card.weapon];
-            float sc = 70.f / M.length;
-            if (card.weapon == WPN_PISTOL) sc = 0.85f;
-            else if (card.weapon == WPN_KNIFE) sc = 0.90f;
-            drawGunFlat(m_cv, M, cx + cw / 2 - 30, cy + 60 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, selected || hover ? 240 : 160));
+            const GunModel &M = gunModel(card.weapon);
+            float sc = std::min(90.f / M.length, 40.f / std::max(1.f, M.hMax - M.hMin));
+            uint32_t tint = card.slot == UC_UNLOCK && card.option > 0 ? RARITY_COLORS[card.option] : 0xFFFFFFFF;
+            drawGunFlat(m_cv, M, cx + cw / 2 - M.length * sc * 0.5f, cy + 62 + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(tint, selected || hover ? 240 : 160));
         }
         text(cx + 10, cy + 92, cw - 20, 26, Qt::AlignCenter, card.title, selected ? QColor(255, 225, 90) : QColor(240, 240, 240), 13, 800);
         m_cv.blendRect(cx + 10, cy + 122, cw - 20, 70, withAlpha(0, 130));
@@ -793,15 +910,15 @@ void MainWindow::renderLevelBanner()
         bool sel = wpn == m_loadoutWeapon, hover = ready && m_hoverChip == s && !sel;
         m_cv.blendRect(x, y, w, h, withAlpha(sel ? 0xFF2A2210 : UI_BG, sel ? 235 : 200));
         m_cv.rectOutline(x, y, w, h, sel ? AMBER : hover ? withAlpha(AMBER, 160) : withAlpha(0xFFFFFFFF, 40), sel ? 2 : 1);
-        const GunModel &M = *GUN_MODELS[wpn];
+        const GunModel &M = gunModel(wpn);
         float sc = std::min(44.f / M.length, 30.f / (M.hMax - M.hMin));   // fit both width and height
         drawGunFlat(m_cv, M, x + 8 + (44.f - M.length * sc) * 0.5f, y + h * 0.5f + (M.hMax + M.hMin) * 0.5f * sc, sc, true, withAlpha(0xFFFFFFFF, sel ? 235 : 150));
         text(x + 56, y + 6, w - 60, 16, Qt::AlignLeft, pl.owned[wpn] ? QString(WEAPONS[wpn].shortName) : QString("%1 (NEW)").arg(WEAPONS[wpn].shortName),
              sel ? QColor(255, 215, 80) : QColor(225, 225, 225), 12, 800, false);
-        QString stat = wpn == WPN_KNIFE ? QString("DMG %1  MELEE").arg(effectiveDamage(wpn))
+        QString stat = isMelee(wpn) ? QString("DMG %1  MELEE").arg(effectiveDamage(wpn)) : !usesAmmo(wpn) ? QString("DMG %1  ENERGY").arg(effectiveDamage(wpn))
                                         : QString("DMG %1  MAG %2").arg(effectiveDamage(wpn)).arg(effectiveMagSize(wpn));
         text(x + 56, y + 24, w - 60, 14, Qt::AlignLeft, stat, QColor(160, 170, 180), 9, 600, false);
-        if (wpn != WPN_KNIFE)
+        if (usesAmmo(wpn))
             text(x + 56, y + 35, w - 60, 12, Qt::AlignLeft, QString("RESERVE %1").arg(pl.reserve[wpn]), QColor(130, 140, 150), 9, 600, false);
     }
 
@@ -827,7 +944,7 @@ void MainWindow::renderLevelBanner()
     // Field shop: spend coins earned from the zone report
     m_cv.fillCircle(W / 2 + 12, 539, 5, rgb(255, 200, 60)); m_cv.ring(W / 2 + 12, 539, 3.f, 4.f, rgb(200, 140, 30));
     text(W / 2 - 160, 532, 320, 16, Qt::AlignCenter, QString("FIELD SHOP     %1 COINS").arg(m_gs.coins), QColor(255, 215, 110, ta), 11, 800, false);
-    static const char *items[3] = { "[7] AMMO RESUPPLY  40", "[8] FIELD MEDKIT  35", "[9] REROLL CARDS  25" };
+    static const char *items[3] = { "[7] AMMO + FRAG  40", "[8] FIELD MEDKIT  35", "[9] REROLL CARDS  25" };
     static const int cost[3] = { 40, 35, 25 };
     for (int i = 0; i < 3; i++) {
         QRect sr = ixShopRect(i);
@@ -854,40 +971,37 @@ void MainWindow::renderArmoryOverlay()
     panel(x, y, w, h, true, AMBER);
 
     text(x, y + 14, w, 32, Qt::AlignCenter, "FIELD ARMORY & ATTACHMENTS", QColor(255, 215, 80), 22, 900);
-    text(x, y + 44, w, 16, Qt::AlignCenter, QString("ZONE %1 SURVIVAL LOADOUT  -  ALL UPGRADES ACTIVE").arg(m_gs.level), QColor(180, 190, 200), 11, 600);
+    text(x, y + 44, w, 16, Qt::AlignCenter, QString("ZONE %1 LOADOUT  -  THROWABLES %2/%3/%4/%5/%6  -  GADGET %7").arg(m_gs.level)
+         .arg(pl.throwCount[0]).arg(pl.throwCount[1]).arg(pl.throwCount[2]).arg(pl.throwCount[3]).arg(pl.throwCount[4]).arg(GADGETS[pl.gadget].name), QColor(180, 190, 200), 10, 600);
 
-    for (int i = 0; i < WPN_COUNT; i++) {
-        int ry = y + 70 + i * 76;
-        bool owned = pl.owned[i];
-        m_cv.blendRect(x + 20, ry, w - 40, 68, withAlpha(0xFFFFFFFF, owned ? 16 : 6));
-        m_cv.blendRect(x + 20, ry, 4, 68, withAlpha(i == pl.curWeapon ? AMBER : owned ? 0xFF3AB4E8 : 0xFF555555, 240));
-
-        // Weapon name & stats
-        text(x + 32, ry + 6, 160, 20, Qt::AlignLeft, WEAPONS[i].name, owned ? QColor(255, 255, 255) : QColor(120, 120, 120), 13, 800);
-        text(x + 32, ry + 26, 160, 16, Qt::AlignLeft,
-             owned ? QString("DMG: %1  MAG: %2").arg(effectiveDamage(i)).arg(effectiveMagSize(i)) : "LOCKED / UNACQUIRED",
-             owned ? QColor(200, 210, 220) : QColor(100, 100, 100), 10, 600, false);
-
-        // Attachment slot badges
-        int ax = x + 195;
-        auto drawSlot = [&](const char *label, bool active, uint32_t col) {
-            m_cv.blendRect(ax, ry + 12, 78, 44, withAlpha(active ? col : 0xFF141920, active ? 210 : 130));
-            m_cv.blendRect(ax, ry + 12, 78, 2, withAlpha(active ? col : 0xFF2A3542, 255));
-            text(ax, ry + 16, 78, 14, Qt::AlignCenter, label, active ? QColor(255, 255, 255) : QColor(90, 95, 100), 9, 800, false);
-            text(ax, ry + 32, 78, 16, Qt::AlignCenter, active ? "ACTIVE" : "NONE", active ? QColor(100, 255, 140) : QColor(80, 85, 90), 8, 700, false);
-            ax += 84;
-        };
-
-        if (i == WPN_KNIFE) {
-            drawSlot("BALANCED HILT", pl.upgradeCompensator[i], 0xFF3AB4E8);
-            drawSlot("SERRATED EDGE", pl.upgradeAmmo[i], AMBER);
-            drawSlot("STILETTO TIP", pl.upgradeSpecial[i], 0xFFFF7040);
-        } else {
-            drawSlot("EXTENDED MAG", pl.upgradeExtMag[i], GREEN);
-            drawSlot(i == WPN_SHOTGUN ? "CHOKE" : "COMPENSATOR", pl.upgradeCompensator[i], 0xFF3AB4E8);
-            drawSlot("AP / +P AMMO", pl.upgradeAmmo[i], AMBER);
-            const char *sp = (i == WPN_RIFLE ? "ACOG 3X" : i == WPN_SHOTGUN ? "RAPID PUMP" : "HAIR TRIG");
-            drawSlot(sp, pl.upgradeSpecial[i], 0xFFFF7040);
+    static const char *SLOT_NAMES[SLOT_COUNT] = { "MELEE", "SIDEARM", "PRIMARY", "PRIMARY 2" };
+    for (int si = 0; si < SLOT_COUNT; si++) {
+        int ry = y + 70 + si * 76;
+        int wi = pl.slot[si];
+        bool has = wi >= 0;
+        uint32_t rcol = has ? RARITY_COLORS[pl.load[wi].rarity] : 0xFF555555;
+        m_cv.blendRect(x + 20, ry, w - 40, 68, withAlpha(0xFFFFFFFF, has ? 16 : 6));
+        m_cv.blendRect(x + 20, ry, 4, 68, withAlpha(has && wi == pl.curWeapon ? AMBER : rcol, 240));
+        text(x + 32, ry + 4, 160, 12, Qt::AlignLeft, QString("[%1] %2").arg(si + 1).arg(SLOT_NAMES[si]), QColor(140, 150, 160), 9, 800, false);
+        if (!has) { text(x + 32, ry + 20, 300, 18, Qt::AlignLeft, "EMPTY - pick up a gun to fill it", QColor(110, 110, 110), 11, 600, false); continue; }
+        const WeaponDef &d = WEAPONS[wi];
+        text(x + 32, ry + 16, 170, 18, Qt::AlignLeft, d.name, qc(rcol), 12, 800);
+        text(x + 32, ry + 34, 170, 14, Qt::AlignLeft, RARITY_NAMES[pl.load[wi].rarity], qc(rcol), 9, 700, false);
+        text(x + 32, ry + 48, 170, 14, Qt::AlignLeft,
+             isMelee(wi) ? QString("DMG %1  REACH %2").arg(effectiveDamage(wi)).arg(d.reach, 0, 'f', 1)
+                         : QString("DMG %1  MAG %2  RCL %3").arg(effectiveDamage(wi)).arg(usesAmmo(wi) ? QString::number(effectiveMagSize(wi)) : QString("--")).arg(effectiveRecoil(wi), 0, 'f', 2),
+             QColor(200, 210, 220), 9, 600, false);
+        // attachment slots: what's fitted
+        int ax = x + 206;
+        for (int a = 0; a < AT_COUNT; a++) {
+            int bx = ax + (a % 3) * 106, by = ry + 6 + (a / 3) * 31;
+            bool fits = false;
+            for (int o = 1; o < ATT_OPTIONS[a]; o++) fits |= attachmentFits(wi, a, o);
+            int o = pl.load[wi].att[a];
+            m_cv.blendRect(bx, by, 100, 27, withAlpha(o ? 0xFF1C3A4A : 0xFF141920, fits ? 210 : 90));
+            text(bx, by + 1, 100, 11, Qt::AlignCenter, ATT_SLOT_NAMES[a], QColor(120, 130, 140), 7, 800, false);
+            text(bx, by + 12, 100, 13, Qt::AlignCenter, fits ? QString(ATT_NAMES[a][o]) : QString("N/A"),
+                 o ? QColor(120, 220, 255) : fits ? QColor(170, 175, 180) : QColor(70, 75, 80), 8, 700, false);
         }
     }
 
@@ -949,13 +1063,13 @@ void MainWindow::panel(int x, int y, int w, int h, bool selected, uint32_t accen
 void MainWindow::renderMenuBackdrop()
 {
     GameState saved = m_gs;
-    float savedPitch = m_pitch, savedFov = m_adsFOVMult, savedFoot = m_footZ;
+    float savedPitch = m_pitch, savedFov = m_adsFOVMult, savedFoot = m_gs.player.footZ;
     m_gs = GameState{};
     Player &pl = m_gs.player;
     pl.posX = m_parsed[m_mapChoice].camX; pl.posY = m_parsed[m_mapChoice].camY;
     pl.dirX = std::cos(m_menuCamAng); pl.dirY = std::sin(m_menuCamAng);
-    pl.planeX = -pl.dirY * 0.66f; pl.planeY = pl.dirX * 0.66f;
-    m_pitch = 0.04f; m_adsFOVMult = 1.f; m_footZ = floorH(pl.posX, pl.posY) + 0.15f;
+    pl.planeX = -pl.dirY * m_planeLen; pl.planeY = pl.dirX * m_planeLen;
+    m_pitch = 0.04f; m_adsFOVMult = 1.f; m_gs.player.footZ = floorH(pl.posX, pl.posY) + 0.15f;
     // A few soldiers standing around for atmosphere
     const float ring[4][2] = { {3.2f, 0.4f}, {-2.6f, 2.4f}, {1.6f, -3.0f}, {-3.4f, -1.5f} };
     for (int i = 0; i < 4; i++) {
@@ -966,7 +1080,7 @@ void MainWindow::renderMenuBackdrop()
     }
     computeView();
     renderTerrain(); renderSky(); renderSprites(); renderLensFlare();
-    m_gs = saved; m_pitch = savedPitch; m_adsFOVMult = savedFov; m_footZ = savedFoot;
+    m_gs = saved; m_pitch = savedPitch; m_adsFOVMult = savedFov; m_gs.player.footZ = savedFoot;
 
     // Darken: left-to-right gradient + bottom fade + vignette
     for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
@@ -1005,10 +1119,10 @@ void MainWindow::renderMenu()
     text(70, 182, 520, 30, Qt::AlignLeft | Qt::AlignVCenter, "T A C T I C A L   S H O O T E R", qc(AMBER), 18, 700);
     text(70, 212, 520, 18, Qt::AlignLeft, "Every pixel is computed on the CPU  -  pure software rasterization", QColor(170, 175, 180), 12, 500);
 
-    const char *opts[3] = { "NEW GAME", "DEBUG RANGE", "EXIT" };
-    for (int i = 0; i < 3; i++) {
+    const char *opts[5] = { "NEW GAME", "ARSENAL", "SETTINGS", "FIRING RANGE", "EXIT" };
+    for (int i = 0; i < 5; i++) {
         bool sel = m_menuCursor == i;
-        int x = 48, y = 270 + i * 54, w = 300, h = 46;
+        int x = 48, y = 250 + i * 50, w = 300, h = 44;
         m_menuRects.push_back({x, y, w, h, i});
         if (sel) {
             m_cv.hGrad(x, y, w, h, withAlpha(AMBER, 70), withAlpha(AMBER, 0));
@@ -1019,17 +1133,18 @@ void MainWindow::renderMenu()
     }
 
     // Controls card
-    const int cx = W - 300, cy = 250, cw = 270, ch = 270;
+    const int cx = W - 300, cy = 244, cw = 270, ch = 270;
     panel(cx, cy, cw, ch, false, AMBER);
     text(cx + 16, cy + 10, cw, 18, Qt::AlignLeft, "FIELD MANUAL", qc(AMBER), 13, 800, false);
-    const char *rows[][2] = { {"WASD", "Move"}, {"MOUSE", "Free-aim crosshair"}, {"LMB / F", "Fire"}, {"RMB / TAB", "Aim / scope"},
-                              {"WHEEL", "Scope zoom (rifle)"}, {"R", "Reload"}, {"1  2  3", "Switch weapon"}, {"SHIFT", "Sprint / hold breath"},
-                              {"SPACE", "Jump (ledges, acid)"}, {"E", "Door / search walls"}, {"V  /  C", "Aim mode / recentre"} };
-    for (int i = 0; i < 11; i++) {
-        int ry = cy + 36 + i * 20;
+    const char *rows[][2] = { {"WASD", "Move"}, {"LMB / F", "Fire (hold: charge)"}, {"RMB / TAB", "Aim / scope"},
+                              {"1 2 3 4", "Melee / sidearm / primaries"}, {"R", "Reload"}, {"Q", "Quick melee"}, {"G  /  T", "Throw (hold to cook) / cycle"},
+                              {"Z", "Use gadget"}, {"E", "Door / pick up / swap gun"}, {"V  /  X", "1st-3rd person / shoulder"},
+                              {"H", "Inspect weapon"}, {"SHIFT", "Sprint / hold breath"} };
+    for (int i = 0; i < 12; i++) {
+        int ry = cy + 30 + i * 19;
         m_cv.blendRect(cx + 16, ry + 2, 80, 16, withAlpha(0xFFFFFFFF, 20));
         text(cx + 16, ry + 2, 80, 16, Qt::AlignCenter, rows[i][0], QColor(235, 235, 235), 10, 800, false);
-        text(cx + 106, ry, cw - 116, 20, Qt::AlignLeft | Qt::AlignVCenter, rows[i][1], QColor(190, 190, 190), 12, 500, false);
+        text(cx + 106, ry, cw - 116, 20, Qt::AlignLeft | Qt::AlignVCenter, rows[i][1], QColor(190, 190, 190), 10, 500, false);
     }
     text(cx, cy + ch + 6, cw, 16, Qt::AlignCenter, "Headshots deal 2-3x damage", qc(AMBER), 12, 700);
 
@@ -1041,18 +1156,22 @@ void MainWindow::renderMenu()
 void MainWindow::renderMapSelect()
 {
     menuHeader("STEP 1 / 3", "SELECT DEPLOYMENT ZONE");
-    static const char *TAGS[3] = { "OVERCAST  |  2 SECRETS", "MIDDAY HILLS  |  1 SECRET", "DUSK  |  2 SECRETS" };
-    for (int i = 0; i < 3; i++) {
+    static const char *TAGS[MAP_COUNT] = { "OVERCAST  |  2 SECRETS", "MIDDAY HILLS  |  1 SECRET", "DUSK  |  2 SECRETS", "64x64  |  2 SECRETS" };
+    for (int i = 0; i < MAP_COUNT; i++) {
         bool sel = m_mapChoice == i;
-        int w = 232, h = 262, x = 30 + i * (w + 22), y = H - 34 - h - 22 - (sel ? 8 : 0);
+        int w = 178, h = 262, x = 26 + i * (w + 14), y = H - 34 - h - 22 - (sel ? 8 : 0);
         m_menuRects.push_back({x, y, w, h, i});
         panel(x, y, w, h, sel, AMBER);
         // top-down layout preview, tinted by theme
         const ParsedMap &pm = m_parsed[i];
-        const int ts = 3, px0 = x + (w - MAP_W * ts) / 2, py0 = y + 12;
-        uint32_t wallC = i == 0 ? rgb(140, 146, 140) : i == 1 ? rgb(200, 176, 130) : rgb(120, 110, 130);
-        uint32_t floorC = i == 0 ? rgb(40, 44, 42) : i == 1 ? rgb(52, 66, 36) : rgb(36, 30, 40);
-        for (int my = 0; my < MAP_H; my++) for (int mx = 0; mx < MAP_W; mx++) {
+        // preview scaled so every map fits a 120-pixel square (integer texel blocks)
+        const int ts = std::max(1, 120 / pm.w), pw = pm.w * ts, ph = pm.h * ts;
+        const int px0 = x + (w - pw) / 2, py0 = y + 12 + (120 - ph) / 2;
+        int th = MAP_THEME[i];
+        uint32_t wallC = th == 0 ? rgb(140, 146, 140) : th == 1 ? rgb(200, 176, 130) : rgb(120, 110, 130);
+        uint32_t floorC = th == 0 ? rgb(40, 44, 42) : th == 1 ? rgb(52, 66, 36) : rgb(36, 30, 40);
+        if (i == 3) floorC = rgb(64, 60, 34);
+        for (int my = 0; my < pm.h; my++) for (int mx = 0; mx < pm.w; mx++) {
             int t = pm.type[my][mx];
             uint32_t c = t == CELL_DOOR ? rgb(170, 110, 50) : t == CELL_SECRET ? wallC : t ? wallC
                        : pm.acid[my][mx] ? rgb(90, 190, 50) : scaleCol(floorC, 1.f + pm.plat[my][mx] * 0.9f);
@@ -1060,15 +1179,15 @@ void MainWindow::renderMapSelect()
         }
         m_cv.fillCircle(px0 + int(pm.spawnX * ts), py0 + int(pm.spawnY * ts), 2, AMBER);
         if (sel) {
-            int scan = py0 + int(std::fmod(m_time * 40.f, float(MAP_H * ts)));
-            m_cv.blendRect(px0, scan, MAP_W * ts, 2, withAlpha(AMBER, 120));
+            int scan = py0 + int(std::fmod(m_time * 40.f, float(ph)));
+            m_cv.blendRect(px0, scan, pw, 2, withAlpha(AMBER, 120));
         }
-        text(x, y + 136, w, 30, Qt::AlignCenter, MAP_NAMES[i], sel ? QColor(255, 255, 255) : QColor(200, 200, 200), 22, 900);
+        text(x, y + 136, w, 30, Qt::AlignCenter, MAP_NAMES[i], sel ? QColor(255, 255, 255) : QColor(200, 200, 200), 20, 900);
         text(x, y + 164, w, 16, Qt::AlignCenter, TAGS[i], qc(sel ? AMBER : AMBER_DIM), 11, 800, false);
         text(x + 14, y + 184, w - 28, 50, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, MAP_DESCS[i], QColor(180, 180, 180), 12, 500, false);
         text(x, y + h - 22, w, 16, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(130, 130, 130), 11, 700, false);
     }
-    menuFooter("LEFT/RIGHT browse   ENTER or 1-3 select   ESC back");
+    menuFooter("LEFT/RIGHT browse   ENTER or 1-4 select   ESC back");
 }
 
 void MainWindow::renderDiffSelect()

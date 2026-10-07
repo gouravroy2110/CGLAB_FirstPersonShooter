@@ -7,7 +7,19 @@
 
 ---
 
-## What's new in this version
+## Latest update: engine groundwork, third person, full arsenal, new UI
+
+| Area | What changed |
+|---|---|
+| **Performance** | The terrain ray-march runs on **all CPU cores**: screen columns are independent, so they are split into chunks and marched in parallel (`parallel.h`, QtConcurrent). Terrain 8.9 ms → 1.6 ms, whole frame 15.7 ms → ~6.5 ms |
+| **Engine structure** | The map model is now a standalone **`World`** class (no Qt) — grid, heightfield, doors, light map, decals, collision, line of sight. One **`stepMovement()`** moves every body from an **`InputCmd`**, so the player, squad bots and (later) network players share the same physics |
+| **Bigger maps** | Map size is set at load time (no more fixed 40×40). New **FRONTIER** map, **64×64**: village, canyon, acid marsh with stepping stones, hill plateau, central fort with a watchtower, two secret vaults |
+| **Third person** | **V** switches first ↔ third person. Over-the-shoulder camera on a boom that **pulls in when a wall is behind you** (ray-marched against the heightfield), **X** swaps shoulder, aiming pulls the camera closer. Shots leave the **gun muzzle** and converge on the crosshair; a wall between gun and target stops the round. Your body is a **3D soldier model** |
+| **Squad bots** | 0–3 AI teammates (Settings) that follow you in formation, pick targets, strafe and fire; hostiles target whoever is nearest and visible. Name tags, health bars and blue minimap dots |
+| **Arsenal** | **25 weapons** in one data table, **5 throwables**, **5 gadgets**, **6 attachment slots**, **5 rarity tiers** — see *Arsenal* below |
+| **UI** | Large text smoothed with **Scale2x / Scale3x** pixel-art upscaling; new main menu (New Game · Arsenal · Settings · Firing Range · Exit); **Arsenal** screen with a rotating 3D model of every gun and stat bars; **Settings** (sensitivity, field of view, volume, camera, free aim, squad, crosshair colour, FPS) saved between runs; damage arcs that keep pointing at the attacker while you turn; **kill cam** replaying your death from the killer's eyes |
+
+## Previous version
 
 | Area | Before | Now |
 |---|---|---|
@@ -37,60 +49,66 @@
 |---|---|
 | **W / S / A / D** | Move / strafe |
 | **Shift** | Sprint (drains stamina) — or **hold breath** while scoped |
-| **Mouse** | **Free-aim crosshair** — moves freely inside a dead-zone; pushing past its edge turns / tilts the camera |
-| **LMB / F** | Fire / Slash (the carbine is fully automatic) |
-| **RMB / Tab** | Aim down sights — reflex sight (pistol/carbine), holographic sight (shotgun), **ACOG 3× optical scope** (carbine with optics upgrade) |
-| **Mouse wheel** | **Raster magnifier** 1×→32× around the cursor (menus) or crosshair (in game): every framebuffer pixel becomes a box, with a pixel grid and a coordinate/colour readout. |
-| **R** | Reload · resume (paused) · redeploy (game over) |
-| **1 / 2 / 3 / 4** | Knife / Pistol / Shotgun / Carbine (once picked up) |
-| **U** | **Field Armory** — inspect weapon stats, attachment slots, and upgrade status |
-| **9** | **Debug Weapon Range** — toggle all attachments across all weapons |
+| **Mouse** | **Free-aim crosshair** — moves inside a dead-zone; pushing past its edge turns / tilts the camera |
+| **LMB / F** | Fire · hold for automatics, bursts, beams and **charge weapons** (release to fire) · hold the revolver from the hip to **fan-fire** |
+| **RMB / Tab** | Aim down sights / scope (aim speed depends on the gun) |
+| **Mouse wheel** | Scope magnification while scoped · otherwise the **raster magnifier** 1×→32× |
+| **1 / 2 / 3 / 4** | Melee · sidearm · primary · second primary |
+| **Q** | **Quick melee** without switching |
+| **R** | Reload (shotguns load **one shell at a time** — fire to stop) · resume (paused) · redeploy (game over) |
+| **G** | Throw — **hold to cook** a frag, a dotted arc shows where it lands · **T** cycles throwable |
+| **Z** | Use gadget (turret, medkit station, radar, grapple, jetpack) |
+| **E** | Open door · search walls · **pick up / swap** the gun under you |
+| **H** | **Inspect** the weapon (rarity and stats) |
+| **V / X** | First ↔ third person · swap shoulder |
+| **U** | **Field Armory** — your 4 slots, rarity, attachments, throwables, gadget |
+| **B** | Free-aim ↔ classic centred crosshair |
+| **C** | Re-centre crosshair and view |
 | **Space** | Jump — onto ledges, out of pits, across acid |
 | **N** | Sound on / off |
-| **E** | Open a door · **inspect a suspicious wall** for a secret passage |
-| **V** | Toggle free-aim ↔ classic centred crosshair |
-| **C** | Re-centre crosshair and view |
 | **← / →** | Turn |
 | **[ / ]** | Pixel-block size 1–8 (raster proof) |
 | **ESC** | Pause (ESC again quits) · **M** main menu · **Q** quit |
 
-Menus work with keyboard (arrows / 1-4 / Enter / Esc / Space) **and mouse** (hover + click, right-click = back).
+Menus work with keyboard (arrows / 1-5 / Enter / Esc / Space) **and mouse** (hover + click, right-click = back).
 
 ---
 
 ## What's in the game
 
-### Combat & Arsenal
-- **Pixel-perfect hitscan.** A shot resolves exactly what is drawn under the crosshair pixel: walls (with their real heights — you can shoot over a wall top), the floor, and enemy sprites tested **texel by texel** against a per-texel hit mask.
-- **Headshots & Criticals.** The enemy sprite atlas carries a mask of `HEAD / BODY / LIMB` per texel. Damage multipliers: head **×3.0** pistol, **×2.0** shotgun, **×2.5** carbine, **×3.5** knife criticals; limbs ×0.7–0.75. A pistol headshot one-taps a level-1 hostile on Easy/Medium.
-- **Four weapons in arsenal**:
-  - **Slot 1 — Combat Knife**: Fast tactical melee slashes and lunges (90 base damage, alternate slash/stab animations, stagger, 3.5× headshot multiplier).
-  - **Slot 2 — M9 Tactical Pistol**: Accurate semi-automatic sidearm with fast handling and reflex red dot sight.
-  - **Slot 3 — M870 Tactical Shotgun**: Overhauled heavy pump shotgun firing 8 high-velocity pellets (24 damage per pellet, up to 192 point-blank damage, snappy 0.58s pump cycle delay, extended 18m range falloff, and tight choke).
-  - **Slot 4 — M4 Automatic Carbine**: Fully automatic assault rifle equipped standard with a Reflex Red Dot Sight, upgradable into a designated marksman rifle via the ACOG 3× Optical Scope attachment.
-- **Full Inventory Ammo Replenishment**: Upon clearing any combat zone and advancing to the next tier, reserve ammunition is replenished for **all owned weapons** in the operative's loadout.
-- Feedback: crosshair turns red (with a ring when over a head), target panel shows `HEAD ×3.0 / BODY / LIMB`, floating damage numbers (red for headshots), hit / headshot / kill markers, a `HEADSHOT` banner with a raster skull, kill-feed entries and bonus score.
-- **Tracers** fly along every resolved shot; impacts throw sparks, debris and dust; floor hits leave scorch marks; blood soaks into the floor.
+### Arsenal
+Every gun is one row of a data table (`weapons.cpp`): damage, fire rate, magazine, reload style, recoil pattern, damage falloff, projectile type, splash, penetration, status effect, heat, charge time, mobility, sound and which 3D model to draw. You carry **4 slots** (melee, sidearm, two primaries). A full slot means **[E]** swaps — the old gun is dropped with its ammo and attachments.
 
-### Modular Weapon Upgrades & Field Armory
-- **4 Modular Upgrade Slots per Weapon**:
-  - **Extended Magazines**: Increases magazine capacity by +50% to +66% (M9: 15 → 22 rounds, M870: 8 → 12 shells, M4: 30 → 45 rounds).
-  - **Recoil Compensator & Tactical Choke**: Reduces vertical recoil climb by 48% and narrows hipfire/ADS pellet spread by 42%.
-  - **High-Caliber Armor Piercing (AP) Ammo**: Boosts bullet and pellet damage output by +42% to +45% across all firearms.
-  - **Special Modules / Optics**:
-    - **M4 Carbine**: Unlockable **ACOG 3× Optical Scope** transforming the weapon from red dot into a scoped rifle.
-    - **M870 Shotgun**: **Rapid Cycling Pump Module** reducing cycling delay by 35%.
-    - **M9 Pistol**: **Hair Trigger Assembly** reducing semi-automatic delay by 35%.
-    - **Combat Knife**: **Serrated Stiletto Blade** granting lethal 3.5× headshot critical damage.
-- **Field Armory Overlay (`[U]`)**: Press `[U]` at any time during gameplay to view detailed operative weapon stats, installed attachment modules, and upgrade status across all slots.
-- **HUD Attachment Badges**: The bottom weapon HUD badge displays active attachment abbreviations (`[MAG]`, `[COMP]`, `[AP]`, `[ACOG]`, `[PUMP]`, `[TRIG]`).
-- **Debug Weapon Range (`[9]`)**: Press `[9]` in-game to instantly toggle all attachments across all weapons for testing and tuning.
+| Class | Weapons | What makes them different |
+|---|---|---|
+| Pistols | M9, **.44 Magnum revolver**, **MP-9 machine pistol** | Revolver hammer cocks between shots, **fan-fire** from the hip; machine pistol full auto |
+| SMG | **Vector SMG**, **P90 PDW** | High fire rate, low recoil, **fast aim-down-sights** |
+| Rifles | M4, **M16 burst**, **SCAR-H battle rifle** (semi, heavy), **AUG bullpup** (built-in optic) | Own **recoil pattern** each (vertical, S-curve, right drift, heavy); rounds **punch through doors** |
+| Shotguns | M870 pump, **AA-12 auto**, **sawn-off double barrel** | Pellets, range falloff, **shell-by-shell reload** you can interrupt |
+| LMG | **M249 SAW** | 100-round belt, long reload, **bipod**: aim while still against cover → recoil ×0.35 |
+| Sniper / DMR | **AWM bolt-action**, **MK14 DMR** | Full-screen scope, hold breath, **ballistic bullet with drop** (sniper), bolt animation |
+| Launchers | **RPG-7**, **M32 grenade launcher** | Rocket with smoke trail; **bouncing timed grenades**; explosions with radial damage, line of sight and **craters** (the heightfield is dented and the light map re-baked) |
+| Energy | **Plasma rifle**, **Arc gun**, **Railgun**, **Flamethrower** | Charged plasma bolts + **heat / overheat**; **chain lightning** jumping between hostiles (shock = slow); railgun **pierces every wall and enemy** on the line; flame cone that **sets hostiles on fire** |
+| Melee | Knife, **machete**, **stun baton**, **fire axe** | Machete hits several in an arc, baton **stuns**, axe **chops doors open**; hitting an unaware hostile is a **silent takedown** |
+
+- **Throwables** (G, hold to cook, T cycles): **frag**, **smoke** (blocks hostile sight lines and greys out your view inside it), **flashbang** (stuns hostiles, white-out + ear ringing for you), **molotov** (burning ground), **claymore mine**. Throws land where you aim (the lob is solved for the crosshair point) and bounce on the heightfield.
+- **Gadgets** (Z, with cooldowns): **sentry turret**, **medkit station**, **radar ping** (hostiles marked through walls), **grappling hook** (pulls you onto a ledge), **jetpack burst**.
+- **Attachments** — optics (red dot, holo, 2×, 4×, 8×), muzzle (suppressor: quiet and doesn't alert distant hostiles / compensator), extended magazine, underbarrel (foregrip / **laser sight** with a visible beam), tactical stock, ammo (armour-piercing, incendiary, hollow-point). They are real 3D parts on the gun.
+- **Rarity** — common, uncommon, rare, epic, legendary: more damage, less recoil, bigger magazines, coloured name and loot beam.
+- **Feel** — per-gun recoil patterns and camera kick, **bloom** (spread grows with sustained fire), sprint-to-fire delay, dry-fire click, reload cancel, tracers, brass and shells.
+- **Firing range** (main menu): every gun and throwable laid out on the floor to try.
+
+### Combat feedback
+- **Pixel-perfect hitscan.** A shot resolves exactly what is drawn under the crosshair pixel: walls (with their real heights), the floor, and enemy sprites tested **texel by texel** against a `HEAD / BODY / LIMB` mask. Headshots ×2–3, limbs reduced.
+- Crosshair turns red over a hostile (ring over a head), target panel, floating damage numbers, hit / headshot / kill markers, kill feed, tracers, sparks, scorch marks and blood decals.
+- **Damage arcs** remember where each hit came from and keep pointing at the attacker while you turn (up to six at once).
+- **Kill cam**: when you die, the last 2.5 seconds replay at 60% speed from the shooter's eyes, with your body drawn as the 3D soldier. Any key skips it.
 
 ### Zone objectives, Commander boss & loot
 - **A zone is cleared only when every enemy on the map is dead** — patrols, vault guards behind secret walls, reinforcements and the Commander. The HUD shows *HOSTILES REMAINING*; when 3 or fewer are left they are marked on the minimap and compass, and if the last ones are hidden in a vault the HUD says to search the walls.
 - Reinforcements are limited per zone (none in zone 1, up to 5 later), so a zone can always be finished.
 - Every zone has a **Commander** boss: a larger (1.35×) elite with ~3.6× health, its own health bar and a +1000 score bounty.
-- **Bosses and elite guards always drop a gun** (one you don't own yet when possible) marked by a golden light beam and shown on the compass; the Commander also drops a medkit and ammo.
+- **Bosses and elite guards always drop a gun** (one you don't carry yet when possible), rolled at a higher tier and rarity — the Commander's drop is at least **epic** — marked by a coloured light beam; the Commander also drops a medkit, ammo and a frag. Ordinary hostiles sometimes drop ammo, throwables or a gun suited to the zone.
 
 ### Zone report, coins & field shop
 - Clearing a zone first shows a **ZONE REPORT** checklist that ticks in row by row and pays **coins** (and bonus score):
@@ -106,20 +124,21 @@ Menus work with keyboard (arrows / 1-4 / Enter / Esc / Space) **and mouse** (hov
 | Blitz — cleared within par time | 30 coins, 300 × zone pts |
 | Commander down | 60 coins, 600 × zone pts |
 
-- Coins are shown in the HUD and spent in the **field shop** on the upgrade screen: `[7]` ammo resupply (40), `[8]` medkit +50 HP (35), `[9]` reroll the upgrade cards (25).
+- Coins are shown in the HUD and spent in the **field shop** on the upgrade screen: `[7]` ammo resupply + a frag (40), `[8]` medkit +50 HP (35), `[9]` reroll the upgrade cards (25).
 
 ### Zone Clear: upgrade + loadout screen
 - After the report: **1 choose one of 3 upgrade cards → 2 choose the weapon to deploy with → 3 deploy**.
-- A gun you don't own yet is offered as an **unlock card** (e.g. *M4 CARBINE: FIELD ISSUE*). Picking any card also selects that gun in the *Deploy with* row, and **you start the next zone holding the chosen gun, loaded**.
+- Cards: a **new gun** for your zone (with a rarity roll), an **attachment** for a gun you carry, a **rarity refinement**, a **munitions crate** (throwables) or a **new gadget**. Picking a gun card also selects that gun in the *Deploy with* row, and **you start the next zone holding the chosen gun, loaded**.
 - Pick a card with `1` `2` `3` or a click (you can change your mind), choose the weapon with `TAB` / arrows or a click, then press `ENTER` or click **DEPLOY**. A 60-second fallback timer only moves an idle game on.
 - The mouse is released on this screen, and input from the fight that cleared the zone is ignored for the first second, so a stray shot, jump or number key can't pick a card or skip the screen.
 
-### 3D first-person weapons
+### 3D weapons, soldiers and props
+- **Third person** shows your soldier as a 3D model (boxes for limbs, torso, vest, pack, helmet + the real gun model), walking and aiming with your crosshair; squad bots, weapon pickups, turrets, medkit stations, rockets, grenades and mines are 3D too — all drawn by the same triangle rasterizer (`raster3d.h`) against the world z-buffer, lit by the sun with the light-map shadow and fogged like the terrain.
 - Guns, the knife and the gloved hands are **real 3D models**: each side-profile polygon is extruded to its own thickness (barrel, receiver, scope, pump, grips…) and rendered with perspective, **back-face culling**, **Sutherland–Hodgman near-plane clipping**, flat **Lambert + Blinn specular** lighting and a **per-pixel z-buffer**. Forearms are 3D boxes.
 - Recoil, reload, sprint, swap, slide/pump and knife stab/slash animations are now 3D rotations (yaw / pitch / roll about the gun's own axes).
 
 ### Sound
-- **Every sound is synthesised in code at start-up** — no audio files, the same way no image files are used. Oscillators, filtered noise, envelopes, formant filters and a small room reverb build 52 effects (`audio.cpp`).
+- **Every sound is synthesised in code at start-up** — no audio files, the same way no image files are used. Oscillators, filtered noise, envelopes, formant filters and a small room reverb build **83 effects** (`audio.cpp`) — each new weapon has its own report (revolver, SMG, LMG, sniper with echo, DMR, double barrel, suppressed shots, rocket launch, grenade thump, explosion, plasma, arc crackle, railgun charge + crack, flamethrower), plus grenade pin and bounce, flashbang ear-ring, smoke hiss, fire, turret, radar ping, jetpack, grapple, takedown and inspect.
 - A real-time software mixer (`SoundEngine`, pulled by `QAudioSink`) plays overlapping voices with per-voice volume, stereo pan, pitch and delay; a soft clipper prevents distortion.
 - **Positional 3D audio**: enemy gunfire, impacts, doors and death cries are panned left/right by direction, fade with distance and are muffled behind walls.
 - **Distinct sounds for each feature**:
@@ -195,10 +214,12 @@ Everything visible is written into `m_pixels[y*W + x]` by our own code:
 | Sprites | Billboards standing on the terrain, per-pixel z-test, Bayer dither fade, contact shadows |
 | Tracers | Projected 3D line, perspective-correct depth test per pixel |
 | Weapon / hands | Edge-function triangle rasterizer with Gouraud shading |
+| 3D soldiers, pickups, turrets | Same triangle rasterizer, world camera frame, depth-tested against the terrain z-buffer |
+| Beams, plasma, flames | Jagged Bresenham polylines, additive glows, projected per frame |
 | Scope / sights | Per-pixel radial masks, rectangles, rings, Bresenham lines |
 | HUD / menus | Rect / gradient / triangle / ring / arc fills with alpha blending |
 | Textures & sprites | Baked texel-by-texel at start-up (noise, Voronoi, shaded primitives) |
-| Text | Own **bitmap pixel font** (`pixelfont.h`, hand-drawn 5×7 glyphs) blitted as pixel blocks — no vector fonts |
+| Text | Own **bitmap pixel font** (`pixelfont.h`, hand-drawn 5×7 glyphs) blitted as pixel blocks — large text uses **Scale2x / Scale3x** upscaled copies; no vector fonts |
 | Window scaling / zoom | Own nearest-neighbour upscale + pixel-grid overlay (`composeDisplay`) |
 
 **No vector graphics are used anywhere.** No QPainter shapes, paths, pens, brushes or fonts, no OpenGL. Polygons (guns, hands, HUD shapes) are vertex lists filled by our own triangle rasterizer. Qt's only role is copying the finished image to the window **1:1**.
@@ -230,6 +251,17 @@ Everything visible is written into `m_pixels[y*W + x]` by our own code:
 | Sprite rotation | Inverse-mapped nearest-neighbour rotation (death frames) |
 | Dissolve | 4×4 Bayer ordered dither |
 | Blending | Source-over alpha and additive light |
+| Parallel rendering | Screen columns of the terrain march split across CPU cores (QtConcurrent) |
+| Large text | **Scale2x / EPX** and **Scale3x / AdvMAME3x** pixel-art upscaling of the glyph bitmaps |
+| Third-person camera | Boom collision by marching the segment head → camera against the heightfield |
+| Shot convergence | Crosshair ray from the camera finds the target; the round is traced muzzle → target point |
+| Ballistics | Explicit Euler integration with gravity, sub-stepped against terrain and enemy cylinders |
+| Grenade bounce | Reflection off wall faces / ground with restitution and rolling friction |
+| Throw solve | Projectile motion solved for a landing point: v_z = (Δz + ½gt²)/t |
+| Explosions / smoke | Radial falloff with line of sight; smoke = sphere-segment intersection on sight lines |
+| Craters | Heightfield vertices lowered locally, light map re-baked for the region |
+| Chain lightning | Nearest-neighbour hops with line-of-sight checks |
+| Kill cam | Ring buffer of game-state snapshots replayed through the renderer from another camera |
 
 ---
 
@@ -239,18 +271,31 @@ Everything visible is written into `m_pixels[y*W + x]` by our own code:
 fps_game/
 ├── fps_game.pro        Qt project file
 ├── main.cpp            Entry point (also: --snapshot <dir> renders test scenes to PNG)
-├── game.h              Maps, configs, weapons, entity structs
-├── pixelfont.h         Bitmap 5x7 pixel font (glyph table + blitter + word wrap)
+├── game.h              Maps, configs, entity structs (player, actors, enemies, projectiles)
+├── weapons.h/.cpp      The arsenal tables: 25 weapons, throwables, gadgets, attachments, rarity
+├── world.h             World class: grid, heightfield, doors, light map, decals, collision, LOS
+├── sim.h/.cpp          InputCmd + stepMovement(): shared movement for every actor
+├── parallel.h          Column-parallel helper for the terrain pass
+├── raster3d.h          Shared 3D triangle rasterizer (view model + world models)
+├── gunbuild.h/.cpp     Kit-bashed 3D profiles for the extended arsenal + attachment mounts
+├── pixelfont.h         Bitmap 5x7 pixel font (glyph table, Scale2x/3x copies, blitter, word wrap)
 ├── raster.h            Canvas: pixel/blend/add, rects, gradients, circles, glows,
 │                       rings/arcs, Bresenham, triangle rasterizer, polygons, noise
 ├── gunmodels.h         Weapon + glove polygons (view model, HUD icon, pickups)
 ├── assets.h/.cpp       Procedural sky, floors, walls (+mips), soldier painter,
 │                       enemy animation atlas, pickup sprites, theme table
-├── maps.h              The three 40x40 ASCII layouts (legend in the file header)
-├── mainwindow.h/.cpp   Game loop, logic, AI, physics, input, free aim
-├── world.cpp           Heightfield, light-map baking, doors & secrets, bullet-hole
+├── maps.h              ASCII layouts: three 40x40 maps + FRONTIER 64x64 (legend in the file header)
+├── mainwindow.h/.cpp   Game loop, enemy AI, zones, input, free aim, third-person camera, tests
+├── combat.cpp          Firing, projectiles, explosions, melee, throwables, gadgets, pickups
+├── upgrades.cpp        Zone-clear upgrade cards
+├── actors.cpp          Squad bots (AI teammates driven by InputCmd)
+├── killcam.cpp         Death replay from the killer's view
+├── menus.cpp           Settings (saved) and the Arsenal browser
+├── world.cpp           World methods + heightfield, light-map baking, doors & secrets, bullet-hole
 │                       decals, 3D hitscan, line of sight, movement checks
 ├── render_world.cpp    Terrain + walls ray-march, sky, lens flare, sprites, tracers, particles
+├── render_actors.cpp   3D soldiers, weapon pickups, turrets, medkit stations, projectiles
+├── render_fx.cpp       Plasma, chain lightning, rail trail, radar marks, smoke, flash / blast light
 ├── render_weapon.cpp   First-person gun + hands, muzzle flash, casings, sights, scope
 ├── render_hud.cpp      Frame composition, post FX, HUD, menus, intermission, pause / game over
 └── audio.h/.cpp        Procedural sound synthesis + real-time stereo mixer
@@ -270,7 +315,12 @@ qmake fps_game.pro -spec win32-g++
 mingw32-make -j4
 ```
 
-Only the Qt Widgets module is required.
+Qt modules used: Widgets, Multimedia (sound) and Concurrent (multi-core terrain pass).
+
+Run the automated checks (renders test scenes to PNG and writes `log.txt`):
+```powershell
+.\release\fps_game.exe --snapshot out_dir
+```
 
 ---
 

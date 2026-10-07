@@ -8,30 +8,46 @@
 #include <algorithm>
 
 static const int W = 800, H = 600;
-static const int MAP_W = 40, MAP_H = 40;
+
+// Row-major 2D array sized at run time; g[y][x] indexing like a C array
+template <class T>
+struct Grid {
+    int w = 0, h = 0;
+    std::vector<T> v;
+    void resize(int nw, int nh, T init = T()) { w = nw; h = nh; v.assign(size_t(nw) * nh, init); }
+    T       *operator[](int y)       { return v.data() + size_t(y) * w; }
+    const T *operator[](int y) const { return v.data() + size_t(y) * w; }
+};
 
 #include "maps.h"
 
 // --- Map types & parsing -------------------------------------------------------
 enum CellType { CELL_FLOOR=0, CELL_STONE=1, CELL_BRICK=2, CELL_PILLAR=3, CELL_DOOR=4, CELL_SECRET=5 };
 
-static const char* const MAP_NAMES[3] = { "DUNGEON", "ARENA", "CRYPT" };
-static const char* const MAP_DESCS[3] = {
+static const int MAP_COUNT = 4;
+static const char* const MAP_NAMES[MAP_COUNT] = { "DUNGEON", "ARENA", "CRYPT", "FRONTIER" };
+static const char* const MAP_DESCS[MAP_COUNT] = {
     "Rooms behind doors, an acid vault and two hidden chambers.",
     "Rolling hills, a fortified mesa and a hidden bunker.",
     "Sealed crypts, an altar ledge and an ossuary across the acid.",
+    "A 64x64 valley: village, canyon, acid marsh and a central fort.",
 };
-static const char* const* const ALL_LAYOUTS[3] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT };
-static const float TERRAIN_AMP[3] = { 0.25f, 0.75f, 0.35f };   // rolling-hill amplitude
+static const char* const* const ALL_LAYOUTS[MAP_COUNT] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT, FRONTIER_LAYOUT };
+static const int LAYOUT_ROWS[MAP_COUNT] = {
+    int(sizeof(DUNGEON_LAYOUT) / sizeof(DUNGEON_LAYOUT[0])), int(sizeof(ARENA_LAYOUT) / sizeof(ARENA_LAYOUT[0])),
+    int(sizeof(CRYPT_LAYOUT) / sizeof(CRYPT_LAYOUT[0])), int(sizeof(FRONTIER_LAYOUT) / sizeof(FRONTIER_LAYOUT[0])) };
+static const float TERRAIN_AMP[MAP_COUNT] = { 0.25f, 0.75f, 0.35f, 0.9f };   // rolling-hill amplitude
+static const int   MAP_THEME[MAP_COUNT]   = { 0, 1, 2, 1 };                // sky / textures / light per map
 
 // World height of each wall type above its base
 static const float WALL_HEIGHT[6] = { 0.f, 1.15f, 1.0f, 1.5f, 1.0f, 1.15f };
 
 struct Marker { char kind; float x, y; };
 struct ParsedMap {
-    int   type[MAP_H][MAP_W];
-    float plat[MAP_H][MAP_W];     // ledge / pit offset added to the rolling terrain
-    bool  acid[MAP_H][MAP_W];
+    int   w = 0, h = 0;
+    Grid<int>     type;
+    Grid<float>   plat;           // ledge / pit offset added to the rolling terrain
+    Grid<uint8_t> acid;
     std::vector<Marker> markers;
     float spawnX = 1.5f, spawnY = 1.5f, camX = 2.5f, camY = 2.5f;
 };
@@ -41,10 +57,14 @@ inline float platForChar(char c) {
     switch (c) { case '-': return 0.25f; case '^': return 0.5f; case '=': return 1.0f; case 'v': return -0.6f; case '~': return -0.5f; default: return 0.f; }
 }
 
-inline void parseLayout(const char *const *rows, ParsedMap &m)
+inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
 {
     m.markers.clear();
-    for (int y = 0; y < MAP_H; y++) for (int x = 0; x < MAP_W; x++) {
+    m.h = nRows;
+    m.w = 0;
+    while (rows[0][m.w]) m.w++;
+    m.type.resize(m.w, m.h); m.plat.resize(m.w, m.h); m.acid.resize(m.w, m.h);
+    for (int y = 0; y < m.h; y++) for (int x = 0; x < m.w; x++) {
         char c = rows[y][x];
         int t = CELL_FLOOR;
         switch (c) { case '#': t = CELL_STONE; break; case 'B': t = CELL_BRICK; break; case 'P': t = CELL_PILLAR; break;
@@ -73,7 +93,7 @@ inline void parseLayout(const char *const *rows, ParsedMap &m)
 
 // --- Enums -------------------------------------------------------------------
 enum BulletOwner  { PLAYER_SHOT, ENEMY_SHOT };
-enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING };
+enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING, SCR_SETTINGS, SCR_ARSENAL };
 enum CharClass    { CLS_ASSAULT=0, CLS_SCOUT=1, CLS_TANK=2 };
 enum Difficulty   { DIFF_EASY=0, DIFF_MEDIUM=1, DIFF_HARD=2 };
 enum HitPart      { PART_NONE=0, PART_BODY=1, PART_HEAD=2, PART_LIMB=3 };
@@ -108,33 +128,11 @@ static const CharProfile CHAR_PROFILES[3] = {
     {"TANK",   "HP: 200    Speed: 0.7x","Ammo: 40   Stamina:  80","Damage reduction: 50%",  200,20,0.7f, 80.f,0.5f,0xFF5A4526,0xFF6E5530,0xFFC49A74},
 };
 
-// --- Weapons -----------------------------------------------------------------
-enum WeaponId { WPN_KNIFE=0, WPN_PISTOL=1, WPN_SHOTGUN=2, WPN_RIFLE=3, WPN_COUNT=4 };
-struct WeaponDef {
-    const char *name, *shortName;
-    int   damage;        // per pellet / strike, body hit
-    float headMult;      // headshot multiplier
-    float limbMult;      // arm / leg multiplier
-    float fireDelay;     // seconds between shots
-    int   pellets;
-    float spread;        // hip-fire spread, in screen-fraction units
-    int   magSize;
-    float reloadTime;
-    float recoil;        // view-kick strength
-    bool  automatic;
-    float adsFov;        // FOV multiplier when aiming (smaller = more zoom)
-    bool  scope;         // true = full-screen magnified optic, false = reflex sight
-    int   maxReserve;
-};
-static const WeaponDef WEAPONS[WPN_COUNT] = {
-    {"COMBAT KNIFE",  "KNIFE",   55, 2.5f, 0.80f, 0.35f, 1, 0.000f,  0, 0.00f, 0.1f, true,  1.00f, false,   0},
-    {"M9 SIDEARM",    "PISTOL",  28, 3.0f, 0.75f, 0.24f, 1, 0.012f, 12, 1.25f, 1.0f, false, 0.70f, false,  96},
-    {"M870 SHOTGUN",  "SHOTGUN", 24, 2.0f, 0.75f, 0.58f, 8, 0.045f,  6, 2.00f, 2.0f, false, 0.80f, false,  48},
-    {"M4 CARBINE",    "RIFLE",   22, 2.5f, 0.70f, 0.10f, 1, 0.016f, 30, 1.90f, 0.8f, true,  0.65f, false,  180},
-};
+// --- Weapons: the arsenal table lives in weapons.h ----------------------------
+#include "weapons.h"
 
 // --- Particles ---------------------------------------------------------------
-enum ParticleType { PT_BLOOD, PT_SPARK, PT_DUST, PT_SMOKE, PT_DEBRIS };
+enum ParticleType { PT_BLOOD, PT_SPARK, PT_DUST, PT_SMOKE, PT_DEBRIS, PT_FLAME };
 struct Particle {
     float x,y,z,vx,vy,vz,life,maxLife,size;
     uint32_t color;
@@ -143,8 +141,14 @@ struct Particle {
 
 // --- Pickups -----------------------------------------------------------------
 struct HealthKit { float x, y, bobPhase=0; bool active=true; bool emergency=false; };
-enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE, PICKUP_INTEL };
-struct WeaponPickup { float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; bool emergency=false; bool reward=false; };
+enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE, PICKUP_INTEL, PICKUP_WEAPON, PICKUP_THROW };
+struct WeaponPickup {
+    float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; bool emergency=false; bool reward=false;
+    int   weapon=-1;          // PICKUP_WEAPON: which gun
+    Loadout load;             // its rarity + attachments
+    int   mag=-1, reserve=-1; // a dropped gun keeps its ammo (-1 = fresh)
+    int   throwKind=0;        // PICKUP_THROW
+};
 
 // --- Player ------------------------------------------------------------------
 struct Player {
@@ -155,23 +159,63 @@ struct Player {
     // Horizontal movement velocity.
     // These values allow acceleration, friction and airborne momentum.
     float velX=0.f,velY=0.f;
+    // Vertical state: feet height, vertical speed, standing on the ground
+    float footZ=0.f,velZ=0.f;
+    bool  onGround=true;
 
     float bobPhase=0,attackCooldown=0,flashTimer=0,damageFlash=0;
     bool  adsMode=false,sprinting=false;
     float shakeY=0;
-    // Weapons
+    // Weapons: four inventory slots (melee, sidearm, two primaries)
     int   curWeapon=WPN_PISTOL;
-    bool  owned[WPN_COUNT]={true,true,false,false};
-    int   mag[WPN_COUNT]={0,12,0,0};
-    int   reserve[WPN_COUNT]={0,60,0,0};
+    int   slot[SLOT_COUNT]={WPN_KNIFE, WPN_PISTOL, -1, -1};
+    bool  owned[WPN_COUNT]={true,true};
+    int   mag[WPN_COUNT]={0,12};
+    int   reserve[WPN_COUNT]={0,60};
+    Loadout load[WPN_COUNT];   // attachments + rarity per gun
     float reloadTimer=0;     // >0 while reloading
     float switchTimer=0;     // >0 while swapping weapons
     bool  triggerHeld=false;
-    // Weapon Upgrades & Attachments:
-    bool  upgradeExtMag[WPN_COUNT]      = {false, false, false, false};
-    bool  upgradeCompensator[WPN_COUNT] = {false, false, false, false};
-    bool  upgradeAmmo[WPN_COUNT]        = {false, false, false, false};
-    bool  upgradeSpecial[WPN_COUNT]     = {false, false, false, false};
+    // Energy weapons, charge, bursts
+    float heat=0.f;          // 0..1; reaching 1 overheats
+    float overheatT=0.f;     // >0 while locked out
+    float charge=0.f;        // 0..1 for charge weapons
+    int   burstLeft=0;       // rounds still to fire in a burst
+    float burstT=0.f;
+    // Throwables and gadget
+    int   throwCount[TH_COUNT]={2,1,0,0,0};
+    int   throwSel=TH_FRAG;
+    int   gadget=GD_RADAR;
+    float gadgetCd=0.f;
+};
+
+// One tick of intent for one actor
+struct InputCmd {
+    float forward = 0.f;     // -1 back .. +1 forward
+    float strafe  = 0.f;     // -1 left .. +1 right
+    bool  sprint  = false;
+    bool  jump    = false;
+    bool  fire    = false;
+    bool  ads     = false;
+    float yaw     = 0.f;     // facing angle (radians)
+    int   seq     = 0;       // sequence number (for network replay later)
+};
+
+// Other actors in the match: squad bots now, remote players later
+enum ActorCtl { CTL_BOT = 0, CTL_REMOTE = 1 };
+struct Actor : Player {
+    int      id = 0;
+    int      team = 0;               // 0 = the local player's team
+    ActorCtl ctl = CTL_BOT;
+    char     name[16] = "";
+    bool     alive = true;
+    float    respawnT = 0.f;
+    float    hitFlash = 0.f, shootAnim = 0.f, walkPhase = 0.f;
+    int      kills = 0;
+    InputCmd cmd;
+    // bot brain
+    int      target = -1;            // enemy index being engaged
+    float    thinkT = 0.f, fireT = 0.f, aimErr = 0.f;
 };
 
 // --- Enemy -------------------------------------------------------------------
@@ -192,11 +236,37 @@ struct Enemy {
     float hpShow=0.f;             // seconds left to show the floating health bar
     bool  boss=false;             // zone commander: big, tough, drops a weapon
     float scale=1.f;              // sprite / hit-box size in world units
+    // Status effects
+    float burnT=0.f, burnAcc=0.f; // burning: damage over time
+    float shockT=0.f;             // shocked: slowed
+    float stunT=0.f;              // stunned / flashed: can't move or shoot
 };
+
+// --- Projectiles, throwables, area effects, deployables ------------------------
+enum ProjOwner { PO_PLAYER, PO_ACTOR, PO_TURRET };
+struct Projectile {
+    float x, y, z, vx, vy, vz;
+    ProjKind kind = PJ_ROCKET;
+    int   throwKind = -1;        // >= 0: a thrown grenade of this ThrowKind
+    ProjOwner owner = PO_PLAYER;
+    int   weapon = -1;
+    float life = 6.f, fuse = 0.f;
+    float damage = 0.f, splashR = 0.f, splashDmg = 0.f;
+    float gravity = 0.f;
+    int   bounces = 0;
+    bool  armed = false, alive = true;
+    bool  incendiary = false;
+};
+struct SmokeCloud { float x, y, z, r, life, maxLife; };
+struct FireZone   { float x, y, r, life; float tick = 0.f; };
+struct Turret     { float x, y, z, yaw = 0.f, life = 25.f, fireT = 0.f; int target = -1; float flash = 0.f; };
+struct MedStation { float x, y, z, life = 12.f; };
+// Short-lived beams drawn in the world: arc lightning, rail trail, laser sight
+struct Beam { float x0, y0, z0, x1, y1, z1, life, maxLife; uint32_t color; int kind; };
 
 // --- Projectiles -------------------------------------------------------------
 // Enemy rounds are slow glowing projectiles you can dodge.
-struct Bullet { float x,y,z,dx,dy,dz=0; float px=0,py=0,pz=0; BulletOwner owner=ENEMY_SHOT; bool alive=true; int damage=0; bool whizzed=false; };
+struct Bullet { float x,y,z,dx,dy,dz=0; float px=0,py=0,pz=0; BulletOwner owner=ENEMY_SHOT; bool alive=true; int damage=0; bool whizzed=false; int shooter=-1; };
 // Player rounds are hitscan; a tracer streak flies along the resolved path.
 struct Tracer { float x0,y0,z0, x1,y1,z1, t=0, len=1; };
 // Floating damage number
@@ -213,12 +283,19 @@ static const LevelCfg LEVEL_CFG[] = {
 struct GameState {
     Player player;
     std::vector<Enemy>     enemies;
+    std::vector<Actor>     actors;     // squad bots / other players (the local player is `player`)
     std::vector<Bullet>    bullets;
     std::vector<Tracer>    tracers;
     std::vector<Particle>  particles;
     std::vector<HealthKit> healthKits;
     std::vector<WeaponPickup> weaponPickups;
     std::vector<DamageNum> damageNums;
+    std::vector<Projectile> projectiles;
+    std::vector<SmokeCloud> smokes;
+    std::vector<FireZone>   fires;
+    std::vector<Turret>     turrets;
+    std::vector<MedStation> medStations;
+    std::vector<Beam>       beams;
     int   kills=0,killsThisLevel=0,killsNeeded=4,level=1,score=0,frameNum=0;
     int   headshots=0, shotsFired=0, shotsHit=0, secretsFound=0, secretsTotal=0;
     float levelTransTimer=0,enemyBulletSpeed=4.5f,enemyFireRate=3.f;

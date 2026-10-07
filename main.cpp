@@ -13,6 +13,7 @@ int main(int argc, char *argv[])
     int si = args.indexOf("--snapshot");
     if (si >= 0 && si + 1 < args.size()) return win.snapshot(args[si + 1]) ? 0 : 1;
 
+    win.loadSettings();
     win.enableAudio();
     win.setWindowTitle("Raster FPS  |  CG Lab  |  SCROLL=zoom  |  [/]=pixel blocks");
     win.show();

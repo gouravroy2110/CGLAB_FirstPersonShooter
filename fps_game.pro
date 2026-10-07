@@ -1,4 +1,4 @@
-QT       += core gui multimedia
+QT       += core gui multimedia concurrent
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -16,6 +16,16 @@ SOURCES += \
     render_weapon.cpp \
     render_hud.cpp \
     world.cpp \
+    sim.cpp \
+    render_actors.cpp \
+    actors.cpp \
+    weapons.cpp \
+    gunbuild.cpp \
+    combat.cpp \
+    upgrades.cpp \
+    render_fx.cpp \
+    menus.cpp \
+    killcam.cpp \
     audio.cpp
 
 HEADERS += \
@@ -24,6 +34,12 @@ HEADERS += \
     raster.h \
     assets.h \
     gunmodels.h \
+    parallel.h \
+    world.h \
+    sim.h \
+    raster3d.h \
+    weapons.h \
+    gunbuild.h \
     maps.h \
     pixelfont.h \
     audio.h

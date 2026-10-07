@@ -42,8 +42,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_pixels = reinterpret_cast<uint32_t *>(m_buf.bits());
     m_cv = rs::Canvas{m_pixels, W, H};
     m_depth.assign(size_t(W) * H, 1e30f);
-    std::memset(m_map, 0, sizeof(m_map));
-    for (int m = 0; m < 3; m++) parseLayout(ALL_LAYOUTS[m], m_parsed[m]);
+    for (int m = 0; m < MAP_COUNT; m++) parseLayout(ALL_LAYOUTS[m], LAYOUT_ROWS[m], m_parsed[m]);
 
     std::vector<uint32_t> tmp;
     for (int t = 0; t < 3; t++) {
@@ -66,7 +65,7 @@ MainWindow::MainWindow(QWidget *parent)
         paintSoldier(m_portrait[c].data(), nullptr, PORTRAIT, lookForClass(c), POSE_WALK, 0.f, c == 2);
     }
     // Bake every map's light map up front so menus never hitch
-    for (int m = 0; m < 3; m++) loadMapGeometry(m);
+    for (int m = 0; m < MAP_COUNT; m++) loadMapGeometry(m);
     loadMapGeometry(m_mapChoice);
 
     connect(&m_timer, &QTimer::timeout, this, &MainWindow::tick);
@@ -91,22 +90,17 @@ void MainWindow::initGame()
     pl.stamina         = cp.stamina;
     pl.speedMult       = cp.speedMult + dc.speedBonus;
     pl.damageReduction = cp.damageReduction;
-    pl.owned[WPN_KNIFE] = true;
-    pl.owned[WPN_PISTOL] = true;
-    for (int w = 0; w < WPN_COUNT; w++) {
-        pl.upgradeExtMag[w] = false;
-        pl.upgradeCompensator[w] = false;
-        pl.upgradeAmmo[w] = false;
-        pl.upgradeSpecial[w] = false;
-    }
+    for (int w = 0; w < WPN_COUNT; w++) { pl.owned[w] = false; pl.mag[w] = 0; pl.reserve[w] = 0; pl.load[w] = Loadout{}; }
+    pl.slot[SLOT_MELEE] = WPN_KNIFE; pl.slot[SLOT_SIDEARM] = WPN_PISTOL; pl.slot[SLOT_PRIMARY] = -1; pl.slot[SLOT_PRIMARY2] = -1;
+    pl.throwCount[TH_FRAG] = 2; pl.throwCount[TH_SMOKE] = 1; pl.throwCount[TH_FLASH] = 1; pl.throwCount[TH_MOLOTOV] = 0; pl.throwCount[TH_MINE] = 0;
+    pl.throwSel = TH_FRAG; pl.gadget = GD_RADAR; pl.gadgetCd = 0.f; pl.heat = 0.f; pl.overheatT = 0.f; pl.charge = 0.f; pl.burstLeft = 0;
+    m_charging = m_cooking = m_shellReload = m_grappling = false; m_bloom = 0.f; m_radarT = m_flashT = 0.f; m_inspectT = 0.f;
     m_upgradeCards.clear();
     m_selectedUpgradeCard = -1;
     m_upgradePicked = false;
     m_showArmory = false;
     pl.owned[WPN_KNIFE] = true;
     pl.owned[WPN_PISTOL] = true;
-    pl.owned[WPN_SHOTGUN] = false;
-    pl.owned[WPN_RIFLE] = false;
     pl.curWeapon = WPN_PISTOL;
     pl.mag[WPN_KNIFE] = 0;
     pl.reserve[WPN_KNIFE] = 0;
@@ -116,12 +110,13 @@ void MainWindow::initGame()
 
     m_combo = 0; m_comboTimer = 0; m_comboDisplay = 0;
     m_pitch = 0; m_recoilPitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f; m_adsT = 0; m_adsFOVMult = 1;
-    m_hitMarker = m_headMarker = m_killMarker = m_headshotBanner = 0; m_damageDirTimer = 0;
+    m_hitMarker = m_headMarker = m_killMarker = m_headshotBanner = 0; m_damageDirTimer = 0; m_damageMarks.clear();
+    m_killerIdx = -1; m_kcCount = 0; m_kcHead = 0; m_killcamActive = false;
     
     pl.velX = 0.f;
     pl.velY = 0.f;
-    m_velZ = 0;
-    m_onGround = true;
+    m_gs.player.velZ = 0;
+    m_gs.player.onGround = true;
     m_acidAcc = 0;
     m_kick = m_actionT = 0;
     m_pendingWeapon = -1;
@@ -136,176 +131,6 @@ void MainWindow::initGame()
 // ─────────────────────────────────────────────────────────────────────────────
 //  Weapon Upgrade / Attachment Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-int MainWindow::effectiveMagSize(int w) const
-{
-    if (w < 0 || w >= WPN_COUNT) return 0;
-    const Player &pl = m_gs.player;
-    int base = WEAPONS[w].magSize;
-    if (w == WPN_KNIFE) return 0;
-    if (pl.upgradeExtMag[w]) {
-        if (w == WPN_PISTOL)  return 20; // 12 -> 20 (+66%)
-        if (w == WPN_SHOTGUN) return 9;  // 6 -> 9 (+50%)
-        if (w == WPN_RIFLE)   return 45; // 30 -> 45 (+50%)
-    }
-    return base;
-}
-
-int MainWindow::effectiveDamage(int w) const
-{
-    if (w < 0 || w >= WPN_COUNT) return 0;
-    const Player &pl = m_gs.player;
-    int base = WEAPONS[w].damage;
-    if (pl.upgradeAmmo[w]) {
-        if (w == WPN_KNIFE)   return 80; // 55 -> 80 (+45%)
-        if (w == WPN_PISTOL)  return 40; // 28 -> 40 (+42%)
-        if (w == WPN_SHOTGUN) return 34; // 24 -> 34 (+42% per pellet)
-        if (w == WPN_RIFLE)   return 32; // 22 -> 32 (+45%)
-    }
-    return base;
-}
-
-float MainWindow::effectiveRecoil(int w) const
-{
-    if (w < 0 || w >= WPN_COUNT) return 1.f;
-    const Player &pl = m_gs.player;
-    float base = WEAPONS[w].recoil;
-    if (pl.upgradeCompensator[w]) return base * 0.52f; // -48% recoil kick
-    return base;
-}
-
-float MainWindow::effectiveSpread(int w) const
-{
-    if (w < 0 || w >= WPN_COUNT) return 0.02f;
-    const Player &pl = m_gs.player;
-    float base = WEAPONS[w].spread;
-    if (pl.upgradeCompensator[w]) return base * 0.58f; // -42% spread
-    return base;
-}
-
-float MainWindow::effectiveFireDelay(int w) const
-{
-    if (w < 0 || w >= WPN_COUNT) return 0.2f;
-    const Player &pl = m_gs.player;
-    float base = WEAPONS[w].fireDelay;
-    if (w == WPN_SHOTGUN && pl.upgradeSpecial[w]) return 0.40f; // Rapid pump
-    if (w == WPN_PISTOL && pl.upgradeSpecial[w])  return 0.15f; // Match hair trigger
-    if (w == WPN_KNIFE && pl.upgradeCompensator[w]) return 0.22f; // Lightweight flurry
-    return base;
-}
-
-bool MainWindow::effectiveScope(int w) const
-{
-    if (w < 0 || w >= WPN_COUNT) return false;
-    const Player &pl = m_gs.player;
-    // M4 Carbine starts with reflex sight; unlocks high-magnification scope with ACOG upgrade!
-    if (w == WPN_RIFLE) return pl.upgradeSpecial[w];
-    return WEAPONS[w].scope;
-}
-
-float MainWindow::effectiveAdsFov(int w) const
-{
-    if (w < 0 || w >= WPN_COUNT) return 1.f;
-    const Player &pl = m_gs.player;
-    if (w == WPN_RIFLE) return pl.upgradeSpecial[w] ? 0.25f : 0.65f;
-    return WEAPONS[w].adsFov;
-}
-
-void MainWindow::applyUpgrade(int weapon, int slot)
-{
-    Player &pl = m_gs.player;
-    if (weapon >= 0 && weapon < WPN_COUNT && slot == 4) {             // unlock a new gun
-        pl.owned[weapon] = true;
-        pl.mag[weapon] = effectiveMagSize(weapon);
-        pl.reserve[weapon] = std::min(pl.reserve[weapon] + WEAPONS[weapon].magSize * 2, WEAPONS[weapon].maxReserve);
-    } else if (weapon >= 0 && weapon < WPN_COUNT) {
-        if (slot == 0) {
-            pl.upgradeExtMag[weapon] = true;
-            pl.mag[weapon] = effectiveMagSize(weapon);
-        } else if (slot == 1) {
-            pl.upgradeCompensator[weapon] = true;
-        } else if (slot == 2) {
-            pl.upgradeAmmo[weapon] = true;
-        } else if (slot == 3) {
-            pl.upgradeSpecial[weapon] = true;
-        }
-    } else {
-        pl.hp = std::min(CHAR_PROFILES[m_charChoice].hp, pl.hp + 50);
-        for (int w = WPN_PISTOL; w < WPN_COUNT; w++) {
-            if (pl.owned[w]) pl.reserve[w] = WEAPONS[w].maxReserve;
-        }
-    }
-}
-
-void MainWindow::generateUpgradeChoices()
-{
-    m_upgradeCards.clear();
-    m_selectedUpgradeCard = -1;
-    m_upgradePicked = false;
-    Player &pl = m_gs.player;
-
-    struct Possible { int weapon, slot; QString title, desc, bonus; };
-    std::vector<Possible> pool;
-
-    // Rifle: unlock it first, upgrades once owned
-    if (!pl.owned[WPN_RIFLE])
-        pool.push_back({WPN_RIFLE, 4, "M4 CARBINE: FIELD ISSUE", "Unlock the automatic M4 carbine. It will be in your hands when you deploy.", "NEW WEAPON  +2 MAGAZINES"});
-    else {
-        if (!pl.upgradeSpecial[WPN_RIFLE])
-            pool.push_back({WPN_RIFLE, 3, "M4: ACOG 3X OPTIC", "Equips precision magnified 3x optic. Hold RMB to engage sniper scope.", "3.0x Magnification & Mil-Dot Reticle"});
-        if (!pl.upgradeExtMag[WPN_RIFLE])
-            pool.push_back({WPN_RIFLE, 0, "M4: EXTENDED 45-RND MAG", "High-capacity magazine for sustained fire superiority.", "Magazine: 30 -> 45 Rounds (+50%)"});
-        if (!pl.upgradeCompensator[WPN_RIFLE])
-            pool.push_back({WPN_RIFLE, 1, "M4: QUAD COMPENSATOR", "Vented muzzle brake reduces vertical kick and spread.", "-48% Recoil & -42% Spread"});
-        if (!pl.upgradeAmmo[WPN_RIFLE])
-            pool.push_back({WPN_RIFLE, 2, "M4: 5.56 AP MATCH AMMO", "High-penetration tungsten-core rounds counter enemy armor.", "+45% Bullet Damage (22 -> 32)"});
-    }
-
-    // Shotgun
-    if (!pl.owned[WPN_SHOTGUN])
-        pool.push_back({WPN_SHOTGUN, 4, "M870 SHOTGUN: FIELD ISSUE", "Unlock the M870 pump shotgun. It will be in your hands when you deploy.", "NEW WEAPON  +2 TUBES OF SHELLS"});
-    else {
-        if (!pl.upgradeCompensator[WPN_SHOTGUN])
-            pool.push_back({WPN_SHOTGUN, 1, "M870: COMPETITION CHOKE", "Constricts pellet spread for devastating mid-range precision.", "-45% Pellet Spread & Tight Grouping"});
-        if (!pl.upgradeExtMag[WPN_SHOTGUN])
-            pool.push_back({WPN_SHOTGUN, 0, "M870: EXTENDED TUBE", "Extended underbarrel tube allows continuous shotgun fire.", "Capacity: 6 -> 9 Shells (+50%)"});
-        if (!pl.upgradeAmmo[WPN_SHOTGUN])
-            pool.push_back({WPN_SHOTGUN, 2, "M870: MAGNUM 00-BUCK", "High-brass heavy charge inflicts massive trauma.", "+42% Pellet Damage (24 -> 34)"});
-        if (!pl.upgradeSpecial[WPN_SHOTGUN])
-            pool.push_back({WPN_SHOTGUN, 3, "M870: RAPID CYCLE SLIDE", "Polished receiver rails and lightened pump action slide.", "+45% Fire Rate (0.58s -> 0.40s Delay)"});
-    }
-
-    // Pistol
-    if (!pl.upgradeAmmo[WPN_PISTOL])
-        pool.push_back({WPN_PISTOL, 2, "M9: +P HOLLOW POINT", "Overpressured high-expansion sidearm rounds.", "+42% Damage (28 -> 40)"});
-    if (!pl.upgradeExtMag[WPN_PISTOL])
-        pool.push_back({WPN_PISTOL, 0, "M9: EXTENDED 20-RND MAG", "High-capacity double-stack magazine for sustained defense.", "Magazine: 12 -> 20 Rounds (+66%)"});
-    if (!pl.upgradeCompensator[WPN_PISTOL])
-        pool.push_back({WPN_PISTOL, 1, "M9: TACTICAL COMPENSATOR", "Threaded muzzle brake stabilizes single-action rapid fire.", "-45% Recoil & -40% Spread"});
-    if (!pl.upgradeSpecial[WPN_PISTOL])
-        pool.push_back({WPN_PISTOL, 3, "M9: MATCH HAIR TRIGGER", "Competition tuned sear for lightning-fast semi-auto tapping.", "+60% Fire Rate (0.24s -> 0.15s Delay)"});
-
-    // Knife
-    if (!pl.upgradeAmmo[WPN_KNIFE])
-        pool.push_back({WPN_KNIFE, 2, "KNIFE: SERRATED BLADE", "Razor-sharp teeth slice deep into flesh and armor.", "+45% Melee Damage (55 -> 80)"});
-    if (!pl.upgradeCompensator[WPN_KNIFE])
-        pool.push_back({WPN_KNIFE, 1, "KNIFE: LIGHTWEIGHT HILT", "Ergonomic balanced hilt allows rapid flurry slashing.", "+60% Attack Speed (0.35s -> 0.22s)"});
-    if (!pl.upgradeSpecial[WPN_KNIFE])
-        pool.push_back({WPN_KNIFE, 3, "KNIFE: STILETTO TIP", "Reinforced armor-piercing tanto tip for deadly criticals.", "+40% Headshot/Crit Multiplier"});
-
-    for (size_t i = pool.size(); i > 1; i--)
-        std::swap(pool[i - 1], pool[size_t(rand()) % i]);
-
-    // Always offer a new gun while one is still locked
-    for (size_t i = 0; i < pool.size(); i++) if (pool[i].slot == 4) { std::swap(pool[0], pool[i]); break; }
-    for (size_t i = 0; i < std::min(size_t(3), pool.size()); i++) {
-        m_upgradeCards.push_back(UpgradeCard{pool[i].weapon, pool[i].slot, pool[i].title, pool[i].desc, pool[i].bonus});
-    }
-
-    while (m_upgradeCards.size() < 3) {
-        m_upgradeCards.push_back(UpgradeCard{-1, 0, "FIELD SUPPLY RESTOCK", "Combat supply drop replenishing all ammo reserves and field health.", "+100% Reserve Ammo & +50 HP"});
-    }
-}
-
 void MainWindow::startDebugMode()
 {
     m_mapChoice = 0; // Dungeon map (has doors, secret walls, acid vault)
@@ -314,14 +139,40 @@ void MainWindow::startDebugMode()
     initGame();
     Player &pl = m_gs.player;
     pl.hp = 9999;
-    for (int w = 0; w < WPN_COUNT; w++) {
-        pl.owned[w] = true;
-        pl.upgradeExtMag[w] = true;
-        pl.upgradeCompensator[w] = true;
-        pl.upgradeAmmo[w] = true;
-        pl.upgradeSpecial[w] = true;
-        pl.mag[w] = effectiveMagSize(w);
-        pl.reserve[w] = WEAPONS[w].maxReserve;
+    Loadout good; good.rarity = 3;
+    giveWeapon(WPN_RIFLE, good, -1, WEAPONS[WPN_RIFLE].maxReserve, false);
+    giveWeapon(WPN_SHOTGUN, good, -1, WEAPONS[WPN_SHOTGUN].maxReserve, false);
+    for (int k = 0; k < TH_COUNT; k++) pl.throwCount[k] = THROWS[k].maxCarry;
+    // every other gun laid out on open floor near the spawn (breadth-first over
+    // reachable cells): walk over one to take it, [E] to swap when the slots are full
+    {
+        std::vector<std::pair<float, float>> spots;
+        std::vector<uint8_t> seen(size_t(m_mapW) * m_mapH, 0);
+        std::vector<int> q{int(pl.posY) * m_mapW + int(pl.posX)};
+        seen[size_t(q[0])] = 1;
+        for (size_t qi = 0; qi < q.size() && spots.size() < WPN_COUNT; qi++) {
+            int cx = q[qi] % m_mapW, cy = q[qi] / m_mapW;
+            float x = cx + 0.5f, y = cy + 0.5f;
+            float d2 = (x - pl.posX) * (x - pl.posX) + (y - pl.posY) * (y - pl.posY);
+            if (d2 > 1.2f && !m_acid[cy][cx] && std::fabs(floorH(x, y) - pl.footZ) < 0.3f && posValid(x, y, 0.3f)) spots.push_back({x, y});
+            const int dd[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            for (auto &o : dd) {
+                int nx = cx + o[0], ny = cy + o[1];
+                if (!inside(nx, ny) || seen[size_t(ny) * m_mapW + nx] || solidCell(nx, ny)) continue;
+                seen[size_t(ny) * m_mapW + nx] = 1; q.push_back(ny * m_mapW + nx);
+            }
+        }
+        size_t n = 0;
+        for (int w = 1; w < WPN_COUNT && n < spots.size(); w++) {
+            if (pl.owned[w]) continue;
+            Loadout L; L.rarity = uint8_t(n % RARITY_COUNT);
+            spawnWeaponPickup(spots[n].first, spots[n].second, w, L, false);
+            n++;
+        }
+        for (int k = 0; k < TH_COUNT && n < spots.size(); k++, n++) {
+            WeaponPickup th; th.x = spots[n].first; th.y = spots[n].second; th.type = PICKUP_THROW; th.throwKind = k;
+            m_gs.weaponPickups.push_back(th);
+        }
     }
     // Clear normal enemies and spawn one of each archetype in front of player for testing
     m_gs.enemies.clear();
@@ -335,7 +186,7 @@ void MainWindow::startDebugMode()
     for (auto &e : m_gs.enemies) { e.fireCooldown = 999.f; e.state = ES_IDLE; }
     m_screen = SCR_PLAYING;
     pushFeed("DEBUG / TEST FIRING RANGE ACTIVE", 5.0f, true);
-    pushFeed("ALL WEAPONS & UPGRADES LOADED  -  [U] ARMORY", 5.0f);
+    pushFeed("EVERY GUN IS ON THE FLOOR - WALK OVER IT, [E] TO SWAP", 6.0f);
 }
 
 int MainWindow::enemyMaxHP() const
@@ -371,7 +222,7 @@ void MainWindow::loadLevel(int lv)
     if (lv > 1) {
         pl.hp = std::min(pl.hp + 35, CHAR_PROFILES[m_charChoice].hp);
         for (int w = 0; w < WPN_COUNT; w++) {
-            if (pl.owned[w] && w != WPN_KNIFE) {
+            if (pl.owned[w] && usesAmmo(w)) {
                 int addMag = effectiveMagSize(w);
                 pl.reserve[w] = std::min(pl.reserve[w] + addMag, WEAPONS[w].maxReserve);
             }
@@ -389,15 +240,17 @@ void MainWindow::loadLevel(int lv)
     pl.velX = 0.f;
     pl.velY = 0.f;
 
-    m_footZ = floorH(pl.posX, pl.posY);
-    m_velZ = 0;
-    m_onGround = true;
+    m_gs.player.footZ = floorH(pl.posX, pl.posY);
+    m_gs.player.velZ = 0;
+    m_gs.player.onGround = true;
 
     pl.dirX = 1.f;
     pl.dirY = 0.f;
     
-    pl.planeX = 0.f; pl.planeY = 0.66f;
+    pl.planeX = 0.f; pl.planeY = m_planeLen;
     pl.shakeY = 0;  pl.adsMode = false;
+    computeReachable(pl.posX, pl.posY);
+    spawnSquad();
     pl.reloadTimer = 0; pl.switchTimer = 0;
     m_pitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f;
 
@@ -412,8 +265,8 @@ void MainWindow::loadLevel(int lv)
     // opening secrets and not inside pits (enemies spawned there could never be reached / escape)
     computeReachable(pl.posX, pl.posY);
     std::vector<std::pair<float, float>> validFloorTiles;
-    for (int y = 1; y < MAP_H - 1; y++) {
-        for (int x = 1; x < MAP_W - 1; x++) {
+    for (int y = 1; y < m_mapH - 1; y++) {
+        for (int x = 1; x < m_mapW - 1; x++) {
             if (m_map[y][x] == CELL_FLOOR && !m_acid[y][x] && reachable(x, y) && m_plat[y][x] > -0.1f) {
                 float fx = x + 0.5f, fy = y + 0.5f;
                 float dsq = (fx - pl.posX) * (fx - pl.posX) + (fy - pl.posY) * (fy - pl.posY);
@@ -500,13 +353,13 @@ void MainWindow::loadLevel(int lv)
         m_gs.healthKits.push_back(k);
     }
     m_gs.secretsTotal = 0;
-    for (int y = 0; y < MAP_H; y++) for (int x = 0; x < MAP_W; x++) if (m_map[y][x] == CELL_SECRET) m_gs.secretsTotal++;
+    for (int y = 0; y < m_mapH; y++) for (int x = 0; x < m_mapW; x++) if (m_map[y][x] == CELL_SECRET) m_gs.secretsTotal++;
     m_gs.zoneSecretsTotal = m_gs.secretsTotal;
     for (const Marker &mk : pm.markers) {
         WeaponPickup wp; wp.x = mk.x; wp.y = mk.y; wp.bobPhase = frand(0, 6.28f);
         if (mk.kind == 'a') wp.type = PICKUP_AMMO;
-        else if (mk.kind == 'r') wp.type = PICKUP_RIFLE;
-        else if (mk.kind == 's') wp.type = PICKUP_SHOTGUN;
+        else if (mk.kind == 'r') { wp.type = PICKUP_WEAPON; wp.weapon = WPN_RIFLE; }
+        else if (mk.kind == 's') { wp.type = PICKUP_WEAPON; wp.weapon = WPN_SHOTGUN; }
         else if (mk.kind == 't') wp.type = PICKUP_INTEL;
         else continue;
         m_gs.weaponPickups.push_back(wp);
@@ -550,12 +403,19 @@ void MainWindow::advance(float dt)
     if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
 
     // ADS blend + FOV
-    bool canAim = playing && pl.adsMode && pl.curWeapon != WPN_KNIFE && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !pl.sprinting && !m_gs.gameOver && !m_gs.levelComplete;
-    m_adsT += ((canAim ? 1.f : 0.f) - m_adsT) * std::min(1.f, dt * 12.f);
+    bool canAim = playing && pl.adsMode && !isMelee(pl.curWeapon) && pl.curWeapon >= 0 && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !pl.sprinting && !m_gs.gameOver && !m_gs.levelComplete;
+    float adsRate = 12.f;
+    if (pl.curWeapon >= 0) {
+        WeaponClass c = WEAPONS[pl.curWeapon].cls;
+        adsRate = c == WC_SMG || c == WC_PISTOL ? 18.f : c == WC_LMG || c == WC_SNIPER || c == WC_LAUNCHER ? 8.f : 12.f;
+        if (pl.load[pl.curWeapon].att[AT_STOCK] == 1) adsRate *= 1.4f;
+    }
+    m_adsT += ((canAim ? 1.f : 0.f) - m_adsT) * std::min(1.f, dt * adsRate);
     float adsFov = effectiveScope(pl.curWeapon) ? 1.f / m_scopeMag : effectiveAdsFov(pl.curWeapon);
     m_adsFOVMult = 1.f + (adsFov - 1.f) * m_adsT;
     if (m_prevAdsT < 0.5f && m_adsT >= 0.5f) sfx(SND_SCOPE_IN, effectiveScope(pl.curWeapon) ? 0.5f : 0.25f);
     m_prevAdsT = m_adsT;
+    if (playing) updateCamera(dt);
 
     // Sound timers, heartbeat at low health, game-over sting
     m_hurtSndT -= dt; m_alertSndT -= dt;
@@ -564,7 +424,8 @@ void MainWindow::advance(float dt)
         m_heartbeatT -= dt;
         if (m_heartbeatT <= 0) { sfx(SND_HEARTBEAT, 0.8f); m_heartbeatT = 0.85f; }
     }
-    if (playing && m_gs.gameOver && !m_prevGameOver) sfx(SND_GAME_OVER, 0.8f);
+    if (playing && m_gs.gameOver && !m_prevGameOver) { sfx(SND_GAME_OVER, 0.8f); startKillcam(); }
+    updateKillcam(dt);
     m_prevGameOver = playing && m_gs.gameOver;
 
     // Aiming down sights pulls the free crosshair back to the centre (the
@@ -572,7 +433,7 @@ void MainWindow::advance(float dt)
     if (playing && canAim) {
         float f = std::min(1.f, dt * 14.f);
         float ox = (m_aimX - W / 2.f) * f, oy = (m_aimY - H / 2.f) * f;
-        turn(std::atan(2.f * ox / W * 0.66f * m_adsFOVMult));
+        turn(std::atan(2.f * ox / W * m_planeLen * m_adsFOVMult));
         m_pitch = rs::clampf(m_pitch - oy / m_K, -0.75f, 0.75f);
         m_aimX -= ox; m_aimY -= oy;
     }
@@ -595,7 +456,7 @@ void MainWindow::advance(float dt)
     // Recoil / animation decay
     m_kick *= std::exp(-dt * 9.f);
     m_camKick *= std::exp(-dt * 14.f);
-    m_actionT = std::max(0.f, m_actionT - dt * (pl.curWeapon == WPN_SHOTGUN ? 1.4f : (pl.curWeapon == WPN_KNIFE ? 4.8f : 9.f)));
+    m_actionT = std::max(0.f, m_actionT - dt * (pl.curWeapon == WPN_SHOTGUN ? 1.4f : WEAPONS[std::max(0, pl.curWeapon)].mode == FM_BOLT ? 1.2f : pl.curWeapon == WPN_AXE ? 2.6f : (isMelee(pl.curWeapon) ? 4.8f : 9.f)));
     m_flashLight = std::max(0.f, m_flashLight - dt * 16.f);
     float rec = m_recoilPitch * std::min(1.f, dt * 5.f);
     m_pitch -= rec; m_recoilPitch -= rec;
@@ -608,6 +469,8 @@ void MainWindow::advance(float dt)
     m_secretBanner   = std::max(0.f, m_secretBanner - dt);
     m_acidFlash      = std::max(0.f, m_acidFlash - dt * 2.f);
     m_damageDirTimer = std::max(0.f, m_damageDirTimer - dt);
+    for (DamageMark &dm : m_damageMarks) dm.t -= dt;
+    m_damageMarks.erase(std::remove_if(m_damageMarks.begin(), m_damageMarks.end(), [](const DamageMark &d) { return d.t <= 0; }), m_damageMarks.end());
     m_comboDisplay   = std::max(0.f, m_comboDisplay - dt);
     if (m_comboTimer > 0) { m_comboTimer -= dt; if (m_comboTimer <= 0) m_combo = 0; }
     for (auto &k : m_killFeed) k.life -= dt;
@@ -627,7 +490,9 @@ void MainWindow::advance(float dt)
         computeView();
         float ax, ay; aimPoint(ax, ay);
         HitResult h = hitscan(ax, ay);
-        m_probeEnemy = h.enemy; m_probePart = h.part; m_probeDepth = h.depth;
+        m_probeEnemy = h.enemy; m_probePart = h.part;
+        // melee reach is measured from the player, not the (possibly third-person) camera
+        m_probeDepth = h.sky ? 1e9f : std::sqrt((h.x - pl.posX) * (h.x - pl.posX) + (h.y - pl.posY) * (h.y - pl.posY));
 
         // Proximity detection for secret walls and doors in front of the player
         int cand[3][2] = {
@@ -637,7 +502,7 @@ void MainWindow::advance(float dt)
         };
         for (auto &c : cand) {
             int nx = c[0], ny = c[1];
-            if (nx > 0 && ny > 0 && nx < MAP_W - 1 && ny < MAP_H - 1) {
+            if (nx > 0 && ny > 0 && nx < m_mapW - 1 && ny < m_mapH - 1) {
                 int t = m_map[ny][nx];
                 if (t == CELL_SECRET && !m_doorMoving[ny][nx] && m_doorT[ny][nx] < 0.9f) { m_nearSecret = true; break; }
                 if (t == CELL_DOOR && !m_doorMoving[ny][nx] && m_doorT[ny][nx] < 0.9f) { m_nearDoor = true; break; }
@@ -681,7 +546,7 @@ void MainWindow::sfxAt(SoundId id, float wx, float wy, float gain, float pitch, 
     float rx = -pl.dirY / fl, ry = pl.dirX / fl;                 // screen-right in world space
     float pan = d > 0.05f ? rs::clampf((dx * rx + dy * ry) / d, -1.f, 1.f) * 0.85f : 0.f;
     float att = 1.f / (1.f + 0.035f * std::pow(d, 1.6f));
-    if (d > 1.5f && !hasLOS(wx, wy, floorH(wx, wy) + 0.6f, pl.posX, pl.posY, m_footZ + 0.5f)) att *= 0.5f;
+    if (d > 1.5f && !hasLOS(wx, wy, floorH(wx, wy) + 0.6f, pl.posX, pl.posY, m_gs.player.footZ + 0.5f)) att *= 0.5f;
     m_snd->play(id, gain * att, pan, pitch, delay);
 }
 
@@ -701,9 +566,10 @@ std::vector<int> MainWindow::loadoutChoices() const
 {
     std::vector<int> v;
     int unlock = -1;
-    if (m_selectedUpgradeCard >= 0 && m_selectedUpgradeCard < int(m_upgradeCards.size()) && m_upgradeCards[m_selectedUpgradeCard].slot == 4)
+    if (m_selectedUpgradeCard >= 0 && m_selectedUpgradeCard < int(m_upgradeCards.size()) && m_upgradeCards[m_selectedUpgradeCard].slot == UC_UNLOCK)
         unlock = m_upgradeCards[m_selectedUpgradeCard].weapon;
-    for (int w = 0; w < WPN_COUNT; w++) if (m_gs.player.owned[w] || w == unlock) v.push_back(w);
+    for (int s = 0; s < SLOT_COUNT; s++) { int w = m_gs.player.slot[s]; if (w >= 0) v.push_back(w); }
+    if (unlock >= 0 && std::find(v.begin(), v.end(), unlock) == v.end()) v.push_back(unlock);
     return v;
 }
 QRect MainWindow::ixCardRect(int i) const
@@ -737,14 +603,15 @@ void MainWindow::deployNextZone()
     int idx = m_selectedUpgradeCard >= 0 ? m_selectedUpgradeCard : 0;
     QString title;
     if (idx < int(m_upgradeCards.size())) {
-        applyUpgrade(m_upgradeCards[idx].weapon, m_upgradeCards[idx].slot);
+        applyUpgrade(m_upgradeCards[idx]);
         title = m_upgradeCards[idx].title;
     }
     int lw = m_loadoutWeapon;
     loadLevel(m_gs.level + 1);
     if (lw >= 0 && lw < WPN_COUNT && pl.owned[lw]) {
         pl.curWeapon = lw; m_pendingWeapon = -1; pl.switchTimer = 0.4f; pl.reloadTimer = 0;
-        if (lw != WPN_KNIFE && pl.mag[lw] == 0) {                   // arrive with a loaded weapon
+        if (effectiveScope(lw)) m_scopeMag = rs::clampf(1.f / effectiveAdsFov(lw), 2.f, 8.f);
+        if (usesAmmo(lw) && pl.mag[lw] == 0) {                     // arrive with a loaded weapon
             int take = std::min(effectiveMagSize(lw), pl.reserve[lw]);
             pl.mag[lw] += take; pl.reserve[lw] -= take;
         }
@@ -752,6 +619,19 @@ void MainWindow::deployNextZone()
     if (!title.isEmpty()) pushFeed("UPGRADE EQUIPPED: " + title, 4.f, true);
     pushFeed(QString("ZONE %1 - DEPLOYED WITH %2").arg(m_gs.level).arg(WEAPONS[pl.curWeapon].shortName), 4.f);
     sfx(SND_DEPLOY, 0.7f);
+}
+
+void MainWindow::addDamageMark(float srcX, float srcY, float strength)
+{
+    // merge with a mark from nearly the same direction, else add (oldest drops off)
+    const Player &pl = m_gs.player;
+    float a = std::atan2(srcY - pl.posY, srcX - pl.posX);
+    for (DamageMark &d : m_damageMarks) {
+        float b = std::atan2(d.y - pl.posY, d.x - pl.posX);
+        if (std::fabs(std::remainder(a - b, 6.2831853f)) < 0.25f) { d.x = srcX; d.y = srcY; d.t = 2.2f; d.strength = std::min(1.f, d.strength + strength * 0.5f); return; }
+    }
+    if (m_damageMarks.size() >= 6) m_damageMarks.erase(m_damageMarks.begin());
+    m_damageMarks.push_back(DamageMark{srcX, srcY, 2.2f, std::max(0.35f, strength)});
 }
 
 int MainWindow::aliveEnemies() const
@@ -767,7 +647,7 @@ void MainWindow::selectUpgradeCard(int i)
     if (i < 0 || i >= int(m_upgradeCards.size())) return;
     m_selectedUpgradeCard = i; m_upgradePicked = true;
     const UpgradeCard &c = m_upgradeCards[i];
-    if (c.weapon >= WPN_PISTOL && c.weapon < WPN_COUNT) m_loadoutWeapon = c.weapon;
+    if (c.weapon >= 0 && c.weapon < WPN_COUNT && !isMelee(c.weapon)) m_loadoutWeapon = c.weapon;
     else {
         std::vector<int> ch = loadoutChoices();
         if (std::find(ch.begin(), ch.end(), m_loadoutWeapon) == ch.end()) m_loadoutWeapon = m_gs.player.curWeapon;
@@ -785,8 +665,9 @@ void MainWindow::buyShopItem(int i)
     Player &pl = m_gs.player;
     m_gs.coins -= cost[i];
     if (i == 0) {
-        for (int w = WPN_PISTOL; w < WPN_COUNT; w++) if (pl.owned[w])
+        for (int w = 0; w < WPN_COUNT; w++) if (pl.owned[w] && usesAmmo(w))
             pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize * 2, WEAPONS[w].maxReserve);
+        pl.throwCount[TH_FRAG] = std::min(THROWS[TH_FRAG].maxCarry, pl.throwCount[TH_FRAG] + 1);
         sfx(SND_PICKUP_AMMO, 0.7f); m_ixMsg = "AMMO RESUPPLIED  +2 MAGAZINES PER GUN";
     } else if (i == 1) {
         pl.hp = std::min(pl.hp + 50, CHAR_PROFILES[m_charChoice].hp);
@@ -797,28 +678,6 @@ void MainWindow::buyShopItem(int i)
         sfx(SND_UPGRADE, 0.6f); m_ixMsg = "NEW UPGRADE CARDS";
     }
     m_ixMsgT = 2.f;
-}
-
-// Bosses and elites always drop a gun (one you don't own yet if possible)
-void MainWindow::dropReward(float x, float y, bool boss)
-{
-    const Player &pl = m_gs.player;
-    std::vector<PickupType> unowned;
-    if (!pl.owned[WPN_SHOTGUN]) unowned.push_back(PICKUP_SHOTGUN);
-    if (!pl.owned[WPN_RIFLE]) unowned.push_back(PICKUP_RIFLE);
-    WeaponPickup wp;
-    wp.x = x; wp.y = y; wp.bobPhase = frand(0, 6.28f); wp.reward = true;
-    wp.type = !unowned.empty() ? unowned[size_t(rand()) % unowned.size()] : (rand() % 2 ? PICKUP_RIFLE : PICKUP_SHOTGUN);
-    m_gs.weaponPickups.push_back(wp);
-    if (boss) {                                                   // commanders also leave supplies
-        HealthKit k; k.x = x + 0.45f; k.y = y; k.bobPhase = 0.f;
-        if (!posValid(k.x, k.y, 0.1f)) k.x = x - 0.45f;
-        if (posValid(k.x, k.y, 0.1f)) m_gs.healthKits.push_back(k);
-        WeaponPickup am; am.x = x; am.y = y + 0.45f; am.type = PICKUP_AMMO; am.reward = false;
-        if (posValid(am.x, am.y, 0.1f)) m_gs.weaponPickups.push_back(am);
-    }
-    pushFeed(QString("%1 DROPPED  %2").arg(boss ? "COMMANDER" : "ELITE").arg(wp.type == PICKUP_RIFLE ? "M4 CARBINE" : "M870 SHOTGUN"), 4.5f, true);
-    sfx(SND_RADIO, 0.5f);
 }
 
 // Zone report: kills, headshots and bonus objectives pay out coins and score
@@ -867,24 +726,20 @@ void MainWindow::gameStep(float dt)
         return;
     }
     m_gs.zoneTime += dt;
+    recordKillcamFrame();
     if (pl.attackCooldown > 0) pl.attackCooldown -= dt;
     if (pl.flashTimer > 0)     pl.flashTimer -= dt;
     if (pl.damageFlash > 0)    pl.damageFlash -= dt;
 
     // Reload / weapon switch timers
-    if (pl.reloadTimer > 0) {
-        pl.reloadTimer -= dt;
-        if (pl.reloadTimer <= 0) {
-            int w = pl.curWeapon;
-            int maxMag = effectiveMagSize(w);
-            int take = std::min(maxMag - pl.mag[w], pl.reserve[w]);
-            pl.mag[w] += take; pl.reserve[w] -= take; pl.reloadTimer = 0;
-        }
-    }
+    updateReload(dt);
     if (pl.switchTimer > 0) {
         float before = pl.switchTimer;
         pl.switchTimer -= dt;
-        if (before > 0.2f && pl.switchTimer <= 0.2f && m_pendingWeapon >= 0) { pl.curWeapon = m_pendingWeapon; m_pendingWeapon = -1; }
+        if (before > 0.2f && pl.switchTimer <= 0.2f && m_pendingWeapon >= 0) {
+            pl.curWeapon = m_pendingWeapon; m_pendingWeapon = -1;
+            if (effectiveScope(pl.curWeapon)) m_scopeMag = rs::clampf(1.f / effectiveAdsFov(pl.curWeapon), 2.f, 8.f);
+        }
         if (pl.switchTimer < 0) pl.switchTimer = 0;
     }
 
@@ -899,188 +754,33 @@ void MainWindow::gameStep(float dt)
     bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
     bool shift = m_keys.count(Qt::Key_Shift) > 0;
     bool scoped = effectiveScope(pl.curWeapon) && m_adsT > 0.85f;
-    bool wantSprint = moving && shift && pl.stamina > 0 && !pl.adsMode && pl.reloadTimer <= 0;
+    bool wantSprint = moving && shift && pl.stamina > 0 && !pl.adsMode && !m_charging && !m_cooking;
     m_holdBreath = scoped && shift && pl.stamina > 4.f;
     pl.sprinting = wantSprint;
     pl.stamina += wantSprint ? -45.f * dt : m_holdBreath ? -22.f * dt : 28.f * dt;
     pl.stamina = std::max(0.f, std::min(CHAR_PROFILES[m_charChoice].stamina, pl.stamina));
 
-    // -------------------------------------------------------------------------
-// Acceleration-based horizontal movement
-// -------------------------------------------------------------------------
-
-// Read keyboard input as two separate axes.
-//
-// forwardInput:
-//   W =  1
-//   S = -1
-//
-// strafeInput:
-//   D =  1
-//   A = -1
-float forwardInput =
-    float(m_keys.count(Qt::Key_W)) -
-    float(m_keys.count(Qt::Key_S));
-
-float strafeInput =
-    float(m_keys.count(Qt::Key_D)) -
-    float(m_keys.count(Qt::Key_A));
-
-// Backward movement is slower than forward movement.
-// Strafing is also slightly slower.
-//
-// These multipliers combine during diagonal backward/strafe movement.
-float directionMult = 1.f;
-
-if (forwardInput < 0.f)
-    directionMult *= 0.78f;
-
-if (std::fabs(strafeInput) > 0.01f)
-    directionMult *= 0.88f;
-
-// Convert local input into world-space movement.
-//
-// Forward direction:
-//   (dirX, dirY)
-//
-// Right direction:
-//   (-dirY, dirX)
-float moveX =
-    pl.dirX * forwardInput -
-    pl.dirY * strafeInput;
-
-float moveY =
-    pl.dirY * forwardInput +
-    pl.dirX * strafeInput;
-
-// Normalize diagonal input.
-//
-// Without this, pressing W+D would move the player approximately
-// 1.414 times faster than pressing only W.
-float inputLen = std::sqrt(moveX * moveX + moveY * moveY);
-
-if (inputLen > 1.f) {
-    moveX /= inputLen;
-    moveY /= inputLen;
-}
-
-// Select the player's maximum movement speed.
-//
-// Sprinting: 5.8
-// Normal:    3.5
-// ADS:       2.0
-float moveSpeed =
-    pl.speedMult *
-    (pl.sprinting ? 5.8f :
-     pl.adsMode    ? 2.0f :
-                     3.5f);
-
-// The input direction determines the desired velocity.
-// We do not apply this velocity instantly.
-float targetVelX = moveX * moveSpeed * directionMult;
-float targetVelY = moveY * moveSpeed * directionMult;
-
-bool hasMoveInput = inputLen > 0.001f;
-
-// Choose how quickly current velocity moves toward target velocity.
-//
-// On ground with input:
-//   Responsive acceleration.
-//
-// On ground without input:
-//   Strong friction and quick deceleration.
-//
-// In air with input:
-//   Limited air control.
-//
-// In air without input:
-//   Preserve most existing momentum.
-float response;
-
-if (m_onGround) {
-    response = hasMoveInput ? 13.f : 18.f;
-} else {
-    response = hasMoveInput ? 3.5f : 0.45f;
-}
-
-// Frame-rate-independent smoothing.
-//
-// At a higher response value, the current velocity reaches the
-// target velocity more quickly.
-float velocityBlend = 1.f - std::exp(-response * dt);
-
-pl.velX += (targetVelX - pl.velX) * velocityBlend;
-pl.velY += (targetVelY - pl.velY) * velocityBlend;
-
-// Remove tiny velocity values after ground friction has almost
-// completely stopped the player. This prevents slow drifting.
-float velocitySquared =
-    pl.velX * pl.velX +
-    pl.velY * pl.velY;
-
-if (m_onGround &&
-    !hasMoveInput &&
-    velocitySquared < 0.0004f) {
-    pl.velX = 0.f;
-    pl.velY = 0.f;
-}
-
-// Convert velocity into this frame's movement distance.
-float nx = pl.posX + pl.velX * dt;
-float ny = pl.posY + pl.velY * dt;
-
-// Preserve the existing terrain and step-height checks.
-bool canMoveX =
-    canStep(nx, pl.posY, m_footZ, 0.32f, 0.28f, pl.posX, pl.posY);
-
-bool canMoveY =
-    canStep(pl.posX, ny, m_footZ, 0.32f, 0.28f, pl.posX, pl.posY);
-
-// Preserve the existing wall-sliding suppression.
-//
-// This now compares velocity instead of the old temporary
-// input direction.
-if (!canMoveX &&
-    canMoveY &&
-    std::fabs(pl.velY) <= 0.40f * std::fabs(pl.velX)) {
-    canMoveY = false;
-}
-
-if (!canMoveY &&
-    canMoveX &&
-    std::fabs(pl.velX) <= 0.40f * std::fabs(pl.velY)) {
-    canMoveX = false;
-}
-
-// Move along each valid axis.
-//
-// If an axis is blocked, cancel velocity on that axis.
-// Otherwise, momentum would continuously push the player into the wall.
-if (canMoveX) {
-    pl.posX = nx;
-} else {
-    pl.velX = 0.f;
-}
-
-if (canMoveY) {
-    pl.posY = ny;
-} else {
-    pl.velY = 0.f;
-}
-    // Vertical: gravity, landing, sticking to slopes when walking downhill
+    // Movement: the keyboard becomes an InputCmd, moved by the same code as every actor
+    InputCmd cmd;
+    cmd.forward = float(m_keys.count(Qt::Key_W)) - float(m_keys.count(Qt::Key_S));
+    cmd.strafe  = float(m_keys.count(Qt::Key_D)) - float(m_keys.count(Qt::Key_A));
+    cmd.sprint  = wantSprint;
+    cmd.jump    = m_jumpQueued;
+    cmd.ads     = pl.adsMode;
+    cmd.yaw     = std::atan2(pl.dirY, pl.dirX);
+    cmd.seq     = m_gs.frameNum;
+    m_jumpQueued = false;
+    MoveEvents mv = stepMovement(*this, pl, cmd, dt);
+    if (mv.jumped) sfx(SND_JUMP, 0.5f, frand(0.9f, 1.1f));
+    if (mv.landed) {
+        if (mv.landVel < -4.f) pl.shakeY += std::min(10.f, -mv.landVel * 1.2f);
+        if (mv.landVel < -2.5f) sfx(SND_LAND, std::min(1.f, -mv.landVel * 0.12f), frand(0.9f, 1.1f));
+    }
     float g = floorH(pl.posX, pl.posY);
-    m_velZ -= 20.f * dt;
-    m_footZ += m_velZ * dt;
-    if (m_onGround && m_velZ <= 0 && m_footZ - g < 0.12f) { m_footZ = g; m_velZ = 0; }
-    if (m_footZ <= g) {
-        if (!m_onGround && m_velZ < -4.f) pl.shakeY += std::min(10.f, -m_velZ * 1.2f);
-        if (!m_onGround && m_velZ < -2.5f) sfx(SND_LAND, std::min(1.f, -m_velZ * 0.12f), frand(0.9f, 1.1f));
-        m_footZ = g; m_velZ = 0; m_onGround = true;
-    } else if (m_footZ > g + 0.12f) m_onGround = false;
 
     // Acid burns while standing in it
     int pcx = int(pl.posX), pcy = int(pl.posY);
-    if (m_acid[pcy][pcx] && m_footZ <= g + 0.05f) {
+    if (m_acid[pcy][pcx] && m_gs.player.footZ <= g + 0.05f) {
         m_acidAcc += 28.f * dt * (1.f - pl.damageReduction * 0.5f);
         m_acidFlash = 1.f;
         m_acidSndT -= dt;
@@ -1091,65 +791,21 @@ if (canMoveY) {
     }
     if (moving) pl.bobPhase += dt * (pl.sprinting ? 9.f : 5.5f); else pl.bobPhase *= 0.9f;
     // Footsteps: one per half bob cycle while walking on the ground
-    if (moving && m_onGround && int(pl.bobPhase / 3.14159f) != int(m_footstepPrev / 3.14159f))
+    if (moving && m_gs.player.onGround && int(pl.bobPhase / 3.14159f) != int(m_footstepPrev / 3.14159f))
         sfx(SND_STEP, pl.sprinting ? 0.55f : pl.adsMode ? 0.2f : 0.36f, frand(0.86f, 1.14f));
     m_footstepPrev = pl.bobPhase;
 
-    // Automatic fire while the trigger is held
-    if (m_lmb && WEAPONS[pl.curWeapon].automatic) tryFire();
-
-    // Health kits
-    for (auto &k : m_gs.healthKits) {
-        if (!k.active) continue;
-        k.bobPhase += dt * 2.2f;
-        float dx = pl.posX - k.x, dy = pl.posY - k.y;
-        int maxHP = CHAR_PROFILES[m_charChoice].hp;
-        if (dx * dx + dy * dy < 0.35f && pl.hp < maxHP && std::fabs(m_footZ - floorH(k.x, k.y)) < 0.6f) {
-            k.active = false;
-            pl.hp = std::min(pl.hp + 30, maxHP);
-            pushFeed("+30 HEALTH", 3.f);
-            sfx(SND_PICKUP_HEALTH, 0.7f);
-        }
-    }
-    // Weapon / ammo pickups
-    for (auto &wp : m_gs.weaponPickups) {
-        if (!wp.active) continue;
-        wp.bobPhase += dt * 2.8f;
-        float dx = pl.posX - wp.x, dy = pl.posY - wp.y;
-        if (dx * dx + dy * dy >= 0.35f || std::fabs(m_footZ - floorH(wp.x, wp.y)) > 0.6f) continue;
-        wp.active = false;
-        if (wp.type == PICKUP_INTEL) {
-            for (int w = WPN_PISTOL; w < WPN_COUNT; w++) if (pl.owned[w]) pl.reserve[w] = WEAPONS[w].maxReserve;
-            pl.hp = CHAR_PROFILES[m_charChoice].hp;
-            m_gs.score += 1000;
-            pushFeed("INTEL RECOVERED  +1000", 4.5f, true);
-            sfx(SND_INTEL, 0.8f);
-        } else if (wp.type == PICKUP_AMMO) {
-            bool isScavenger = wp.emergency;
-            for (int w = WPN_PISTOL; w < WPN_COUNT; w++) if (pl.owned[w]) {
-                int add = isScavenger ? WEAPONS[w].magSize : (WEAPONS[w].magSize * 2);
-                pl.reserve[w] = std::min(pl.reserve[w] + add, WEAPONS[w].maxReserve);
-            }
-            if (isScavenger) pushFeed("+ SCAVENGER RATIONS (1 MAG)", 3.5f);
-            else pushFeed("+ AMMO", 3.f);
-            sfx(SND_PICKUP_AMMO, 0.7f);
-            if (pl.mag[pl.curWeapon] == 0 && pl.reserve[pl.curWeapon] > 0 && pl.reloadTimer <= 0) {
-                startReload();
-            }
-        } else {
-            int w = wp.type == PICKUP_SHOTGUN ? WPN_SHOTGUN : WPN_RIFLE;
-            bool had = pl.owned[w];
-            pl.owned[w] = true;
-            if (!had) pl.mag[w] = WEAPONS[w].magSize;
-            pl.reserve[w] = std::min(pl.reserve[w] + WEAPONS[w].magSize * 2, WEAPONS[w].maxReserve);
-            pushFeed(QString(had ? "+ AMMO  %1" : "NEW WEAPON  %1").arg(WEAPONS[w].name), 4.f);
-            sfx(had ? SND_PICKUP_AMMO : SND_PICKUP_WEAPON, 0.75f);
-            if (!had) switchWeapon(w);
-        }
-    }
+    // Trigger (auto / burst / charge / beam), throwables, pickups, area effects
+    updateTrigger(dt);
+    updateThrow(dt);
+    updatePickups(dt);
+    updateProjectiles(dt);
+    updateAreaEffects(dt);
+    updateStatusEffects(dt);
 
     checkEmergencyDrops(dt);
 
+    updateActors(dt);
     updateEnemies(dt);
     checkReinforcements(dt);
 
@@ -1160,21 +816,33 @@ if (canMoveY) {
         b.px = b.x; b.py = b.y; b.pz = b.z;
         b.x += b.dx * dt; b.y += b.dy * dt; b.z += b.dz * dt;
         int bx = int(std::floor(b.x)), by = int(std::floor(b.y));
-        if (bx < 0 || bx >= MAP_W || by < 0 || by >= MAP_H || b.z < groundAt(b.x, b.y)) {
+        if (bx < 0 || bx >= m_mapW || by < 0 || by >= m_mapH || b.z < groundAt(b.x, b.y)) {
             b.alive = false; spawnImpact(b.px, b.py, b.pz, !solidCell(bx, by));
             sfxAt(SND_IMPACT, b.px, b.py, 0.5f, frand(0.9f, 1.2f));
             continue;
         }
+        bool hitActor = false;
+        for (int ai = 0; ai < int(m_gs.actors.size()) && !hitActor; ai++) {
+            const Actor &a = m_gs.actors[size_t(ai)];
+            if (!a.alive) continue;
+            float ax = b.x - a.posX, ay = b.y - a.posY;
+            if (ax * ax + ay * ay < 0.12f && b.z > a.footZ - 0.1f && b.z < a.footZ + 0.95f) {
+                damageActor(ai, b.damage > 0 ? b.damage : 10, b.x - b.dx, b.y - b.dy);
+                hitActor = true;
+            }
+        }
+        if (hitActor) { b.alive = false; continue; }
         float dx = b.x - pl.posX, dy = b.y - pl.posY;
         if (!b.whizzed && dx * dx + dy * dy < 1.6f) { b.whizzed = true; sfxAt(SND_BULLET_WHIZ, b.x, b.y, 0.9f, frand(0.9f, 1.15f)); }
-        if (dx * dx + dy * dy < 0.15f && b.z > m_footZ - 0.1f && b.z < m_footZ + 0.95f) {
+        if (dx * dx + dy * dy < 0.15f && b.z > m_gs.player.footZ - 0.1f && b.z < m_gs.player.footZ + 0.95f) {
             b.alive = false;
             int dmg = b.damage > 0 ? b.damage : int((10 + 4 * (m_gs.level - 1)) * (1.f - pl.damageReduction) * dc.dmgReceivedMult);
             pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = 0.45f; pl.shakeY = -9.f;
             sfx(SND_HIT_FLESH, 0.6f, frand(0.9f, 1.1f));
             if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.85f, frand(0.93f, 1.07f)); m_hurtSndT = 0.35f; }
             m_damageAngle = std::atan2(-b.dy, -b.dx); m_damageDirTimer = 2.0f;
-            if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
+            { float bl = std::sqrt(b.dx * b.dx + b.dy * b.dy) + 1e-4f; addDamageMark(b.x - b.dx / bl * 6.f, b.y - b.dy / bl * 6.f, std::min(1.f, dmg / 25.f)); }
+            if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; m_killerIdx = b.shooter; }
         }
     }
     m_gs.bullets.erase(std::remove_if(m_gs.bullets.begin(), m_gs.bullets.end(), [](const Bullet &b) { return !b.alive; }), m_gs.bullets.end());
@@ -1225,8 +893,8 @@ if (canMoveY) {
         // Stop combat input carrying over into the menu (held trigger, aim)
         m_lmb = false; pl.adsMode = false; m_showArmory = false;
         m_loadoutWeapon = pl.curWeapon;
-        if (m_loadoutWeapon == WPN_KNIFE)
-            for (int w = WPN_RIFLE; w >= WPN_PISTOL; w--) if (pl.owned[w]) { m_loadoutWeapon = w; break; }
+        if (isMelee(m_loadoutWeapon))
+            for (int s = SLOT_PRIMARY2; s >= SLOT_SIDEARM; s--) if (pl.slot[s] >= 0) { m_loadoutWeapon = pl.slot[s]; break; }
         sfx(SND_LEVEL_CLEAR, 0.8f);
         pushFeed("ZONE CLEARED - CHOOSE AN UPGRADE AND YOUR WEAPON", 5.0f, true);
     }
@@ -1247,10 +915,17 @@ void MainWindow::updateEnemies(float dt)
         if (e.shootAnim > 0) e.shootAnim -= dt;
         e.fireCooldown -= dt;
 
-        float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
         float ez = floorH(e.x, e.y) + 0.62f;
+        float tgX, tgY, tgZ, d;
+        if (m_gs.actors.empty()) { tgX = pl.posX; tgY = pl.posY; tgZ = pl.footZ + 0.5f; d = std::sqrt((tgX - e.x) * (tgX - e.x) + (tgY - e.y) * (tgY - e.y)); }
+        else hostileTarget(e.x, e.y, ez, tgX, tgY, tgZ, d);
+        float dx = tgX - e.x, dy = tgY - e.y;
         float detectRange = e.aggroRange * 1.5f;
-        bool los = d < std::max(22.f, detectRange) && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, m_footZ + 0.5f);
+        bool los = d < std::max(22.f, detectRange) && hasLOS(e.x, e.y, ez, tgX, tgY, tgZ) && !smokeBlocks(e.x, e.y, ez, tgX, tgY, tgZ);
+        if (m_radarT > 0.f) e.hpShow = std::max(e.hpShow, 0.1f);
+        if (e.stunT > 0.f) { e.moving = false; continue; }     // flashed / stunned: frozen
+        // a loud (unsuppressed) shot nearby gets their attention
+        if (e.state == ES_IDLE && m_noiseT > 0.f && d < detectRange * 1.6f) { e.state = ES_ALERT; e.alertDist = 0.f; }
         if (los && d < detectRange) {
             if (e.state != ES_ALERT) {
                 // Initial target acquisition: alert bot with snappy reaction time
@@ -1332,6 +1007,7 @@ void MainWindow::updateEnemies(float dt)
                 }
             }
             if (e.elite) spd *= 1.15f;
+            if (e.shockT > 0) spd *= 0.4f;    // shocked: sluggish
             if (e.hitFlash > 0) spd *= 0.25f; // staggered
             if (e.shootAnim > 0) spd = 0.f;
         } else {
@@ -1386,7 +1062,7 @@ void MainWindow::updateEnemies(float dt)
         // Fire: engage target with realistic tactical cadence within effective weapon range
         float firingRange = (e.type == ET_SNIPER ? 22.f : e.type == ET_RIFLEMAN ? 15.f : e.type == ET_SCOUT ? 10.f : 7.5f);
         if (e.state == ES_ALERT && e.alertDist <= 0.f && los && d <= firingRange && e.fireCooldown <= 0 && e.hitFlash <= 0) {
-            enemyFire(e);
+            enemyFire(e, tgX, tgY, tgZ);
             e.shootAnim = 0.22f;
             float cool = 0.f;
             if (e.type == ET_SCOUT)           cool = frand(0.70f, 1.10f); // Rapid pistol fire
@@ -1441,13 +1117,13 @@ void MainWindow::checkReinforcements(float dt)
     const Player &pl = m_gs.player;
     // Find a valid floor tile out of player LOS and at distance 10..22 units
     for (int tries = 0; tries < 40; tries++) {
-        int rx = 2 + rand() % (MAP_W - 4), ry = 2 + rand() % (MAP_H - 4);
+        int rx = 2 + rand() % (m_mapW - 4), ry = 2 + rand() % (m_mapH - 4);
         if (m_map[ry][rx] != CELL_FLOOR || m_acid[ry][rx] || !reachable(rx, ry) || m_plat[ry][rx] < -0.1f) continue;
         float fx = rx + 0.5f, fy = ry + 0.5f;
         float dsq = (fx - pl.posX) * (fx - pl.posX) + (fy - pl.posY) * (fy - pl.posY);
         if (dsq < 100.f || dsq > 500.f) continue;
         float fz = floorH(fx, fy) + 0.5f;
-        if (hasLOS(fx, fy, fz, pl.posX, pl.posY, m_footZ + 0.5f)) continue; // Must be out of sight!
+        if (hasLOS(fx, fy, fz, pl.posX, pl.posY, m_gs.player.footZ + 0.5f)) continue; // Must be out of sight!
         if (!posValid(fx, fy, 0.28f)) continue;
 
         EnemyType rt = (rand() % 100 < 40) ? ET_SCOUT : (rand() % 100 < 70) ? ET_RIFLEMAN : ET_SHOTGUNNER;
@@ -1469,150 +1145,41 @@ int MainWindow::enemyFrame(const Enemy &e) const
     return e.state == ES_ALERT ? EF_AIM : EF_WALK0;
 }
 
-void MainWindow::tryFire()
+// Third person: the camera sees past a corner that the gun barrel does not.
+// If the line from the muzzle to the aimed point is blocked, the bullet hits
+// that obstacle instead (sparks + scorch, no damage behind it).
+void MainWindow::muzzleObstruction(HitResult &h, float mx, float my, float mz) const
 {
-    Player &pl = m_gs.player;
-    if (pl.reloadTimer > 0 || pl.switchTimer > 0 || pl.attackCooldown > 0 || pl.sprinting) return;
-    if (pl.curWeapon == WPN_KNIFE) {
-        fireWeapon();
-        return;
-    }
-    if (pl.mag[pl.curWeapon] <= 0) {
-        if (pl.reserve[pl.curWeapon] > 0) startReload();
-        else { pl.attackCooldown = 0.3f; sfx(SND_DRY_FIRE, 0.7f); pushFeed("OUT OF AMMO - PRESS 1 FOR KNIFE", 1.5f); }
-        return;
-    }
-    fireWeapon();
+    float tx = h.x, ty = h.y, tz = h.z;
+    if (h.sky) { tx = mx + (h.x - mx) * 0.6f; ty = my + (h.y - my) * 0.6f; tz = mz + (h.z - mz) * 0.6f; }
+    // stop just short of the target surface so the surface itself doesn't count
+    float dx = tx - mx, dy = ty - my, dz = tz - mz, len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 0.2f) return;
+    float k = (len - 0.12f) / len;
+    float bx, by, bz;
+    if (!traceSegment(mx, my, mz, mx + dx * k, my + dy * k, mz + dz * k, bx, by, bz, 0.04f)) return;
+    h.enemy = -1; h.part = PART_NONE; h.sky = false; h.wall = false; h.floor = true;
+    h.x = bx; h.y = by; h.z = bz;
+    h.depth = std::sqrt((bx - m_camX) * (bx - m_camX) + (by - m_camY) * (by - m_camY));
 }
 
-void MainWindow::fireWeapon()
-{
-    Player &pl = m_gs.player;
-    const WeaponDef &wd = WEAPONS[pl.curWeapon];
-
-    if (pl.curWeapon == WPN_KNIFE) {
-        pl.attackCooldown = effectiveFireDelay(WPN_KNIFE);
-        m_actionT = 1.0f;
-        m_knifeSwing = 1 - m_knifeSwing; // alternate slash / stab
-        sfx(SND_KNIFE_SWING, 0.8f, frand(0.9f, 1.15f));
-        m_camKick += (m_knifeSwing ? 1.0f : -0.8f);
-        m_kick = std::min(1.2f, m_kick + 0.35f);
-        m_gs.shotsFired++; m_gs.zoneShots++;
-
-        computeView();
-        float ax, ay; aimPoint(ax, ay);
-        HitResult h = hitscan(ax, ay);
-
-        if (h.enemy >= 0 && h.depth <= 2.2f) {
-            m_gs.shotsHit++; m_gs.zoneHits++;
-            sfx(SND_KNIFE_HIT, 0.9f, frand(0.9f, 1.1f), 0.05f);
-            float headMult = (pl.upgradeSpecial[WPN_KNIFE] ? 3.5f : wd.headMult);
-            float mult = h.part == PART_HEAD ? headMult : (h.part == PART_LIMB ? wd.limbMult : 1.0f);
-            int dmg = int(effectiveDamage(WPN_KNIFE) * mult * frand(0.95f, 1.15f));
-            damageEnemy(h.enemy, dmg, h.part, h.x, h.y, h.z);
-            m_hitMarker = 0.3f;
-            if (h.part == PART_HEAD) m_headMarker = 0.45f;
-            if (h.enemy < int(m_gs.enemies.size())) {
-                m_gs.enemies[h.enemy].hitFlash = 0.35f; // enemy stagger
-            }
-            spawnBlood(h.x, h.y, h.z, h.part == PART_HEAD ? 24 : 14, 1.5f);
-        } else if (!h.sky && h.depth <= 2.0f) {
-            spawnImpact(h.x, h.y, h.z, h.floor);
-            sfx(SND_IMPACT, 0.6f, frand(0.9f, 1.1f), 0.05f);
-        }
-        return;
-    }
-
-    pl.mag[pl.curWeapon]--;
-    pl.attackCooldown = effectiveFireDelay(pl.curWeapon);
-    {
-        const int w = pl.curWeapon;
-        SoundId gs = w == WPN_SHOTGUN ? SND_SHOTGUN : w == WPN_RIFLE ? SND_RIFLE : SND_PISTOL;
-        sfx(gs, pl.upgradeCompensator[w] ? 0.85f : 1.f, frand(0.95f, 1.05f));
-        if (w == WPN_SHOTGUN) { sfx(SND_PUMP, 0.7f, 1.f, 0.12f); sfx(SND_SHELL_DROP, 0.45f, frand(0.9f, 1.1f), 0.7f); }
-        else sfx(SND_CASING, 0.4f, frand(0.85f, 1.2f), frand(0.35f, 0.5f));
-    }
-    pl.flashTimer = pl.curWeapon == WPN_SHOTGUN ? 0.09f : 0.06f;
-    m_flashLight = 1.f; m_flashSeed = rand();
-    float recoil = effectiveRecoil(pl.curWeapon);
-    m_kick = std::min(1.8f, m_kick + 0.55f + 0.25f * recoil);
-    m_actionT = 1.f;
-    m_camKick += 2.5f * recoil;
-    float climb = 0.012f * recoil * (m_adsT > 0.5f ? 0.6f : 1.f);
-    m_pitch = rs::clampf(m_pitch + climb, -0.75f, 0.75f);
-    m_recoilPitch += climb * 0.85f;
-    turn(frand(-1.f, 1.f) * 0.004f * recoil);
-    m_gs.shotsFired++; m_gs.zoneShots++;
-
-    computeView();
-    float ax, ay; aimPoint(ax, ay);
-    bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
-    float baseSpread = effectiveSpread(pl.curWeapon);
-    float spread = baseSpread * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f);
-    spread *= 1.f - 0.8f * m_adsT;
-    if (wd.pellets > 1) spread = std::max(spread, baseSpread * 0.6f);
-    float spreadPx = spread * W;
-
-    // Tracer origin: the on-screen muzzle unprojected 0.6 units into the world
-    const float startD = 0.6f;
-    float mcx = 2.f * m_muzzleX / W - 1.f;
-    float sX = pl.posX + (pl.dirX + pl.planeX * m_adsFOVMult * mcx) * startD;
-    float sY = pl.posY + (pl.dirY + pl.planeY * m_adsFOVMult * mcx) * startD;
-    float sZ = m_eye + (m_hor - m_muzzleY) / m_K * startD;
-    if (effectiveScope(pl.curWeapon) && m_adsT > 0.85f) { sX = pl.posX + pl.dirX * startD; sY = pl.posY + pl.dirY * startD; sZ = m_eye - 0.08f; }
-
-    bool anyHit = false;
-    for (int p = 0; p < wd.pellets; p++) {
-        float r = spreadPx * std::sqrt(frand()), a = frand(0, 6.2831853f);
-        float px = ax + std::cos(a) * r, py = ay + std::sin(a) * r;
-        HitResult h = hitscan(px, py);
-        float ex = h.x, ey = h.y, ez = h.z;
-        if (h.sky) { ex = pl.posX + (ex - pl.posX) * 0.5f; ey = pl.posY + (ey - pl.posY) * 0.5f; ez = sZ + (ez - sZ) * 0.5f; }
-        Tracer t; t.x0 = sX; t.y0 = sY; t.z0 = sZ; t.x1 = ex; t.y1 = ey; t.z1 = ez;
-        t.len = std::sqrt((ex - sX) * (ex - sX) + (ey - sY) * (ey - sY) + (ez - sZ) * (ez - sZ));
-        t.t = 0.f;
-        if (p < 3) m_gs.tracers.push_back(t);
-        if (h.enemy >= 0) {
-            anyHit = true;
-            float mult = h.part == PART_HEAD ? wd.headMult : h.part == PART_LIMB ? wd.limbMult : 1.f;
-            float falloff = wd.pellets > 1 ? std::max(0.40f, 1.f - h.depth / 18.f) : 1.f;
-            int baseDmg = effectiveDamage(pl.curWeapon);
-            int dmg = std::max(1, int(baseDmg * mult * falloff * frand(0.9f, 1.1f) + 0.5f));
-            damageEnemy(h.enemy, dmg, h.part, h.x, h.y, h.z);
-        } else if (!h.sky) {
-            float bx = h.x - (h.x - pl.posX) / std::max(0.1f, h.depth) * 0.04f;
-            float by = h.y - (h.y - pl.posY) / std::max(0.1f, h.depth) * 0.04f;
-            spawnImpact(bx, by, h.z, h.floor);
-            if (p < 2) sfxAt(h.wall && rand() % 4 == 0 ? SND_RICOCHET : SND_IMPACT, h.x, h.y, 0.7f, frand(0.85f, 1.2f));
-            if (h.floor) addDecal(m_scorch, h.x, h.y, 0.03f, 160);
-            if (h.wall) stampWallDecal(h.cx, h.cy, h.face, h.u, h.v, wd.pellets > 1);
-        }
-    }
-    if (anyHit) { m_gs.shotsHit++; m_gs.zoneHits++; }
-
-    // Brass
-    Casing c; c.x = m_ejectX; c.y = m_ejectY; c.vx = frand(260, 380); c.vy = frand(-420, -300);
-    c.a = frand(0, 6.28f); c.va = frand(14, 24); c.life = 1.0f; c.shell = pl.curWeapon == WPN_SHOTGUN;
-    if (!(effectiveScope(pl.curWeapon) && m_adsT > 0.85f)) m_casings.push_back(c);
-
-    if (pl.mag[pl.curWeapon] == 0 && pl.reserve[pl.curWeapon] > 0) startReload();
-}
-
-void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy, float hz)
+void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy, float hz, int byActor)
 {
     Enemy &e = m_gs.enemies[idx];
     if (!e.alive) return;
     bool head = part == PART_HEAD;
+    bool mine = byActor < 0;
     e.hp -= dmg; e.hitFlash = 0.16f;
     e.hpShow = 2.2f;
     sfxAt(SND_HIT_FLESH, hx, hy, 0.8f, frand(0.9f, 1.1f));
-    sfx(head ? SND_HEADSHOT : SND_HITMARK, head ? 0.8f : 0.55f);
+    if (mine) sfx(head ? SND_HEADSHOT : SND_HITMARK, head ? 0.8f : 0.55f);
 
-    Player &pl = m_gs.player;
-    float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
+    // the hostile reacts to whoever shot it
+    const Player &src = mine ? m_gs.player : m_gs.actors[size_t(byActor)];
+    float dx = src.posX - e.x, dy = src.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
     float ez = floorH(e.x, e.y) + 0.62f;
     float detectRange = e.aggroRange * 1.5f;
-    bool los = d < std::max(18.f, detectRange) && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, m_footZ + 0.5f);
+    bool los = d < std::max(18.f, detectRange) && hasLOS(e.x, e.y, ez, src.posX, src.posY, src.footZ + 0.5f);
 
     e.state = ES_ALERT;
     if (los && d < detectRange) {
@@ -1631,11 +1198,25 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
         e.alertDist = std::max(6.0f, std::min(d, 12.0f));
     }
 
-    m_hitMarker = 0.25f;
-    if (head) m_headMarker = 0.35f;
-    m_gs.damageNums.push_back(DamageNum{hx, hy, hz + 0.05f, dmg, head, 0.9f});
+    if (mine) {
+        m_hitMarker = 0.25f;
+        if (head) m_headMarker = 0.35f;
+        m_gs.damageNums.push_back(DamageNum{hx, hy, hz + 0.05f, dmg, head, 0.9f});
+    }
     spawnBlood(hx, hy, hz, head ? 22 : 9, head ? 1.7f : 1.f);
 
+    if (e.hp <= 0 && !mine) {
+        // squad kill: counts toward clearing the zone, not toward your score or report
+        e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0; e.killedByHeadshot = head;
+        sfxAt(SND_ENEMY_DEATH, e.x, e.y, 0.9f, frand(0.85f, 1.15f));
+        m_gs.killsThisLevel++;
+        Actor &a = m_gs.actors[size_t(byActor)];
+        a.kills++;
+        pushFeed(QString("%1  %2").arg(a.name).arg(head ? "HEADSHOT - HOSTILE DOWN" : "HOSTILE DOWN"), 3.5f);
+        addDecal(m_blood, e.x, e.y, 0.42f, 170);
+        if (e.boss || e.elite) dropReward(e.x, e.y, e.boss);
+        return;
+    }
     if (e.hp <= 0) {
         e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0; e.killedByHeadshot = head;
         sfx(SND_KILL, 0.7f, 1.f, 0.05f);
@@ -1654,42 +1235,10 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     }
 }
 
-void MainWindow::startReload()
-{
-    Player &pl = m_gs.player;
-    int w = pl.curWeapon;
-    int maxMag = effectiveMagSize(w);
-    if (w == WPN_KNIFE || pl.reloadTimer > 0 || pl.switchTimer > 0 || pl.mag[w] >= maxMag || pl.reserve[w] <= 0) return;
-    float t = WEAPONS[w].reloadTime;
-    if (w == WPN_SHOTGUN) t = 0.5f + 0.32f * std::min(maxMag - pl.mag[w], pl.reserve[w]);
-    pl.reloadTimer = t;
-    m_reloadTotal = t;
-    if (w == WPN_SHOTGUN) {
-        int shells = std::min(maxMag - pl.mag[w], pl.reserve[w]);
-        for (int s = 0; s < shells; s++) sfx(SND_SHELL_IN, 0.6f, frand(0.95f, 1.05f), 0.35f + 0.32f * s);
-        sfx(SND_PUMP, 0.6f, 1.f, std::max(0.f, t - 0.32f));
-    } else {
-        sfx(SND_MAG_OUT, 0.7f, 1.f, t * 0.15f);
-        sfx(SND_MAG_IN, 0.75f, 1.f, t * 0.6f);
-        sfx(SND_BOLT, 0.7f, w == WPN_PISTOL ? 1.25f : 1.f, t * 0.82f);
-    }
-    pl.adsMode = false;
-}
-
-void MainWindow::switchWeapon(int w)
-{
-    Player &pl = m_gs.player;
-    if (w < 0 || w >= WPN_COUNT || !pl.owned[w] || (w == pl.curWeapon && m_pendingWeapon < 0)) return;
-    pl.reloadTimer = 0;
-    pl.switchTimer = 0.4f;
-    m_pendingWeapon = w;
-    sfx(SND_SWITCH, 0.6f, frand(0.95f, 1.05f));
-}
-
-void MainWindow::enemyFire(Enemy &e)
+void MainWindow::enemyFire(Enemy &e, float tx, float ty, float tz)
 {
     const Player &pl = m_gs.player;
-    float dx = pl.posX - e.x, dy = pl.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
+    float dx = tx - e.x, dy = ty - e.y, d = std::sqrt(dx * dx + dy * dy);
     if (d < 0.1f) return;
     SoundId shot = e.type == ET_SNIPER ? SND_ENEMY_SNIPER : e.type == ET_SHOTGUNNER ? SND_ENEMY_SHOTGUN :
                    e.type == ET_SCOUT ? SND_ENEMY_PISTOL : SND_ENEMY_RIFLE;
@@ -1699,7 +1248,7 @@ void MainWindow::enemyFire(Enemy &e)
     else if (e.type == ET_SCOUT) acc = std::max(0.40f, acc - 0.12f);
     if (e.elite) acc = std::min(0.98f, acc + 0.1f);
 
-    float z0 = floorH(e.x, e.y) + 0.62f, z1 = m_footZ + 0.45f;
+    float z0 = floorH(e.x, e.y) + 0.62f, z1 = tz - 0.05f;
     float baseSpd = m_gs.enemyBulletSpeed * (e.elite ? 1.25f : 1.f);
 
     // Calculate base damage scaling
@@ -1716,7 +1265,7 @@ void MainWindow::enemyFire(Enemy &e)
             b.px = b.x; b.py = b.y; b.pz = b.z;
             b.dx = std::cos(a) * shotSpd; b.dy = std::sin(a) * shotSpd;
             b.dz = (z1 - z0) / (d / shotSpd) + frand(-1.f, 1.f) * 0.35f;
-            b.owner = ENEMY_SHOT; b.alive = true; b.damage = pelletDmg;
+            b.owner = ENEMY_SHOT; b.alive = true; b.damage = pelletDmg; b.shooter = int(&e - m_gs.enemies.data());
             m_gs.bullets.push_back(b);
         }
     } else {
@@ -1734,7 +1283,7 @@ void MainWindow::enemyFire(Enemy &e)
         b.px = b.x; b.py = b.y; b.pz = b.z;
         b.dx = std::cos(a) * spd; b.dy = std::sin(a) * spd;
         b.dz = (z1 - z0) / (d / spd) + frand(-1.f, 1.f) * (1.f - acc) * 0.5f;
-        b.owner = ENEMY_SHOT; b.alive = true; b.damage = dmg;
+        b.owner = ENEMY_SHOT; b.alive = true; b.damage = dmg; b.shooter = int(&e - m_gs.enemies.data());
         m_gs.bullets.push_back(b);
     }
 }
@@ -1788,18 +1337,6 @@ void MainWindow::spawnImpact(float wx, float wy, float wz, bool floor)
     }
 }
 
-void MainWindow::spawnPickup(float x, float y)
-{
-    WeaponPickup wp;
-    wp.x = x + (rand() % 10 - 5) * 0.06f;
-    wp.y = y + (rand() % 10 - 5) * 0.06f;
-    if (!posValid(wp.x, wp.y, 0.1f)) { wp.x = x; wp.y = y; }
-    wp.bobPhase = frand(0, 6.28f);
-    int r = rand() % 10;
-    wp.type = r < 5 ? PICKUP_AMMO : r < 8 ? PICKUP_SHOTGUN : PICKUP_RIFLE;
-    m_gs.weaponPickups.push_back(wp);
-}
-
 bool MainWindow::findEmergencyDropPos(float &outX, float &outY) const
 {
     const Player &pl = m_gs.player;
@@ -1815,13 +1352,13 @@ bool MainWindow::findEmergencyDropPos(float &outX, float &outY) const
             float tx = pl.posX + std::cos(ang) * d;
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
-            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (cx < 1 || cx >= m_mapW - 1 || cy < 1 || cy >= m_mapH - 1) continue;
             if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             float fh = floorH(tx, ty);
-            if (std::fabs(fh - m_footZ) > 0.75f) continue;
+            if (std::fabs(fh - m_gs.player.footZ) > 0.75f) continue;
 
-            bool los = hasLOS(pl.posX, pl.posY, m_footZ + 0.5f, tx, ty, fh + 0.3f);
+            bool los = hasLOS(pl.posX, pl.posY, m_gs.player.footZ + 0.5f, tx, ty, fh + 0.3f);
             if (los) {
                 outX = tx;
                 outY = ty;
@@ -1848,11 +1385,11 @@ bool MainWindow::findEmergencyDropPos(float &outX, float &outY) const
             float tx = pl.posX + std::cos(ang) * d;
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
-            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (cx < 1 || cx >= m_mapW - 1 || cy < 1 || cy >= m_mapH - 1) continue;
             if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             float fh = floorH(tx, ty);
-            if (std::fabs(fh - m_footZ) > 0.75f) continue;
+            if (std::fabs(fh - m_gs.player.footZ) > 0.75f) continue;
 
             outX = tx;
             outY = ty;
@@ -1865,7 +1402,7 @@ bool MainWindow::findEmergencyDropPos(float &outX, float &outY) const
         float tx = pl.posX - pl.dirX * d;
         float ty = pl.posY - pl.dirY * d;
         int cx = int(std::floor(tx)), cy = int(std::floor(ty));
-        if (cx >= 1 && cx < MAP_W - 1 && cy >= 1 && cy < MAP_H - 1 && !solidCell(cx, cy) && !m_acid[cy][cx] && posValid(tx, ty, 0.2f)) {
+        if (cx >= 1 && cx < m_mapW - 1 && cy >= 1 && cy < m_mapH - 1 && !solidCell(cx, cy) && !m_acid[cy][cx] && posValid(tx, ty, 0.2f)) {
             outX = tx;
             outY = ty;
             return true;
@@ -1905,7 +1442,7 @@ bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
                 float tx = e.x + std::cos(ang) * r;
                 float ty = e.y + std::sin(ang) * r;
                 int cx = int(std::floor(tx)), cy = int(std::floor(ty));
-                if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+                if (cx < 1 || cx >= m_mapW - 1 || cy < 1 || cy >= m_mapH - 1) continue;
                 if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
                 if (!posValid(tx, ty, 0.28f)) continue;
                 float fh = floorH(tx, ty);
@@ -1925,7 +1462,7 @@ bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
             float tx = pl.posX + std::cos(ang) * d;
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
-            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (cx < 1 || cx >= m_mapW - 1 || cy < 1 || cy >= m_mapH - 1) continue;
             if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             outX = tx;
@@ -1941,7 +1478,7 @@ bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
             float tx = pl.posX + std::cos(ang) * d;
             float ty = pl.posY + std::sin(ang) * d;
             int cx = int(std::floor(tx)), cy = int(std::floor(ty));
-            if (cx < 1 || cx >= MAP_W - 1 || cy < 1 || cy >= MAP_H - 1) continue;
+            if (cx < 1 || cx >= m_mapW - 1 || cy < 1 || cy >= m_mapH - 1) continue;
             if (solidCell(cx, cy) || m_acid[cy][cx] || m_map[cy][cx] == CELL_DOOR || !reachable(cx, cy)) continue;
             if (!posValid(tx, ty, 0.28f)) continue;
             outX = tx;
@@ -1964,11 +1501,12 @@ void MainWindow::checkEmergencyDrops(float dt)
 
     // 1. Ammo drop check: when the player runs out of firearms ammo
     int totalAmmo = 0;
-    for (int w = WPN_PISTOL; w < WPN_COUNT; ++w) {
-        if (pl.owned[w]) {
+    for (int w = 0; w < WPN_COUNT; ++w) {
+        if (pl.owned[w] && usesAmmo(w)) {
             totalAmmo += pl.mag[w] + pl.reserve[w];
         }
     }
+    for (int w = 0; w < WPN_COUNT; ++w) if (pl.owned[w] && !isMelee(w) && !usesAmmo(w)) totalAmmo += 1;   // energy guns never run dry
 
     if (totalAmmo == 0) {
         bool hasActiveEmergencyAmmo = false;
@@ -2045,8 +1583,77 @@ void MainWindow::computeView()
     m_K = float(H) / m_adsFOVMult;
     bool moving = m_screen == SCR_PLAYING && (m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D));
     float bobZ = moving ? std::sin(pl.bobPhase * 2.f) * (pl.sprinting ? 0.018f : 0.01f) * (1.f - m_adsT * 0.8f) : 0.f;
-    m_eye = m_footZ + 0.5f + bobZ;
+    m_headZ = m_gs.player.footZ + 0.5f + bobZ;
+    m_eye = m_headZ;
+    m_camX = pl.posX; m_camY = pl.posY;
+    if (m_boomT > 0.001f && m_boomCur > 0.001f) {
+        float dx, dy, dz;
+        boomOffset(m_boomCur, dx, dy, dz);
+        m_camX += dx; m_camY += dy; m_eye += dz;
+    }
     m_hor = int(H / 2.f + m_pitch * m_K + pl.shakeY + m_camKick);
+}
+
+// Over-the-shoulder boom: back along the view, out to one shoulder, up a little.
+// Looking up swings the camera down and vice versa (orbit around the head).
+float MainWindow::boomWanted() const
+{
+    const Player &pl = m_gs.player;
+    float len = 1.9f - 0.65f * m_adsT;                    // aiming pulls the camera in
+    if (pl.sprinting) len += 0.2f;
+    return len * m_boomT;
+}
+
+void MainWindow::boomOffset(float len, float &dx, float &dy, float &dz) const
+{
+    const Player &pl = m_gs.player;
+    float rx = -pl.dirY, ry = pl.dirX;                    // camera right
+    float full = std::max(0.01f, boomWanted());
+    float k = std::min(1.f, len / full);                  // 0..1 of the wanted boom
+    float side = 0.56f * m_shoulderT * k * m_boomT;
+    dx = -pl.dirX * len + rx * side;
+    dy = -pl.dirY * len + ry * side;
+    dz = (0.46f * k - 0.35f * m_pitch * len) * m_boomT;
+}
+
+void MainWindow::updateCamera(float dt)
+{
+    const Player &pl = m_gs.player;
+    // Scoped weapons always aim through the first-person optic
+    bool wantTpp = m_tpp && !(effectiveScope(pl.curWeapon) && pl.adsMode);
+    m_boomT += ((wantTpp ? 1.f : 0.f) - m_boomT) * std::min(1.f, dt * 7.f);
+    if (!wantTpp && m_boomT < 0.002f) m_boomT = 0.f;
+    m_shoulderT += ((m_shoulderLeft ? -1.f : 1.f) - m_shoulderT) * std::min(1.f, dt * 8.f);
+    if (m_boomT <= 0.f) { m_boomCur = 0.f; return; }
+
+    // Collision: march from the head to the wanted camera spot; stop short of
+    // the first wall or hill so the camera never ends up inside geometry
+    float want = boomWanted();
+    float dx, dy, dz;
+    boomOffset(want, dx, dy, dz);
+    float hx = pl.posX, hy = pl.posY, hz = pl.footZ + 0.5f;
+    float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    float allowed = want;
+    float bx, by, bz;
+    // extend the ray so the camera keeps ~0.22 units of clearance from a wall
+    float pad = len > 1e-3f ? (len + 0.22f) / len : 1.f;
+    if (len > 1e-3f && traceSegment(hx, hy, hz, hx + dx * pad, hy + dy * pad, hz + dz * pad, bx, by, bz, 0.03f)) {
+        float hit = std::sqrt((bx - hx) * (bx - hx) + (by - hy) * (by - hy) + (bz - hz) * (bz - hz));
+        allowed = std::max(0.f, (hit - 0.22f) / len * want);
+    }
+    // Snap in quickly when blocked, ease back out
+    if (allowed < m_boomCur) m_boomCur = allowed;
+    else m_boomCur += (allowed - m_boomCur) * std::min(1.f, dt * 5.f);
+}
+
+// The gun muzzle in world space for the third-person body (right hand, chest high)
+void MainWindow::playerMuzzle(float &x, float &y, float &z) const
+{
+    const Player &pl = m_gs.player;
+    float rx = -pl.dirY, ry = pl.dirX;
+    x = pl.posX + pl.dirX * 0.42f + rx * 0.07f;
+    y = pl.posY + pl.dirY * 0.42f + ry * 0.07f;
+    z = pl.footZ + 0.62f;
 }
 
 bool MainWindow::project(float wx, float wy, float wz, float &sx, float &sy, float &depth) const
@@ -2054,7 +1661,7 @@ bool MainWindow::project(float wx, float wy, float wz, float &sx, float &sy, flo
     const Player &pl = m_gs.player;
     float eplX = pl.planeX * m_adsFOVMult, eplY = pl.planeY * m_adsFOVMult;
     float invDet = 1.f / (eplX * pl.dirY - pl.dirX * eplY);
-    float spX = wx - pl.posX, spY = wy - pl.posY;
+    float spX = wx - m_camX, spY = wy - m_camY;
     float txX = invDet * (pl.dirY * spX - pl.dirX * spY), txY = invDet * (-eplY * spX + eplX * spY);
     depth = txY;
     if (txY < 0.05f) return false;
@@ -2074,10 +1681,10 @@ void MainWindow::aimPoint(float &ax, float &ay) const
 // aiming down sights — mouse motion drives the camera directly.
 void MainWindow::applyAimDelta(float dx, float dy)
 {
-    float sens = std::max(0.25f, m_adsFOVMult);
+    float sens = std::max(0.25f, m_adsFOVMult) * m_mouseSens;
     dx *= sens; dy *= sens;
     m_mouseDX += dx; m_mouseDY += dy;
-    auto yaw = [&](float px) { turn(std::atan(2.f * px / W * 0.66f * m_adsFOVMult)); };
+    auto yaw = [&](float px) { turn(std::atan(2.f * px / W * m_planeLen * m_adsFOVMult)); };
     if (!m_freeAim || m_gs.player.adsMode) {
         yaw(dx);
         m_pitch = rs::clampf(m_pitch - dy / m_K, -0.75f, 0.75f);
@@ -2108,9 +1715,13 @@ void MainWindow::menuConfirm()
     switch (m_screen) {
     case SCR_MENU:
         if (m_menuCursor == 0) m_screen = SCR_MAP_SELECT;
-        else if (m_menuCursor == 1) startDebugMode();
+        else if (m_menuCursor == 1) m_screen = SCR_ARSENAL;
+        else if (m_menuCursor == 2) { m_screen = SCR_SETTINGS; m_settingsRow = 0; }
+        else if (m_menuCursor == 3) startDebugMode();
         else QApplication::quit();
         break;
+    case SCR_SETTINGS: changeSetting(m_settingsRow, 1); break;
+    case SCR_ARSENAL: break;
     case SCR_MAP_SELECT:  m_screen = SCR_DIFF_SELECT; break;
     case SCR_DIFF_SELECT: m_screen = SCR_CHAR_SELECT; break;
     case SCR_CHAR_SELECT: initGame(); m_screen = SCR_PLAYING; break;
@@ -2123,6 +1734,8 @@ void MainWindow::menuBack()
     switch (m_screen) {
     case SCR_MENU:        QApplication::quit(); break;
     case SCR_MAP_SELECT:  m_screen = SCR_MENU; m_menuCursor = 0; break;
+    case SCR_SETTINGS:    m_screen = SCR_MENU; m_menuCursor = 2; saveSettings(); break;
+    case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 1; break;
     case SCR_DIFF_SELECT: m_screen = SCR_MAP_SELECT; break;
     case SCR_CHAR_SELECT: m_screen = SCR_DIFF_SELECT; break;
     default: break;
@@ -2139,20 +1752,29 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_Up || k == Qt::Key_Down || k == Qt::Key_Left || k == Qt::Key_Right) sfx(SND_UI_MOVE, 0.5f);
         if (m_screen == SCR_MENU) {
             if (k == Qt::Key_Up)   m_menuCursor = std::max(0, m_menuCursor - 1);
-            if (k == Qt::Key_Down) m_menuCursor = std::min(2, m_menuCursor + 1);
-            if (k == Qt::Key_1) { m_menuCursor = 0; menuConfirm(); return; }
-            if (k == Qt::Key_2) { m_menuCursor = 1; menuConfirm(); return; }
-            if (k == Qt::Key_3) { m_menuCursor = 2; menuConfirm(); return; }
+            if (k == Qt::Key_Down) m_menuCursor = std::min(4, m_menuCursor + 1);
+            if (k >= Qt::Key_1 && k <= Qt::Key_5) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
+        } else if (m_screen == SCR_SETTINGS) {
+            if (k == Qt::Key_Up)    m_settingsRow = (m_settingsRow + settingsRows() - 1) % settingsRows();
+            if (k == Qt::Key_Down)  m_settingsRow = (m_settingsRow + 1) % settingsRows();
+            if (k == Qt::Key_Left)  changeSetting(m_settingsRow, -1);
+            if (k == Qt::Key_Right) changeSetting(m_settingsRow, 1);
+        } else if (m_screen == SCR_ARSENAL) {
+            if (k == Qt::Key_Up)   m_arsenalSel = (m_arsenalSel + WPN_COUNT - 1) % WPN_COUNT;
+            if (k == Qt::Key_Down) m_arsenalSel = (m_arsenalSel + 1) % WPN_COUNT;
+            if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) return;
         } else if (sel) {
             if (k == Qt::Key_Left)  *sel = std::max(0, *sel - 1);
-            if (k == Qt::Key_Right) *sel = std::min(2, *sel + 1);
-            if (k >= Qt::Key_1 && k <= Qt::Key_3) { *sel = k - Qt::Key_1; menuConfirm(); return; }
+            int nOpt = m_screen == SCR_MAP_SELECT ? MAP_COUNT : 3;
+            if (k == Qt::Key_Right) *sel = std::min(nOpt - 1, *sel + 1);
+            if (k >= Qt::Key_1 && k < Qt::Key_1 + nOpt) { *sel = k - Qt::Key_1; menuConfirm(); return; }
         }
         if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) menuConfirm();
         else if (k == Qt::Key_Escape || (k == Qt::Key_Q && m_screen == SCR_MENU)) menuBack();
         return;
     }
     if (e->isAutoRepeat()) return;
+    if (m_killcamActive) { m_killcamActive = false; return; }
     Player &pl = m_gs.player;
 
     // Zone cleared: choose an upgrade [1-3], a weapon [TAB / arrows], then deploy [ENTER].
@@ -2201,39 +1823,23 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         }
     }
 
-    // Toggle upgrades with 9 key
-    if (k == Qt::Key_9) {
-        bool any = pl.upgradeExtMag[WPN_RIFLE];
-        for (int w = 0; w < WPN_COUNT; w++) {
-            pl.upgradeExtMag[w] = !any;
-            pl.upgradeCompensator[w] = !any;
-            pl.upgradeAmmo[w] = !any;
-            pl.upgradeSpecial[w] = !any;
-            if (!any) pl.mag[w] = effectiveMagSize(w);
-        }
-        pushFeed(any ? "ALL UPGRADES REMOVED" : "ALL UPGRADES EQUIPPED", 2.5f);
-        return;
-    }
-
     bool live = !m_paused && !m_gs.gameOver;
     if (live) {
-        if (k == Qt::Key_Space && m_onGround) { m_velZ = 5.5f; m_onGround = false; sfx(SND_JUMP, 0.5f, frand(0.9f, 1.1f)); }
+        if (k == Qt::Key_Space && m_gs.player.onGround) m_jumpQueued = true;
         if (k == Qt::Key_N && m_snd) { m_snd->setMuted(!m_snd->muted()); pushFeed(m_snd->muted() ? "SOUND: OFF" : "SOUND: ON", 2.f); }
         if (k == Qt::Key_F) tryFire();
-        if (k == Qt::Key_E) tryOpenDoor();
+        if (k == Qt::Key_E && !e->isAutoRepeat()) { if (!trySwapPickup()) tryOpenDoor(); }
+        if (k == Qt::Key_G && !e->isAutoRepeat()) startThrow();
+        if (k == Qt::Key_T) cycleThrowable();
+        if (k == Qt::Key_Z) useGadget();
+        if (k == Qt::Key_H && !isMelee(pl.curWeapon) && pl.reloadTimer <= 0 && pl.switchTimer <= 0) { m_inspectT = 2.2f; sfx(SND_INSPECT, 0.6f); }
         if (k == Qt::Key_C) { m_pitch = 0.f; m_aimX = W / 2.f; m_aimY = H / 2.f; }
-        if (k == Qt::Key_V) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
+        if (k == Qt::Key_B) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
+        if (k == Qt::Key_V) { m_tpp = !m_tpp; pushFeed(m_tpp ? "THIRD PERSON" : "FIRST PERSON", 1.5f); sfx(SND_UI_MOVE, 0.4f); }
+        if (k == Qt::Key_X && m_tpp) m_shoulderLeft = !m_shoulderLeft;
         if (k == Qt::Key_Tab) pl.adsMode = !pl.adsMode;
-        if (k >= Qt::Key_1 && k <= Qt::Key_4) switchWeapon(k - Qt::Key_1);
-        if (k == Qt::Key_Q) {
-            if (pl.curWeapon == WPN_KNIFE) {
-                for (int w = WPN_PISTOL; w < WPN_COUNT; ++w) {
-                    if (pl.owned[w]) { switchWeapon(w); break; }
-                }
-            } else {
-                switchWeapon(WPN_KNIFE);
-            }
-        }
+        if (k >= Qt::Key_1 && k <= Qt::Key_4) selectSlot(k - Qt::Key_1);
+        if (k == Qt::Key_Q) quickMelee();
         if (k == Qt::Key_R) startReload();
     }
     if (k == Qt::Key_Escape) { if (m_paused) QApplication::quit(); else if (!m_gs.gameOver) { m_paused = true; pl.adsMode = false; m_lmb = false; } }
@@ -2254,6 +1860,8 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
         for (const HitRect &r : m_menuRects) {
             if (f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (r.id == 10) { menuBack(); return; }
+            if (m_screen == SCR_SETTINGS) { m_settingsRow = r.id; changeSetting(r.id, 1); return; }
+            if (m_screen == SCR_ARSENAL) { m_arsenalSel = r.id; sfx(SND_UI_MOVE, 0.5f); return; }
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
             if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
@@ -2296,13 +1904,14 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
         m_showArmory = false;
         return;
     }
+    if (m_killcamActive) { m_killcamActive = false; return; }
     if (m_paused || m_gs.gameOver) return;
     if (e->button() == Qt::LeftButton) { m_lmb = true; tryFire(); }
     if (e->button() == Qt::RightButton) m_gs.player.adsMode = true;
 }
 void MainWindow::mouseReleaseEvent(QMouseEvent *e)
 {
-    if (e->button() == Qt::LeftButton) m_lmb = false;
+    if (e->button() == Qt::LeftButton) { m_lmb = false; releaseTrigger(); }
     if (e->button() == Qt::RightButton) m_gs.player.adsMode = false;
 }
 void MainWindow::mouseMoveEvent(QMouseEvent *e)
@@ -2313,6 +1922,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
         int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000;
         for (const HitRect &r : m_menuRects) {
             if (r.id == 10 || f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
+            if (m_screen == SCR_SETTINGS) m_settingsRow = r.id;
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
             if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
@@ -2431,6 +2041,7 @@ const QImage &MainWindow::composeDisplay(int ww, int wh)
 // ─────────────────────────────────────────────────────────────────────────────
 bool MainWindow::snapshot(const QString &dir)
 {
+    m_testMode = true;
     m_timer.stop();
     QDir().mkpath(dir);
     QFile logf(dir + "/log.txt");
@@ -2442,8 +2053,8 @@ bool MainWindow::snapshot(const QString &dir)
         Player &pl = m_gs.player;
         pl.posX = x; pl.posY = y;
         pl.dirX = std::cos(ang); pl.dirY = std::sin(ang);
-        pl.planeX = -pl.dirY * 0.66f; pl.planeY = pl.dirX * 0.66f;
-        m_footZ = floorH(x, y); m_velZ = 0; m_onGround = true;
+        pl.planeX = -pl.dirY * m_planeLen; pl.planeY = pl.dirX * m_planeLen;
+        m_gs.player.footZ = floorH(x, y); m_gs.player.velZ = 0; m_gs.player.onGround = true;
         m_pitch = 0; m_aimX = W / 2.f; m_aimY = H / 2.f;
     };
     auto start = [&](int map) {
@@ -2463,6 +2074,11 @@ bool MainWindow::snapshot(const QString &dir)
     log(QString("menu zoom level: %1").arg(m_rasterZoom));
     m_rasterZoom = 1;
     m_screen = SCR_MAP_SELECT; m_mapChoice = 1; run(10); save("02_maps");
+    m_screen = SCR_ARSENAL; m_arsenalSel = WPN_SNIPER; run(10); save("03_arsenal_sniper");
+    m_arsenalSel = WPN_PLASMA; run(30); save("03_arsenal_plasma");
+    m_screen = SCR_SETTINGS; m_settingsRow = 1; run(5); save("04_settings");
+    { int fov0 = m_fovDeg; changeSetting(1, 1); log(QString("settings: fov %1 -> %2, plane %3").arg(fov0).arg(m_fovDeg).arg(m_planeLen, 0, 'f', 3)); changeSetting(1, -1); }
+    m_screen = SCR_MAP_SELECT;
     m_screen = SCR_CHAR_SELECT; run(5); save("04_char");
 
     // --- Arena: rolling hills + the mesa -------------------------------------------
@@ -2496,20 +2112,20 @@ bool MainWindow::snapshot(const QString &dir)
         place(16.5f, 22.5f, -1.5708f);
         m_keys.insert(Qt::Key_W);
         for (int i = 0; i < 90; i++) advance(1.f / 60.f);
-        float yWalk = m_gs.player.posY, zWalk = m_footZ;
+        float yWalk = m_gs.player.posY, zWalk = m_gs.player.footZ;
         m_keys.clear();
         place(16.5f, 20.5f, -1.5708f);                          // standing on the 0.5 ledge ring
-        m_velZ = 5.5f; m_onGround = false; m_keys.insert(Qt::Key_W);
+        m_gs.player.velZ = 5.5f; m_gs.player.onGround = false; m_keys.insert(Qt::Key_W);
         for (int i = 0; i < 40; i++) advance(1.f / 60.f);
         m_keys.clear();
         for (int i = 0; i < 30; i++) advance(1.f / 60.f);
         log(QString("walk up the steps: stopped at y=%1 z=%2 (high ledge starts at y<20)").arg(yWalk).arg(zWalk));
-        log(QString("jump from ledge: y=%1 z=%2 plat=%3 (1.0 = on the high ledge)").arg(m_gs.player.posY).arg(m_footZ).arg(m_plat[int(m_gs.player.posY)][16]));
+        log(QString("jump from ledge: y=%1 z=%2 plat=%3 (1.0 = on the high ledge)").arg(m_gs.player.posY).arg(m_gs.player.footZ).arg(m_plat[int(m_gs.player.posY)][16]));
         place(13.5f, 34.5f, 3.1416f);                           // arena: walk west into the pit (sunken -0.6)
         m_keys.insert(Qt::Key_W); for (int i = 0; i < 120; i++) advance(1.f / 60.f); m_keys.clear();
         float pitX = m_gs.player.posX;
         m_keys.insert(Qt::Key_D); for (int i = 0; i < 60; i++) advance(1.f / 60.f); m_keys.clear();   // try to walk out north
-        log(QString("pit: fell to z=%1 at x=%2; walking out without jumping -> y=%3 (pit spans y 33..36)").arg(m_footZ).arg(pitX).arg(m_gs.player.posY));
+        log(QString("pit: fell to z=%1 at x=%2; walking out without jumping -> y=%3 (pit spans y 33..36)").arg(m_gs.player.footZ).arg(pitX).arg(m_gs.player.posY));
     }
 
     // --- Dungeon: secret wall opens onto a guarded vault ------------------------------
@@ -2565,6 +2181,246 @@ bool MainWindow::snapshot(const QString &dir)
     tm.restart();
     for (int i = 0; i < 120; i++) { advance(1.f / 60.f); render(); }
     log(QString("%1 ms/frame (dungeon)").arg(tm.elapsed() / 120.0));
+
+    // --- Third person: boom, wall collision, body + squad soldier -----------------
+    start(1);
+    place(20.5f, 20.5f, 0.4f);
+    m_tpp = true;
+    for (int i = 0; i < 40; i++) advance(1.f / 60.f);
+    {
+        Actor a; a.id = 1; a.team = 0; a.posX = 22.5f; a.posY = 19.6f; a.footZ = floorH(22.5f, 19.6f);
+        a.dirX = std::cos(0.9f); a.dirY = std::sin(0.9f); a.curWeapon = WPN_RIFLE; a.walkPhase = 1.2f; a.velX = 2.f;
+        m_gs.actors.push_back(a);
+        Actor b = a; b.id = 2; b.posX = 23.6f; b.posY = 21.3f; b.footZ = floorH(23.6f, 21.3f); b.curWeapon = WPN_PISTOL;
+        b.dirX = std::cos(2.6f); b.dirY = std::sin(2.6f); b.velX = 0.f; b.walkPhase = 0.f;
+        m_gs.actors.push_back(b);
+    }
+    run(2); save("60_tpp");
+    log(QString("tpp: boomT=%1 boom=%2 cam=(%3,%4) player=(%5,%6)").arg(m_boomT, 0, 'f', 2).arg(m_boomCur, 0, 'f', 2)
+        .arg(m_camX, 0, 'f', 2).arg(m_camY, 0, 'f', 2).arg(m_gs.player.posX, 0, 'f', 2).arg(m_gs.player.posY, 0, 'f', 2));
+    m_shoulderLeft = true; m_gs.player.adsMode = true;
+    for (int i = 0; i < 30; i++) advance(1.f / 60.f);
+    run(1); save("61_tpp_ads_left");
+    m_gs.player.adsMode = false; m_shoulderLeft = false;
+    // Back to a wall: the boom must pull in so the camera stays out of the wall
+    start(0);
+    place(1.6f, 1.6f, 0.0f);
+    m_tpp = true;
+    for (int i = 0; i < 40; i++) advance(1.f / 60.f);
+    run(1); save("62_tpp_wall");
+    log(QString("tpp against wall: boom=%1 (wanted %2) camera cell solid=%3").arg(m_boomCur, 0, 'f', 2).arg(boomWanted(), 0, 'f', 2)
+        .arg(solidCell(int(std::floor(m_camX)), int(std::floor(m_camY)))));
+    m_tpp = false;
+    for (int i = 0; i < 40; i++) advance(1.f / 60.f);
+    log(QString("back to first person: boomT=%1").arg(m_boomT, 0, 'f', 3));
+    m_gs.actors.clear();
+
+    // --- Squad bots: 3 AI teammates fight on the arena for 40 s -----------------------
+    for (int map : {1, 3}) {
+        m_squadSize = 3;
+        start(map);
+        for (auto &e : m_gs.enemies) e.fireCooldown = 1.f;      // let them shoot back
+        int nan = 0, inWall = 0, maxApart = 0;
+        for (int f = 0; f < 60 * 40; f++) {
+            m_gs.player.hp = 9999;
+            // the leader walks a slow circle so the squad has to follow
+            float ang = f * 0.004f;
+            m_gs.player.dirX = std::cos(ang); m_gs.player.dirY = std::sin(ang);
+            m_gs.player.planeX = -m_gs.player.dirY * m_planeLen; m_gs.player.planeY = m_gs.player.dirX * m_planeLen;
+            if (f % 240 < 120) m_keys.insert(Qt::Key_W); else m_keys.erase(Qt::Key_W);
+            advance(1.f / 60.f);
+            for (const Actor &a : m_gs.actors) {
+                if (std::isnan(a.posX) || std::isnan(a.posY) || std::isnan(a.footZ)) nan++;
+                if (a.alive && !posValid(a.posX, a.posY, 0.2f)) inWall++;
+                float d = std::sqrt((a.posX - m_gs.player.posX) * (a.posX - m_gs.player.posX) + (a.posY - m_gs.player.posY) * (a.posY - m_gs.player.posY));
+                maxApart = std::max(maxApart, int(d));
+            }
+            if (m_gs.levelComplete) break;
+        }
+        m_keys.clear();
+        int squadKills = 0, alive = 0;
+        for (const Actor &a : m_gs.actors) { squadKills += a.kills; alive += a.alive; }
+        log(QString("squad %1: bots=%2 alive=%3 squadKills=%4 playerKills=%5 nan=%6 inWall=%7 maxApart=%8")
+            .arg(MAP_NAMES[map]).arg(m_gs.actors.size()).arg(alive).arg(squadKills).arg(m_gs.kills).arg(nan).arg(inWall).arg(maxApart));
+        if (map == 1) { m_tpp = true; for (int i = 0; i < 40; i++) advance(1.f / 60.f); run(1); save("63_squad"); m_tpp = false; }
+    }
+    m_squadSize = 0;
+
+    // --- Arsenal: every weapon fires and hurts a target; throwables and gadgets work ---
+    {
+        start(1);
+        Player &pl = m_gs.player;
+        auto setupTarget = [&](float dist) {
+            place(28.5f, 6.5f, 3.1416f);
+            for (auto &e : m_gs.enemies) { e.alive = false; e.corpseFade = 0.f; }
+            Enemy &t = m_gs.enemies[0];
+            t.alive = true; t.state = ES_ALERT; t.hp = t.maxHp = 100000; t.fireCooldown = 999.f; t.burnT = t.shockT = t.stunT = 0.f;
+            t.x = 28.5f - dist; t.y = 6.5f; t.corpseFade = 1.f; t.scale = 1.f;
+            m_gs.enemies[1].alive = true; m_gs.enemies[1].hp = 100000; m_gs.enemies[1].fireCooldown = 999.f;     // keeps the zone open
+            m_gs.enemies[1].x = 2.5f; m_gs.enemies[1].y = 37.5f; m_gs.enemies[1].corpseFade = 1.f;
+            computeView();
+            float sx, sy, d;
+            if (project(t.x, t.y, floorH(t.x, t.y) + 0.55f, sx, sy, d)) { m_aimX = sx; m_aimY = sy; }
+        };
+        int working = 0;
+        QString list;
+        for (int w = 1; w < WPN_COUNT; w++) {
+            const WeaponDef &d = WEAPONS[w];
+            setupTarget(isMelee(w) ? 1.1f : d.proj == PJ_FLAME ? 3.0f : d.proj == PJ_ARC ? 5.f : 6.f);
+            for (int k = 0; k < WPN_COUNT; k++) pl.owned[k] = false;
+            pl.slot[SLOT_PRIMARY] = pl.slot[SLOT_PRIMARY2] = -1;
+            pl.owned[w] = true; pl.slot[d.slot == SLOT_PRIMARY ? SLOT_PRIMARY : d.slot] = w;
+            pl.curWeapon = w; pl.switchTimer = 0; pl.reloadTimer = 0; m_pendingWeapon = -1; pl.attackCooldown = 0;
+            pl.mag[w] = effectiveMagSize(w); pl.reserve[w] = d.maxReserve; pl.heat = 0; pl.overheatT = 0; pl.charge = 0;
+            m_charging = false; m_shellReload = false; pl.hp = 9999;
+            Enemy &t = m_gs.enemies[0];
+            int hp0 = t.hp;
+            m_lmb = true; tryFire();
+            int hold = d.mode == FM_CHARGE ? 70 : d.mode == FM_SEMI || d.mode == FM_BOLT ? 1 : 40;
+            for (int f = 0; f < hold; f++) { int keep = t.hp; setupTarget(isMelee(w) ? 1.1f : d.proj == PJ_FLAME ? 3.0f : d.proj == PJ_ARC ? 5.f : 6.f); t.hp = keep; advance(1.f / 60.f); }
+            m_lmb = false; releaseTrigger();
+            if (w == WPN_BATTLE_RIFLE || w == WPN_LMG || w == WPN_PLASMA || w == WPN_ARC || w == WPN_FLAMETHROWER || w == WPN_RAILGUN || w == WPN_SNIPER || w == WPN_ROCKET) { m_lmb = true; tryFire(); }
+            if (w == WPN_SMG || w == WPN_ROCKET || w == WPN_ARC || w == WPN_FLAMETHROWER || w == WPN_REVOLVER || w == WPN_RAILGUN || w == WPN_PLASMA || w == WPN_AXE) {
+                render(); save(QString("7%1_%2").arg(char('a' + w % 26)).arg(d.shortName).replace('.', '_').replace('-', '_'));
+            }
+            for (int f = 0; f < 90; f++) advance(1.f / 60.f);   // let projectiles land, burns tick
+            m_lmb = false; releaseTrigger();
+            int dmg = hp0 - m_gs.enemies[0].hp;
+            if (dmg > 0) working++;
+            list += QString(" %1=%2").arg(d.shortName).arg(dmg);
+        }
+        log(QString("arsenal: %1 / %2 weapons damaged the target").arg(working).arg(WPN_COUNT - 1));
+        log("  damage per weapon:" + list);
+
+        // attachments change the stats that matter
+        Loadout L; L.att[AT_OPTIC] = 4; L.att[AT_MUZZLE] = 2; L.att[AT_MAG] = 1; L.rarity = 4;
+        pl.load[WPN_RIFLE] = Loadout{};
+        float rec0 = effectiveRecoil(WPN_RIFLE); int mag0 = effectiveMagSize(WPN_RIFLE); int dmg0 = effectiveDamage(WPN_RIFLE);
+        pl.load[WPN_RIFLE] = L;
+        log(QString("rifle attachments: scope=%1 adsFov=%2 recoil %3->%4 mag %5->%6 dmg %7->%8 (legendary, 4x, comp, ext mag)")
+            .arg(effectiveScope(WPN_RIFLE)).arg(effectiveAdsFov(WPN_RIFLE)).arg(rec0, 0, 'f', 2).arg(effectiveRecoil(WPN_RIFLE), 0, 'f', 2)
+            .arg(mag0).arg(effectiveMagSize(WPN_RIFLE)).arg(dmg0).arg(effectiveDamage(WPN_RIFLE)));
+        pl.load[WPN_RIFLE] = Loadout{};
+
+        // throwables
+        auto throwAt = [&](int k, float dist) {
+            setupTarget(dist);
+            pl.throwCount[k] = 3; pl.throwSel = k;
+            int hp0 = m_gs.enemies[0].hp;
+            startThrow(); m_keys.insert(Qt::Key_G); advance(1.f / 60.f); m_keys.erase(Qt::Key_G); advance(1.f / 60.f);
+            if (k == TH_MINE) { m_gs.enemies[0].x = 30.f; m_gs.enemies[0].y = 6.5f; }
+            for (int f = 0; f < 60 * 4; f++) {
+                m_gs.enemies[0].stunT = 1.f;                         // hold the target still
+                if (k == TH_MINE && f == 120) { m_gs.enemies[0].x = pl.posX + pl.dirX * 0.5f; m_gs.enemies[0].y = pl.posY + pl.dirY * 0.5f; pl.posX += 3.f; }
+                advance(1.f / 60.f);
+                if (k == TH_SMOKE && f == 150) { render(); save("78_smoke"); }
+                if (k == TH_MOLOTOV && f == 40) { render(); save("79_molotov"); }
+                if (k == TH_FRAG && !m_gs.projectiles.empty() && f % 5 == 0 && m_blastLight > 0.5f) { render(); save("77_frag"); }
+            }
+            return hp0 - m_gs.enemies[0].hp;
+        };
+        int frag = throwAt(TH_FRAG, 5.f);
+        bool smokeSeen = false;
+        { setupTarget(6.f); pl.throwCount[TH_SMOKE] = 2; pl.throwSel = TH_SMOKE; startThrow(); m_keys.insert(Qt::Key_G); advance(1.f / 60.f); m_keys.clear(); advance(1.f / 60.f);
+          for (int f = 0; f < 60 * 4; f++) { advance(1.f / 60.f); if (f == 180) { render(); save("78_smoke"); } }
+          for (const SmokeCloud &c : m_gs.smokes) smokeSeen |= c.life > 0;
+        }
+        bool smokeBlocked = !m_gs.smokes.empty() && smokeBlocks(pl.posX, pl.posY, pl.footZ + 0.5f, m_gs.smokes[0].x - 3.f, m_gs.smokes[0].y, m_gs.smokes[0].z + 0.5f);
+        m_gs.smokes.clear();
+        setupTarget(5.f); pl.throwCount[TH_FLASH] = 1; pl.throwSel = TH_FLASH; startThrow(); m_keys.insert(Qt::Key_G); advance(1.f / 60.f); m_keys.clear();
+        float stun = 0.f; for (int f = 0; f < 60 * 3; f++) { advance(1.f / 60.f); stun = std::max(stun, m_gs.enemies[0].stunT); }
+        int molotov = throwAt(TH_MOLOTOV, 4.f);
+        int mine = throwAt(TH_MINE, 4.f);
+        log(QString("throwables: frag dmg=%1  smoke cloud=%2 blocks sight=%3  flash stun=%4 s  molotov dmg=%5  mine dmg=%6")
+            .arg(frag).arg(smokeSeen).arg(smokeBlocked).arg(stun, 0, 'f', 1).arg(molotov).arg(mine));
+
+        // gadgets
+        setupTarget(7.f);
+        m_gs.enemies[0].hp = 120;
+        pl.gadget = GD_TURRET; pl.gadgetCd = 0; useGadget();
+        for (int f = 0; f < 60 * 8; f++) { advance(1.f / 60.f); m_gs.player.hp = 9999; if (f == 30) { render(); save("80_turret"); } }
+        bool turretKill = !m_gs.enemies[0].alive;
+        pl.gadget = GD_RADAR; pl.gadgetCd = 0; useGadget(); advance(1.f / 60.f);
+        float radar = m_radarT;
+        pl.gadget = GD_JETPACK; pl.gadgetCd = 0; float z0 = pl.footZ; useGadget();
+        float zMax = z0; for (int f = 0; f < 40; f++) { advance(1.f / 60.f); zMax = std::max(zMax, pl.footZ); }
+        pl.gadget = GD_MEDSTATION; pl.gadgetCd = 0; pl.hp = 50; useGadget();
+        for (int f = 0; f < 120; f++) advance(1.f / 60.f);
+        int healed = pl.hp - 50;
+        log(QString("gadgets: turret killed target=%1  radar=%2 s  jetpack rise=%3  medstation healed=%4  turrets=%5")
+            .arg(turretKill).arg(radar, 0, 'f', 1).arg(zMax - z0, 0, 'f', 2).arg(healed).arg(m_gs.turrets.size()));
+
+        // inventory: a primary pickup with both primary slots full swaps on E
+        start(1);
+        Loadout r4; r4.rarity = 4;
+        giveWeapon(WPN_RIFLE, Loadout{}, -1, -1, true);
+        giveWeapon(WPN_SMG, Loadout{}, -1, -1, true);
+        spawnWeaponPickup(pl.posX, pl.posY, WPN_LMG, r4, false);
+        m_pickupCooldown = 0.f;
+        for (int f = 0; f < 30; f++) advance(1.f / 60.f);
+        int near = m_nearPickup;
+        bool swapped = trySwapPickup();
+        for (int f = 0; f < 40; f++) advance(1.f / 60.f);
+        int dropped = 0; for (const WeaponPickup &wp : m_gs.weaponPickups) if (wp.active && wp.type == PICKUP_WEAPON && wp.weapon == WPN_SMG) dropped++;
+        log(QString("swap: prompt=%1 swapped=%2 slots=[%3 %4 %5 %6] smg dropped=%7 cur=%8 rarity=%9")
+            .arg(near >= 0).arg(swapped).arg(pl.slot[0]).arg(pl.slot[1]).arg(pl.slot[2]).arg(pl.slot[3]).arg(dropped).arg(WEAPONS[pl.curWeapon].shortName).arg(pl.load[WPN_LMG].rarity));
+        // view-model gallery
+        int gallery[] = { WPN_SNIPER, WPN_PLASMA, WPN_RAILGUN, WPN_AUTO_SHOTGUN, WPN_BULLPUP, WPN_FLAMETHROWER, WPN_MACHETE, WPN_ARC };
+        place(m_parsed[1].camX, m_parsed[1].camY, 0.5f);
+        for (int g : gallery) {
+            pl.owned[g] = true; pl.curWeapon = g; pl.switchTimer = 0; m_pendingWeapon = -1; pl.mag[g] = effectiveMagSize(g);
+            run(3); save(QString("90_vm_%1").arg(WEAPONS[g].shortName).replace('.', '_').replace('-', '_'));
+        }
+        // attachments visible on the gun + laser
+        pl.owned[WPN_RIFLE] = true; pl.curWeapon = WPN_RIFLE;
+        pl.load[WPN_RIFLE].att[AT_OPTIC] = 2; pl.load[WPN_RIFLE].att[AT_MUZZLE] = 1; pl.load[WPN_RIFLE].att[AT_UNDER] = 2; pl.load[WPN_RIFLE].rarity = 3;
+        run(3); save("91_vm_rifle_attachments");
+        m_inspectT = 1.1f; run(1); save("92_inspect");
+        m_inspectT = 0.f;
+        m_tpp = true; for (int i = 0; i < 40; i++) advance(1.f / 60.f); run(1); save("93_tpp_rifle"); m_tpp = false;
+        for (int i = 0; i < 40; i++) advance(1.f / 60.f);
+        // debug range: every gun on the floor
+        startDebugMode(); run(3); save("94_debug_range");
+        int onFloor = 0; for (const WeaponPickup &wp : m_gs.weaponPickups) if (wp.type == PICKUP_WEAPON) onFloor++;
+        log(QString("debug range: %1 guns on the floor").arg(onFloor));
+    }
+
+    // --- FRONTIER: 64x64 map, runtime map size --------------------------------------
+    start(3);
+    log(QString("frontier size: %1x%2 (expect 64x64)").arg(m_mapW).arg(m_mapH));
+    place(m_parsed[3].camX, m_parsed[3].camY, 0.6f); run(10); save("35_frontier");
+    place(31.5f, 31.5f, 2.4f); run(10); save("36_frontier_tower");
+    tm.restart();
+    for (int i = 0; i < 120; i++) { advance(1.f / 60.f); render(); }
+    log(QString("%1 ms/frame (frontier)").arg(tm.elapsed() / 120.0));
+    {
+        // A World built on its own (no window) must agree with the game's copy
+        World w;
+        w.loadLayout(m_parsed[3], TERRAIN_AMP[3], 3, MAP_THEME[3]);
+        int diff = 0;
+        for (int y = 0; y < 64; y += 3) for (int x = 0; x < 64; x += 3)
+            if (std::fabs(w.floorH(x + 0.3f, y + 0.7f) - floorH(x + 0.3f, y + 0.7f)) > 1e-5f) diff++;
+        float hx, hy, hz;
+        bool blocked = w.traceSegment(2.5f, 2.5f, 0.6f, 31.5f, 31.5f, 0.6f, hx, hy, hz);
+        log(QString("standalone World: %1x%2 height mismatches=%3 trace blocked=%4 at (%5,%6)")
+            .arg(w.m_mapW).arg(w.m_mapH).arg(diff).arg(blocked).arg(hx, 0, 'f', 1).arg(hy, 0, 'f', 1));
+    }
+    // --- Kill cam: get shot by a rifleman, replay from its eyes -------------------------
+    {
+        start(1);
+        place(28.5f, 6.5f, 3.1416f);
+        for (auto &e : m_gs.enemies) { e.alive = false; e.corpseFade = 0.f; }
+        Enemy &k = m_gs.enemies[0];
+        k.alive = true; k.corpseFade = 1.f; k.state = ES_ALERT; k.x = 22.f; k.y = 7.5f; k.hp = 9999; k.fireCooldown = 0.f;
+        m_gs.enemies[1].alive = true; m_gs.enemies[1].x = 2.5f; m_gs.enemies[1].y = 37.5f;
+        m_gs.player.hp = 25;
+        for (int f = 0; f < 60 * 12 && !m_gs.gameOver; f++) { k.fireCooldown = std::min(k.fireCooldown, 0.3f); advance(1.f / 60.f); }
+        log(QString("killcam: dead=%1 killer=%2 active=%3 frames=%4").arg(m_gs.gameOver).arg(m_killerIdx).arg(m_killcamActive).arg(m_kcLen));
+        for (int f = 0; f < 90; f++) advance(1.f / 60.f);
+        render(); save("51_killcam");
+        for (int f = 0; f < 60 * 6; f++) advance(1.f / 60.f);
+        log(QString("killcam finished: active=%1 (expect 0)").arg(m_killcamActive));
+    }
     m_gs.player.hp = 0; m_gs.gameOver = true; run(2); save("50_gameover");
     m_gs.gameOver = false;
 
@@ -2622,7 +2478,7 @@ bool MainWindow::snapshot(const QString &dir)
         QKeyEvent two(QEvent::KeyPress, Qt::Key_2, Qt::NoModifier), tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
         // pick the rifle unlock card if offered, otherwise card 2
         int unlockIdx = -1;
-        for (int i = 0; i < int(m_upgradeCards.size()); i++) if (m_upgradeCards[i].slot == 4) unlockIdx = i;
+        for (int i = 0; i < int(m_upgradeCards.size()); i++) if (m_upgradeCards[i].slot == UC_UNLOCK) unlockIdx = i;
         if (unlockIdx >= 0) { QKeyEvent kk(QEvent::KeyPress, Qt::Key(Qt::Key_1 + unlockIdx), Qt::NoModifier); keyPressEvent(&kk); }
         else keyPressEvent(&two);
         m_keys.clear();
@@ -2665,7 +2521,7 @@ bool MainWindow::snapshot(const QString &dir)
         // 3D weapon views
         for (int wv = 0; wv < WPN_COUNT; wv++) {
             pl.owned[wv] = true; pl.curWeapon = wv; pl.switchTimer = 0; pl.reloadTimer = 0; m_pendingWeapon = -1;
-            if (wv != WPN_KNIFE && pl.mag[wv] == 0) pl.mag[wv] = effectiveMagSize(wv);
+            if (usesAmmo(wv) && pl.mag[wv] == 0) pl.mag[wv] = effectiveMagSize(wv);
             for (size_t i = 1; i < m_gs.enemies.size(); i++) m_gs.enemies[i].alive = false;
             run(10); save(QString("8%1_gun3d_%2").arg(wv).arg(WEAPONS[wv].shortName));
         }
@@ -2675,7 +2531,7 @@ bool MainWindow::snapshot(const QString &dir)
     }
 
     // ── Bot playtest: random movement + aiming at enemies, invariants checked every frame ──
-    for (int map = 0; map < 3; map++) {
+    for (int map = 0; map < MAP_COUNT; map++) {
         m_mapChoice = map; m_charChoice = 0; m_difficulty = 2;
         initGame(); m_screen = SCR_PLAYING;
         Player &pl = m_gs.player;
@@ -2695,7 +2551,7 @@ bool MainWindow::snapshot(const QString &dir)
                 if (r == 1) m_keys.insert(Qt::Key_A);
                 if (r == 2) m_keys.insert(Qt::Key_D);
                 if (r == 3) m_keys.insert(Qt::Key_Shift);
-                if (rnd() % 4 == 0 && m_onGround) { m_velZ = 5.5f; m_onGround = false; }
+                if (rnd() % 4 == 0 && m_gs.player.onGround) { m_gs.player.velZ = 5.5f; m_gs.player.onGround = false; }
                 turn(float(rnd() % 200 - 100) / 100.f * 1.2f);
                 keyT = 0.6f + float(rnd() % 100) / 80.f;
             }
@@ -2706,7 +2562,7 @@ bool MainWindow::snapshot(const QString &dir)
                 const Enemy &e = m_gs.enemies[i];
                 if (!e.alive) continue;
                 float dx = e.x - pl.posX, dy = e.y - pl.posY, d = dx * dx + dy * dy;
-                if (d < best && hasLOS(pl.posX, pl.posY, m_footZ + 0.5f, e.x, e.y, floorH(e.x, e.y) + 0.6f)) { best = d; bi = i; }
+                if (d < best && hasLOS(pl.posX, pl.posY, m_gs.player.footZ + 0.5f, e.x, e.y, floorH(e.x, e.y) + 0.6f)) { best = d; bi = i; }
             }
             if (bi >= 0) {
                 const Enemy &e = m_gs.enemies[bi];
@@ -2726,9 +2582,9 @@ bool MainWindow::snapshot(const QString &dir)
             }
             if (f % 6 == 0) render();
             // invariants
-            if (!std::isfinite(pl.posX) || !std::isfinite(pl.posY) || !std::isfinite(m_footZ) || !std::isfinite(m_pitch)) nan++;
+            if (!std::isfinite(pl.posX) || !std::isfinite(pl.posY) || !std::isfinite(m_gs.player.footZ) || !std::isfinite(m_pitch)) nan++;
             if (!posValid(pl.posX, pl.posY, 0.2f)) inWall++;
-            if (m_footZ < floorH(pl.posX, pl.posY) - 0.05f) underGround++;
+            if (m_gs.player.footZ < floorH(pl.posX, pl.posY) - 0.05f) underGround++;
             for (const Enemy &e : m_gs.enemies) if (e.alive && !posValid(e.x, e.y, 0.15f)) enemyInWall++;
             bool pushing = m_keys.count(Qt::Key_W) > 0;
             float mv = std::hypot(pl.posX - lastX, pl.posY - lastY);
@@ -2739,9 +2595,9 @@ bool MainWindow::snapshot(const QString &dir)
                 int free = 0;                                    // can the player move in ANY direction?
                 for (int k = 0; k < 16; k++) {
                     float an = k * 0.3927f;
-                    if (canStep(pl.posX + std::cos(an) * 0.06f, pl.posY + std::sin(an) * 0.06f, m_footZ, 0.76f, 0.28f, pl.posX, pl.posY)) free++;   // a jump clears 0.76
+                    if (canStep(pl.posX + std::cos(an) * 0.06f, pl.posY + std::sin(an) * 0.06f, m_gs.player.footZ, 0.76f, 0.28f, pl.posX, pl.posY)) free++;   // a jump clears 0.76
                 }
-                if (free == 0) { hardStuck++; log(QString("  HARD STUCK at (%1,%2) z=%3").arg(pl.posX).arg(pl.posY).arg(m_footZ)); }
+                if (free == 0) { hardStuck++; log(QString("  HARD STUCK at (%1,%2) z=%3").arg(pl.posX).arg(pl.posY).arg(m_gs.player.footZ)); }
                 turn(2.5f);
             }
         }

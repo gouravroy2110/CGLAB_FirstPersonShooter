@@ -2,6 +2,7 @@
 //  pixelfont.h  -  Bitmap pixel font (no vector fonts anywhere in the game)
 //
 //  95 printable ASCII glyphs + a degree sign, each a hand-drawn 5x7 bitmap.
+//  Large text uses Scale2x / Scale3x upscaled copies (smooth diagonals).
 //  Text is drawn by copying set bits as solid scale x scale pixel blocks into
 //  the framebuffer — the same raster path as every other pixel in the game.
 //  Lower-case letters with descenders (gpqy) are drawn 2 rows lower.
@@ -127,16 +128,73 @@ inline int width(const std::string &s, int scale, bool bold = false)
     return int(s.size()) * ADV * scale - scale + (bold ? std::max(1, scale / 2) : 0);
 }
 
+// ── Smooth large text: the 5x7 glyphs are upscaled once with the classic
+//    pixel-art algorithms Scale2x (EPX) and Scale3x (AdvMAME3x). They copy a
+//    neighbour's value into a corner sub-pixel when two edges meet at that
+//    corner, so diagonals become staircase-smooth instead of chunky blocks.
+//    Still pure bitmaps: text at scale 2/4/6 uses the 10x14 set, 3/6/9 the 15x21.
+struct ScaledFont {
+    int n;                                  // 2 or 3
+    std::vector<uint8_t> bits[96];          // (5n) x (7n) bitmap per glyph, row-major
+    explicit ScaledFont(int factor) : n(factor) {
+        for (int gi = 0; gi < 96; gi++) {
+            auto px = [&](int x, int y) -> int {
+                if (x < 0 || y < 0 || x >= 5 || y >= 7) return 0;
+                return (GLYPHS[gi][y] >> (4 - x)) & 1;
+            };
+            std::vector<uint8_t> &out = bits[gi];
+            out.assign(size_t(5 * n) * (7 * n), 0);
+            for (int y = 0; y < 7; y++) for (int x = 0; x < 5; x++) {
+                int A = px(x - 1, y - 1), B = px(x, y - 1), C = px(x + 1, y - 1);
+                int D = px(x - 1, y),     E = px(x, y),     F = px(x + 1, y);
+                int G = px(x - 1, y + 1), Hh = px(x, y + 1), I = px(x + 1, y + 1);
+                int e[9];
+                if (n == 2) {                       // Scale2x / EPX
+                    e[0] = (D == B && D != Hh && B != F) ? D : E;
+                    e[1] = (B == F && B != D && F != Hh) ? F : E;
+                    e[2] = (D == Hh && D != B && Hh != F) ? D : E;
+                    e[3] = (Hh == F && Hh != D && F != B) ? F : E;
+                    for (int k = 0; k < 4; k++) out[size_t(y * 2 + k / 2) * 10 + x * 2 + k % 2] = uint8_t(e[k]);
+                } else {                            // Scale3x / AdvMAME3x
+                    e[0] = (D == B && D != Hh && B != F) ? D : E;
+                    e[1] = ((D == B && D != Hh && B != F && E != C) || (B == F && B != D && F != Hh && E != A)) ? B : E;
+                    e[2] = (B == F && B != D && F != Hh) ? F : E;
+                    e[3] = ((D == B && D != Hh && B != F && E != G) || (D == Hh && D != B && Hh != F && E != A)) ? D : E;
+                    e[4] = E;
+                    e[5] = ((B == F && B != D && F != Hh && E != I) || (Hh == F && Hh != D && F != B && E != C)) ? F : E;
+                    e[6] = (D == Hh && D != B && Hh != F) ? D : E;
+                    e[7] = ((D == Hh && D != B && Hh != F && E != I) || (Hh == F && Hh != D && F != B && E != G)) ? Hh : E;
+                    e[8] = (Hh == F && Hh != D && F != B) ? F : E;
+                    for (int k = 0; k < 9; k++) out[size_t(y * 3 + k / 3) * 15 + x * 3 + k % 3] = uint8_t(e[k]);
+                }
+            }
+        }
+    }
+};
+inline const ScaledFont &scaled2() { static ScaledFont f(2); return f; }
+inline const ScaledFont &scaled3() { static ScaledFont f(3); return f; }
+
 // Draw one line with its cap-top at (x, y). Colour alpha is honoured.
 inline void drawLine(rs::Canvas &cv, int x, int y, const std::string &s, uint32_t color, int scale, bool bold = false)
 {
     int boldOff = bold ? std::max(1, scale / 2) : 0;
+    // pick the smoothest bitmap that divides the scale exactly
+    const ScaledFont *sf = scale % 3 == 0 ? &scaled3() : scale % 2 == 0 ? &scaled2() : nullptr;
     for (size_t i = 0; i < s.size(); i++) {
         unsigned char c = (unsigned char)s[i];
         if (c < 32 || c > 127) c = '?';
-        const uint8_t *g = GLYPHS[c - 32];
         int gx = x + int(i) * ADV * scale;
         int gy = y + (descender(c) ? 2 * scale : 0);
+        if (sf) {
+            int n = sf->n, sub = scale / n, gw = 5 * n, gh = 7 * n;
+            int bo = bold ? std::max(1, sub * n / 2) : 0;
+            const std::vector<uint8_t> &b = sf->bits[c - 32];
+            for (int row = 0; row < gh; row++)
+                for (int col = 0; col < gw; col++)
+                    if (b[size_t(row) * gw + col]) cv.blendRect(gx + col * sub, gy + row * sub, sub + bo, sub, color);
+            continue;
+        }
+        const uint8_t *g = GLYPHS[c - 32];
         for (int row = 0; row < 7; row++) {
             uint8_t bits = g[row];
             if (!bits) continue;

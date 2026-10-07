@@ -315,6 +315,12 @@ const SoldierLook SNIPER_LOOK = {
     rgb(44,56,38), rgb(175,135,102), rgb(30,36,28), rgb(240,40,60), rgb(24,28,22), rgb(22,26,20)
 };
 
+// Friendly squad: sand-and-blue kit so allies never read as hostiles
+const SoldierLook SQUAD_LOOK = {
+    rgb(150,138,104), rgb(110,100,74), rgb(170,160,126), rgb(58,92,140), rgb(40,66,104),
+    rgb(64,100,150), rgb(196,150,116), rgb(40,40,44), rgb(110,230,255), rgb(52,44,36), rgb(46,44,42)
+};
+
 SoldierLook lookForClass(int cls)
 {
     SoldierLook l = ENEMY_LOOK;

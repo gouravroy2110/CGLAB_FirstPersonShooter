@@ -17,6 +17,8 @@ enum GunPartFlag : uint8_t {
     GP_MAG    = 2,   // magazine: drops out during reload
     GP_GLASS  = 4,   // optic lens: glossy, tinted
     GP_NORIM  = 8,   // recessed detail: no specular rim
+    GP_GLOW   = 16,  // emissive (energy cells, coils): drawn at full brightness
+    GP_HAMMER = 32,  // revolver hammer: falls on the shot, cocks back
 };
 
 struct GunPart { int n; float pts[12]; uint32_t col; uint8_t flags; };

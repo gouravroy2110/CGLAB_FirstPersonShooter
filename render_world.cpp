@@ -13,6 +13,7 @@
 //    • Sprites / tracers / particles: projected and depth-tested per pixel.
 // =============================================================================
 #include "mainwindow.h"
+#include "parallel.h"
 #include <cmath>
 #include <algorithm>
 
@@ -38,7 +39,7 @@ void MainWindow::renderTerrain()
     const Player &pl = m_gs.player;
     const Theme &T = THEMES[m_theme];
     const MipTex &ft = m_floorTex[m_theme];
-    const int LW = MAP_W * LM, DW = MAP_W * DM;
+    const int LW = m_mapW * LM, DW = m_mapW * DM;
     const int hr = R(T.haze), hg = G(T.haze), hb = B(T.haze);
     const float sunX = std::cos(SUN_AZIMUTH), sunY = std::sin(SUN_AZIMUTH);
 
@@ -56,7 +57,7 @@ void MainWindow::renderTerrain()
         return 0xFF000000 | (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b);
     };
     // Mip thresholds (depth at which the next smaller level kicks in)
-    float floorFoot = (2.f * 0.66f * m_adsFOVMult / W) * 128.f * 1.4f;
+    float floorFoot = (2.f * m_planeLen * m_adsFOVMult / W) * 128.f * 1.4f;
     float wallFoot = 128.f * 1.3f / m_K;
     auto mipFor = [](float d, float foot) {
         float f = d * foot;
@@ -66,15 +67,17 @@ void MainWindow::renderTerrain()
     static int lightLut[256];
     if (lightLut[100] != 256) for (int i = 0; i < 256; i++) lightLut[i] = i * 256 / 100;
 
-    for (int x = 0; x < W; x++) {
+    // Every column is independent, so the screen is split into bands that are
+    // marched in parallel on the CPU cores (each thread writes only its own columns)
+    auto column = [&](int x) {
         float camX = 2.f * x / float(W) - 1.f;
         float rdX = pl.dirX + pl.planeX * m_adsFOVMult * camX, rdY = pl.dirY + pl.planeY * m_adsFOVMult * camX;
-        int mapX = int(pl.posX), mapY = int(pl.posY);
+        int mapX = int(m_camX), mapY = int(m_camY);
         float ddX = std::fabs(rdX) < 1e-20f ? 1e30f : std::fabs(1.f / rdX);
         float ddY = std::fabs(rdY) < 1e-20f ? 1e30f : std::fabs(1.f / rdY);
         float sdX, sdY; int stX, stY;
-        if (rdX < 0) { stX = -1; sdX = (pl.posX - mapX) * ddX; } else { stX = 1; sdX = (mapX + 1.f - pl.posX) * ddX; }
-        if (rdY < 0) { stY = -1; sdY = (pl.posY - mapY) * ddY; } else { stY = 1; sdY = (mapY + 1.f - pl.posY) * ddY; }
+        if (rdX < 0) { stX = -1; sdX = (m_camX - mapX) * ddX; } else { stX = 1; sdX = (mapX + 1.f - m_camX) * ddX; }
+        if (rdY < 0) { stY = -1; sdY = (m_camY - mapY) * ddY; } else { stY = 1; sdY = (mapY + 1.f - m_camY) * ddY; }
 
         int ytop = H;                       // rows [ytop, H) of this column are done
         uint32_t *colPix = m_pixels + x;
@@ -105,7 +108,7 @@ void MainWindow::renderTerrain()
                 float den = Y * Dd + m_K * Dh;
                 float t = std::fabs(den) > 1e-6f ? clampf((A - Y * d1) / den, 0.f, 1.f) : 0.f;
                 float d = d1 + Dd * t;
-                float wx = pl.posX + rdX * d, wy = pl.posY + rdY * d;
+                float wx = m_camX + rdX * d, wy = m_camY + rdY * d;
                 uint32_t out;
                 if (acid) {
                     // murky acid: two crossing ripple bands + sparse bubbles, self-lit
@@ -122,10 +125,10 @@ void MainWindow::renderTerrain()
                     out = shadeFog((R(c) * L) >> 8, (G(c) * L) >> 8, (B(c) * L) >> 8, fogI(d));
                 } else {
                     uint32_t c = gtex[(int(wy * gts) & gmsk) * gsz + (int(wx * gts) & gmsk)];
-                    int li = clampi(int(wx * LM), 0, LW - 1), lj = clampi(int(wy * LM), 0, MAP_H * LM - 1);
+                    int li = clampi(int(wx * LM), 0, LW - 1), lj = clampi(int(wy * LM), 0, m_mapH * LM - 1);
                     int L = lightLut[m_light[size_t(lj) * LW + li]];
                     int r = (R(c) * L) >> 8, g = (G(c) * L) >> 8, b = (B(c) * L) >> 8;
-                    int di = clampi(int(wx * DM), 0, DW - 1), dj = clampi(int(wy * DM), 0, MAP_H * DM - 1);
+                    int di = clampi(int(wx * DM), 0, DW - 1), dj = clampi(int(wy * DM), 0, m_mapH * DM - 1);
                     size_t didx = size_t(dj) * DW + di;
                     if (int bl = m_blood[didx]) {
                         int k = bl * 220 >> 8;
@@ -154,7 +157,7 @@ void MainWindow::renderTerrain()
             int lvl = mipFor(d, wallFoot);
             int sz = WALL_TS >> lvl, msk = sz - 1;
             const uint32_t *tex = m_wallTex[m_theme][wt].lv[lvl].data();
-            float bx = pl.posX + rdX * d, by = pl.posY + rdY * d;
+            float bx = m_camX + rdX * d, by = m_camY + rdY * d;
             float wallX = side == 0 ? by : bx; wallX -= std::floor(wallX);
             if ((side == 0 && rdX > 0) || (side == 1 && rdY < 0)) wallX = 1.f - wallX;
             int tx = int(wallX * sz) & msk;
@@ -167,7 +170,7 @@ void MainWindow::renderTerrain()
             // the texture slides down with a sinking door
             float vOff = (solid && (wt == CELL_DOOR || wt == CELL_SECRET)) ? m_doorT[cy][cx] * WALL_HEIGHT[wt] : 0.f;
             const uint8_t *dec = nullptr;
-            auto it = m_wallDecals.find((cy * MAP_W + cx) * 4 + faceIdx);
+            auto it = m_wallDecals.find((cy * m_mapW + cx) * 4 + faceIdx);
             if (it != m_wallDecals.end()) dec = it->second.data();
             int du = int(wallX * WD_U);
             float zStep = d / m_K;
@@ -193,7 +196,7 @@ void MainWindow::renderTerrain()
             ytop = r0;
         };
 
-        float dPrev = 0.05f, hPrev = floorH(pl.posX, pl.posY);
+        float dPrev = 0.05f, hPrev = floorH(m_camX, m_camY);
         for (int g = 0; g < 256 && ytop > 0; g++) {
             float dExit = std::max(dPrev, std::min(std::min(sdX, sdY), MAXD));
             if (!solidCell(mapX, mapY)) {
@@ -202,8 +205,8 @@ void MainWindow::renderTerrain()
                 int n = clampi(int(px / 10.f) + 1, 1, 16);
                 for (int i = 1; i <= n; i++) {
                     float dN = dPrev + (dExit - dPrev) / float(n - i + 1);
-                    float sx = clampf(pl.posX + rdX * dN, mapX + 1e-3f, mapX + 0.999f);
-                    float sy = clampf(pl.posY + rdY * dN, mapY + 1e-3f, mapY + 0.999f);
+                    float sx = clampf(m_camX + rdX * dN, mapX + 1e-3f, mapX + 0.999f);
+                    float sy = clampf(m_camY + rdY * dN, mapY + 1e-3f, mapY + 0.999f);
                     float hN = smoothH(sx, sy) + m_plat[mapY][mapX];
                     span(dPrev, hPrev, dN, hN, mapX, mapY, 0);
                     dPrev = dN; hPrev = hN;
@@ -216,14 +219,15 @@ void MainWindow::renderTerrain()
             if (dExit >= MAXD) break;
             int side;
             if (sdX < sdY) { sdX += ddX; mapX += stX; side = 0; } else { sdY += ddY; mapY += stY; side = 1; }
-            if (mapX < 0 || mapY < 0 || mapX >= MAP_W || mapY >= MAP_H) break;
-            float bx = pl.posX + rdX * dExit, by = pl.posY + rdY * dExit;
+            if (mapX < 0 || mapY < 0 || mapX >= m_mapW || mapY >= m_mapH) break;
+            float bx = m_camX + rdX * dExit, by = m_camY + rdY * dExit;
             float hNew = solidCell(mapX, mapY) ? cellTop(mapX, mapY) : smoothH(bx, by) + m_plat[mapY][mapX];
             if (hNew > hPrev + 1e-4f) face(std::max(dExit, 0.05f), hPrev, hNew, mapX, mapY, side);
             hPrev = hNew; dPrev = std::max(dExit, 0.05f);
         }
         m_colTop[x] = ytop;
-    }
+    };
+    parallelColumns(W, column);
 }
 
 // Sky above the terrain silhouette of each column
@@ -236,7 +240,7 @@ void MainWindow::renderSky()
     static int colIdx[W], rowIdx[H];
     for (int x = 0; x < W; x++) {
         float camX = 2.f * x / W - 1.f;
-        float ang = facing + std::atan(camX * 0.66f * m_adsFOVMult);
+        float ang = facing + std::atan(camX * m_planeLen * m_adsFOVMult);
         float u = ang / (2 * PI); u -= std::floor(u);
         colIdx[x] = std::min(SKY_W - 1, int(u * SKY_W));
     }
@@ -257,7 +261,7 @@ void MainWindow::renderSky()
     while (d < -PI) d += 2 * PI;
     while (d > PI) d -= 2 * PI;
     if (std::fabs(d) < 1.3f) {
-        float sx = W / 2.f * (1.f + std::tan(d) / (0.66f * m_adsFOVMult));
+        float sx = W / 2.f * (1.f + std::tan(d) / (m_planeLen * m_adsFOVMult));
         float sy = m_hor - std::tan(T.sunElev) * m_K;
         int rad = int(9.f / m_adsFOVMult), bloom = int(170 / std::sqrt(m_adsFOVMult));
         int x0 = std::max(0, int(sx) - bloom), x1 = std::min(W - 1, int(sx) + bloom);
@@ -297,7 +301,7 @@ void MainWindow::renderLensFlare()
     while (d < -PI) d += 2 * PI;
     while (d > PI) d -= 2 * PI;
     if (std::fabs(d) > 1.2f) return;
-    float sx = W / 2.f * (1.f + std::tan(d) / (0.66f * m_adsFOVMult));
+    float sx = W / 2.f * (1.f + std::tan(d) / (m_planeLen * m_adsFOVMult));
     float sy = m_hor - std::tan(T.sunElev) * m_K;
     if (sx < 0 || sx >= W || sy < 0 || sy >= H) return;
     if (int(sy) >= m_colTop[clampi(int(sx), 0, W - 1)]) return;
@@ -332,7 +336,7 @@ void MainWindow::renderSprites()
     std::vector<Sp> list;
     float eplX = pl.planeX * m_adsFOVMult, eplY = pl.planeY * m_adsFOVMult;
     float invDet = 1.f / (eplX * pl.dirY - pl.dirX * eplY);
-    auto depthOf = [&](float x, float y) { float sx = x - pl.posX, sy = y - pl.posY; return invDet * (-eplY * sx + eplX * sy); };
+    auto depthOf = [&](float x, float y) { float sx = x - m_camX, sy = y - m_camY; return invDet * (-eplY * sx + eplX * sy); };
     auto depthAt = [&](int x, int y) { return m_depth[size_t(clampi(y, 0, H - 1)) * W + clampi(x, 0, W - 1)]; };
 
     for (int i = 0; i < int(m_gs.enemies.size()); i++) {
@@ -425,16 +429,19 @@ void MainWindow::renderSprites()
         case SP_PICKUP: {
             const WeaponPickup &wp = m_gs.weaponPickups[s.idx];
             int ti = wp.type == PICKUP_AMMO ? 1 : wp.type == PICKUP_SHOTGUN ? 2 : wp.type == PICKUP_RIFLE ? 3 : 4;
+            bool model3d = wp.type == PICKUP_WEAPON || wp.type == PICKUP_THROW;   // drawn as real 3D models instead
             float base = floorH(wp.x, wp.y);
             float bob = 0.06f + std::sin(wp.bobPhase) * 0.04f;
             float sx, sy, d;
             uint32_t gc = ti == 1 ? rgb(255, 200, 80) : ti == 4 ? rgb(255, 230, 60) : rgb(90, 170, 255);
             if (wp.reward) gc = rgb(255, 205, 60);
+            if (wp.type == PICKUP_WEAPON && wp.load.rarity > 0) gc = RARITY_COLORS[wp.load.rarity];
+            if (wp.type == PICKUP_THROW) gc = THROWS[wp.throwKind].color;
             if (project(wp.x, wp.y, base, sx, sy, d) && d > 0.1f && d < depthAt(int(sx), int(sy)) + 0.4f) {
                 m_cv.glow(int(sx), int(sy), int((ti == 4 || wp.reward ? 0.55f : 0.38f) * m_K / d), gc, 0.35f + 0.15f * std::sin(wp.bobPhase * 2));
                 // Loot beam for boss / elite drops: an additive light column, depth-tested per pixel
                 float tx, ty, td;
-                if (wp.reward && project(wp.x, wp.y, base + 2.6f, tx, ty, td)) {
+                if ((wp.reward || (wp.type == PICKUP_WEAPON && wp.load.rarity >= 3)) && project(wp.x, wp.y, base + 2.6f, tx, ty, td)) {
                     int x0 = int(sx), y0 = int(sy), y1 = std::max(0, int(ty));
                     int half = std::max(1, int(0.05f * m_K / d));
                     for (int yy = std::min(H - 1, y0); yy >= y1; yy--) {
@@ -449,7 +456,7 @@ void MainWindow::renderSprites()
                     }
                 }
             }
-            blit(wp.x, wp.y, base + bob, ti == 1 || ti == 4 ? 0.42f : 0.62f, &m_pickupTex[size_t(ti) * PICKUP_TS * PICKUP_TS], PICKUP_TS, 1.2f, 0, 1.f, false);
+            if (!model3d) blit(wp.x, wp.y, base + bob, ti == 1 || ti == 4 ? 0.42f : 0.62f, &m_pickupTex[size_t(ti) * PICKUP_TS * PICKUP_TS], PICKUP_TS, 1.2f, 0, 1.f, false);
             break;
         }
         case SP_EBULLET: {
@@ -517,9 +524,21 @@ void MainWindow::renderParticles()
             m_cv.glow(x, y, r * 3 + 2, pt.color, lf);
             break;
         }
-        case PT_DUST: case PT_SMOKE:
-            m_cv.softCircle(x, y, std::min(r, 60), withAlpha(fog(pt.color, d), int((pt.type == PT_SMOKE ? 120 : 110) * lf)));
+        case PT_DUST: case PT_SMOKE: {
+            // smoke-grenade puffs are big and dense; fade in, then out
+            float fin = pt.size > 0.3f ? std::min(1.f, (1.f - lf) * 4.f) : 1.f;
+            int alpha = pt.size > 0.3f ? int(190 * lf * fin) : int((pt.type == PT_SMOKE ? 120 : 110) * lf);
+            m_cv.softCircle(x, y, std::min(r, pt.size > 0.3f ? 140 : 60), withAlpha(fog(pt.color, d), alpha));
             break;
+        }
+            break;
+        case PT_FLAME: {
+            // additive fire: yellow core cooling to red, then sooty
+            uint32_t c = lf > 0.5f ? lerpCol(rgb(255, 120, 30), rgb(255, 230, 140), (lf - 0.5f) * 2.f) : lerpCol(rgb(90, 30, 10), rgb(255, 120, 30), lf * 2.f);
+            int rr = std::min(std::max(2, int(r * 1.5f)), 42);
+            m_cv.glow(x, y, rr, c, 0.5f * std::min(1.f, lf * 1.6f));
+            break;
+        }
         default:
             m_cv.fillCircle(x, y, std::min(r, 6), withAlpha(fog(pt.color, d), int(255 * std::min(1.f, lf * 2.f))));
             break;

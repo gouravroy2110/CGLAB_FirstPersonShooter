@@ -338,6 +338,100 @@ void SoundEngine::synthesize()
         Buf cw = brown(6.6f, 111); lowpass(cw, 300); mix(c, cw, 0.6f);
         makeLoop(c, 0.6f); normalize(c, 0.4f); m_bank[SND_AMB_CRYPT] = c;
     }
+
+    // --- Arsenal ----------------------------------------------------------------------
+    // Revolver: big low crack with a long ring
+    b = gunshot(0.9f, 0.012f, 1900, 0.07f, 120, 40, 0.09f, 900, 0.3f, 0.5f, 201);
+    mix(b, tone(0.6f, 1650, 0.12f, 0.001f), 0.06f); normalize(b, 0.95f); m_bank[SND_REVOLVER] = b;
+    // SMG: short, bright, light
+    b = gunshot(0.32f, 0.006f, 3800, 0.022f, 210, 80, 0.03f, 1900, 0.09f, 0.25f, 202); normalize(b, 0.62f); m_bank[SND_SMG] = b;
+    // LMG: heavier rifle with more body
+    b = gunshot(0.55f, 0.009f, 2500, 0.045f, 120, 45, 0.06f, 1200, 0.18f, 0.4f, 203); normalize(b, 0.82f); m_bank[SND_LMG] = b;
+    // Sniper: very loud crack + long rolling echo + bolt
+    b = gunshot(1.8f, 0.006f, 3600, 0.06f, 95, 34, 0.1f, 1100, 0.3f, 0.55f, 204);
+    { Buf echo = b; lowpass(echo, 900); mix(b, echo, 0.4f, 0.24f); mix(b, echo, 0.22f, 0.55f); mix(b, m_bank[SND_BOLT], 0.5f, 0.7f); }
+    normalize(b, 1.0f); m_bank[SND_SNIPER] = b;
+    // DMR / battle rifle: crisp heavy single shot
+    b = gunshot(0.8f, 0.008f, 3000, 0.05f, 110, 40, 0.07f, 1100, 0.24f, 0.45f, 205); normalize(b, 0.9f); m_bank[SND_DMR] = b;
+    // Double barrel: huge boom
+    b = gunshot(1.2f, 0.022f, 1300, 0.14f, 90, 30, 0.16f, 600, 0.4f, 0.7f, 206); normalize(b, 1.0f); m_bank[SND_DOUBLE_BARREL] = b;
+    // Suppressed: a muffled thump and a little mechanical clack
+    b = make(0.22f);
+    { Buf n = noise(0.22f, 207); lowpass(n, 700); envExp(n, 0.025f); mix(b, n, 1.f); mix(b, sweep(0.2f, 180, 80, 0.03f), 0.6f);
+      mix(b, clink({2600, 3900}, 0.008f, 208), 0.35f, 0.01f); }
+    normalize(b, 0.45f); m_bank[SND_SUPPRESSED] = b;
+    // Rocket launch: whoosh rising + thump
+    b = make(1.2f);
+    { Buf n = noise(1.2f, 209); bandpass(n, 700, 0.6f); envAR(n, 0.05f, 0.8f); mix(b, n, 0.9f);
+      mix(b, sweep(0.4f, 70, 40, 0.15f), 1.f); mix(b, gunshot(0.5f, 0.02f, 1200, 0.08f, 80, 35, 0.1f, 500, 0.2f, 0.4f, 210), 0.7f); }
+    normalize(b, 0.95f); m_bank[SND_ROCKET_FIRE] = b;
+    // Grenade launcher: hollow "thoonk"
+    b = make(0.45f);
+    { mix(b, sweep(0.3f, 240, 70, 0.07f), 1.f); Buf n = noise(0.3f, 211); lowpass(n, 600); envExp(n, 0.05f); mix(b, n, 0.7f); room(b, 0.3f); }
+    normalize(b, 0.8f); m_bank[SND_GL_THUMP] = b;
+    // Explosion: blast + low rumble + debris
+    b = make(2.4f);
+    { Buf n = noise(2.4f, 212); lowpass(n, 900); envExp(n, 0.25f); mix(b, n, 1.2f);
+      mix(b, sweep(1.6f, 70, 28, 0.5f), 1.2f);
+      Buf r2 = brown(2.4f, 213); lowpass(r2, 200); envExp(r2, 0.7f); mix(b, r2, 0.8f);
+      Rng r(214); for (int k = 0; k < 10; k++) mix(b, clink({900.f + 900.f * std::fabs(r.next()), 2100.f}, 0.01f, 215 + k), 0.12f, 0.25f + std::fabs(r.next()) * 1.2f);
+      room(b, 0.3f, 0.06f, 0.09f, 0.5f); }
+    normalize(b, 1.0f); m_bank[SND_EXPLOSION] = b;
+    // Plasma bolt: falling zap with a buzz
+    b = make(0.4f);
+    { Buf z = sweep(0.35f, 1800, 220, 0.12f); Buf q = make(0.35f);
+      for (size_t i = 0; i < q.size(); i++) { float t = tsec(i); q[i] = (std::fmod(t * 120.f, 1.f) < 0.5f ? 0.4f : -0.4f) * std::exp(-t / 0.1f); }
+      mix(b, z, 0.9f); mix(b, q, 0.5f); lowpass(b, 6000); }
+    normalize(b, 0.65f); m_bank[SND_PLASMA] = b;
+    b = make(1.0f);
+    { float ph = 0; for (size_t i = 0; i < b.size(); i++) { float t = tsec(i), f = 200.f + 900.f * t; ph += TWO_PI * f / SR; b[i] = std::sin(ph) * std::min(1.f, t / 0.3f) * 0.6f + std::sin(ph * 2.01f) * 0.2f; } envAR(b, 0.1f, 0.1f); }
+    normalize(b, 0.35f); m_bank[SND_PLASMA_CHARGE] = b;
+    // Arc: crackling electric burst
+    b = noise(0.3f, 216);
+    { highpass(b, 1500); Rng r(217); float g = 0; for (size_t i = 0; i < b.size(); i++) { if (i % 160 == 0) g = r.next() > 0.1f ? 1.f : 0.1f; b[i] *= g; }
+      envAR(b, 0.005f, 0.12f); Buf hum = tone(0.3f, 110, 0.1f); mix(b, hum, 0.4f); }
+    normalize(b, 0.55f); m_bank[SND_ARC] = b;
+    // Railgun: rising whine, then a hard metallic crack
+    b = make(0.9f);
+    { float ph = 0; for (size_t i = 0; i < b.size(); i++) { float t = tsec(i), f = 600.f * std::pow(6.f, t / 0.9f); ph += TWO_PI * f / SR; b[i] = std::sin(ph) * (t / 0.9f) * 0.5f; } }
+    normalize(b, 0.35f); m_bank[SND_RAIL_CHARGE] = b;
+    b = make(1.2f);
+    { mix(b, clink({3200, 5100, 7300}, 0.05f, 218), 1.f); Buf n = noise(1.2f, 219); highpass(n, 1200); envExp(n, 0.06f); mix(b, n, 0.9f);
+      mix(b, sweep(0.6f, 140, 40, 0.2f), 0.9f); room(b, 0.35f, 0.07f, 0.1f, 0.5f); }
+    normalize(b, 0.95f); m_bank[SND_RAIL_FIRE] = b;
+    // Flamethrower burst: roaring band-limited noise
+    b = noise(0.3f, 220);
+    { lowpass(b, 1400); Buf lo = brown(0.3f, 221); lowpass(lo, 200); mix(b, lo, 0.6f); envAR(b, 0.03f, 0.1f); }
+    normalize(b, 0.45f); m_bank[SND_FLAME] = b;
+    b = make(0.6f);
+    { Buf s = noise(0.6f, 222); bandpass(s, 3000, 2.f); envExp(s, 0.25f); mix(b, s, 0.7f); mix(b, tone(0.3f, 330, 0.1f), 0.4f); mix(b, tone(0.3f, 247, 0.1f), 0.4f, 0.15f); }
+    normalize(b, 0.5f); m_bank[SND_OVERHEAT] = b;
+    // Heavy melee: whoosh + meaty chop
+    b = make(0.45f);
+    { Buf w = noise(0.25f, 223); bandpass(w, 500, 0.8f); envAR(w, 0.12f, 0.08f); mix(b, w, 0.8f);
+      Buf c = noise(0.2f, 224); lowpass(c, 800); envExp(c, 0.05f); mix(b, c, 1.2f, 0.2f); mix(b, sweep(0.2f, 120, 60, 0.05f), 0.9f, 0.2f); }
+    normalize(b, 0.8f); m_bank[SND_MELEE_HEAVY] = b;
+    // Baton: electric snap
+    b = make(0.3f); mix(b, m_bank[SND_ARC], 0.7f); mix(b, m_bank[SND_KNIFE_HIT], 0.7f); normalize(b, 0.7f); m_bank[SND_BATON_HIT] = b;
+    // Grenade pin + spoon
+    b = make(0.3f); mix(b, clink({2900, 4300}, 0.01f, 225), 1.f); mix(b, clink({1900, 3100, 4700}, 0.02f, 226), 0.8f, 0.12f); normalize(b, 0.5f); m_bank[SND_GRENADE_PIN] = b;
+    b = make(0.2f); mix(b, clink({700, 1450}, 0.02f, 227), 1.f); { Buf n = noise(0.08f, 228); lowpass(n, 700); envExp(n, 0.02f); mix(b, n, 0.6f); }
+    normalize(b, 0.5f); m_bank[SND_GRENADE_BOUNCE] = b;
+    // Flashbang: sharp bang, then a high ear ring
+    b = gunshot(0.8f, 0.004f, 5000, 0.03f, 300, 90, 0.04f, 2500, 0.2f, 0.5f, 229); normalize(b, 1.0f); m_bank[SND_FLASHBANG] = b;
+    b = tone(3.2f, 3150, 1.2f, 0.05f); { Buf t2 = tone(3.2f, 3175, 1.0f, 0.05f); mix(b, t2, 0.8f); } normalize(b, 0.28f); m_bank[SND_EAR_RING] = b;
+    b = noise(1.4f, 230); { highpass(b, 1800); lowpass(b, 6000); envAR(b, 0.05f, 1.0f); } normalize(b, 0.35f); m_bank[SND_SMOKE_HISS] = b;
+    b = noise(0.6f, 231); { lowpass(b, 900); Rng r(232); float g = 0; for (size_t i = 0; i < b.size(); i++) { if (i % 900 == 0) g = 0.4f + 0.6f * std::fabs(r.next()); b[i] *= g; } envAR(b, 0.05f, 0.2f); }
+    normalize(b, 0.4f); m_bank[SND_FIRE_BURN] = b;
+    b = gunshot(0.3f, 0.005f, 4200, 0.02f, 240, 90, 0.02f, 2000, 0.08f, 0.2f, 233); bandpass(b, 2200, 0.8f); normalize(b, 0.5f); m_bank[SND_TURRET_FIRE] = b;
+    b = make(1.0f); { mix(b, tone(0.9f, 1760, 0.3f, 0.002f), 0.7f); mix(b, tone(0.9f, 1760, 0.2f, 0.002f), 0.35f, 0.25f); room(b, 0.5f, 0.11f, 0.17f, 0.6f); }
+    normalize(b, 0.45f); m_bank[SND_RADAR_PING] = b;
+    b = noise(0.8f, 234); { lowpass(b, 1100); Buf lo = brown(0.8f, 235); lowpass(lo, 160); mix(b, lo, 0.8f); envAR(b, 0.04f, 0.5f); }
+    normalize(b, 0.6f); m_bank[SND_JETPACK] = b;
+    b = make(0.5f); { mix(b, clink({1300, 2600}, 0.015f, 236), 1.f); Buf z = noise(0.35f, 237); bandpass(z, 2400, 3.f); envAR(z, 0.01f, 0.3f); mix(b, z, 0.5f, 0.05f); mix(b, clink({900, 1700}, 0.03f, 238), 0.9f, 0.4f); }
+    normalize(b, 0.55f); m_bank[SND_GRAPPLE] = b;
+    b = make(0.5f); mix(b, m_bank[SND_KNIFE_HIT], 1.f); mix(b, voice(0.3f, 150, 90, 650, 1050, 0.01f, 239), 0.5f, 0.06f); normalize(b, 0.75f); m_bank[SND_TAKEDOWN] = b;
+    b = make(0.6f); mix(b, clink({1500, 2400}, 0.02f, 240), 0.6f); mix(b, m_bank[SND_BOLT], 0.5f, 0.25f); normalize(b, 0.45f); m_bank[SND_INSPECT] = b;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
