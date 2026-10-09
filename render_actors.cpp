@@ -164,7 +164,7 @@ static void drawGunAt(Raster3D &r, const WorldCam &cam, int w, float x, float y,
 
 void MainWindow::renderProps3D(Raster3D &r, const WorldCam &cam)
 {
-    const Theme &T = THEMES[m_theme];
+    const Theme &T = m_env;
     auto litAt = [&](float x, float y) { return 0.12f + (T.ambient + T.sunStrength * 0.55f * sunVisAt(x, y)) * 1.0f; };
     r.alpha = 1.f;
     // Weapon pickups: the real model, slowly spinning above the ground
@@ -248,7 +248,7 @@ void MainWindow::renderProps3D(Raster3D &r, const WorldCam &cam)
 void MainWindow::renderActors3D()
 {
     const Player &pl = m_gs.player;
-    const Theme &T = THEMES[m_theme];
+    const Theme &T = m_env;
     WorldCam cam{m_camX, m_camY, m_eye, pl.dirX, pl.dirY};
     Raster3D r{m_cv, m_depth.data()};
     r.worldZ = true;

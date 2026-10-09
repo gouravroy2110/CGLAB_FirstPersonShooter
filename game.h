@@ -24,20 +24,23 @@ struct Grid {
 // --- Map types & parsing -------------------------------------------------------
 enum CellType { CELL_FLOOR=0, CELL_STONE=1, CELL_BRICK=2, CELL_PILLAR=3, CELL_DOOR=4, CELL_SECRET=5 };
 
-static const int MAP_COUNT = 4;
-static const char* const MAP_NAMES[MAP_COUNT] = { "DUNGEON", "ARENA", "CRYPT", "FRONTIER" };
+static const int MAP_COUNT = 6;
+// Each map has its own biome (textures, sky, hazard, weather), terrain shape and layout
+static const char* const MAP_NAMES[MAP_COUNT] = { "EMBERFORGE", "DUNE OUTPOST", "MIRE HOLLOW", "FROSTLINE", "ASHEN CITY", "HELIX FACILITY" };
 static const char* const MAP_DESCS[MAP_COUNT] = {
-    "Rooms behind doors, an acid vault and two hidden chambers.",
-    "Rolling hills, a fortified mesa and a hidden bunker.",
-    "Sealed crypts, an altar ledge and an ossuary across the acid.",
-    "A 64x64 valley: village, canyon, acid marsh and a central fort.",
+    "Volcanic tunnels: lava pools, sealed forges and two hidden chambers.",
+    "Desert dunes, a fortified mesa and a buried bunker.",
+    "Swamp forest: bog pools, trees and drowned tombs.",
+    "64x64 snowfield: village, frozen canyon, pine forest, central fort.",
+    "64x64 ruined city: gutted blocks, a walled plaza and its main gate.",
+    "56x56 research complex: labs, vaults and the reactor hall.",
 };
-static const char* const* const ALL_LAYOUTS[MAP_COUNT] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT, FRONTIER_LAYOUT };
-static const int LAYOUT_ROWS[MAP_COUNT] = {
-    int(sizeof(DUNGEON_LAYOUT) / sizeof(DUNGEON_LAYOUT[0])), int(sizeof(ARENA_LAYOUT) / sizeof(ARENA_LAYOUT[0])),
-    int(sizeof(CRYPT_LAYOUT) / sizeof(CRYPT_LAYOUT[0])), int(sizeof(FRONTIER_LAYOUT) / sizeof(FRONTIER_LAYOUT[0])) };
-static const float TERRAIN_AMP[MAP_COUNT] = { 0.25f, 0.75f, 0.35f, 0.9f };   // rolling-hill amplitude
-static const int   MAP_THEME[MAP_COUNT]   = { 0, 1, 2, 1 };                // sky / textures / light per map
+static const char* const* const ALL_LAYOUTS[MAP_COUNT] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT, FRONTIER_LAYOUT, RUINS_LAYOUT, FACILITY_LAYOUT };
+#define LAYOUT_N(L) int(sizeof(L) / sizeof(L[0]))
+static const int LAYOUT_ROWS[MAP_COUNT] = { LAYOUT_N(DUNGEON_LAYOUT), LAYOUT_N(ARENA_LAYOUT), LAYOUT_N(CRYPT_LAYOUT),
+                                            LAYOUT_N(FRONTIER_LAYOUT), LAYOUT_N(RUINS_LAYOUT), LAYOUT_N(FACILITY_LAYOUT) };
+static const float TERRAIN_AMP[MAP_COUNT] = { 0.3f, 0.85f, 0.3f, 0.9f, 0.1f, 0.02f };   // rolling-hill amplitude
+static const int   MAP_THEME[MAP_COUNT]   = { 0, 1, 2, 3, 4, 5 };                       // biome per map (assets.h Biome)
 
 // World height of each wall type above its base
 static const float WALL_HEIGHT[6] = { 0.f, 1.15f, 1.0f, 1.5f, 1.0f, 1.15f };
@@ -93,10 +96,10 @@ inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
 
 // --- Enums -------------------------------------------------------------------
 enum BulletOwner  { PLAYER_SHOT, ENEMY_SHOT };
-enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING, SCR_SETTINGS, SCR_ARSENAL };
+enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING, SCR_SETTINGS, SCR_ARSENAL, SCR_EDITOR, SCR_CAMPAIGN, SCR_BRIEFING, SCR_DEBRIEF };
 enum CharClass    { CLS_ASSAULT=0, CLS_SCOUT=1, CLS_TANK=2 };
 enum Difficulty   { DIFF_EASY=0, DIFF_MEDIUM=1, DIFF_HARD=2 };
-enum HitPart      { PART_NONE=0, PART_BODY=1, PART_HEAD=2, PART_LIMB=3 };
+enum HitPart      { PART_NONE=0, PART_BODY=1, PART_HEAD=2, PART_LIMB=3, PART_SHIELD=4 };
 
 // --- Difficulty config -------------------------------------------------------
 struct DiffConfig {
@@ -141,7 +144,7 @@ struct Particle {
 
 // --- Pickups -----------------------------------------------------------------
 struct HealthKit { float x, y, bobPhase=0; bool active=true; bool emergency=false; };
-enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE, PICKUP_INTEL, PICKUP_WEAPON, PICKUP_THROW };
+enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE, PICKUP_INTEL, PICKUP_WEAPON, PICKUP_THROW, PICKUP_KEY };
 struct WeaponPickup {
     float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; bool emergency=false; bool reward=false;
     int   weapon=-1;          // PICKUP_WEAPON: which gun
@@ -208,6 +211,8 @@ struct Actor : Player {
     int      team = 0;               // 0 = the local player's team
     ActorCtl ctl = CTL_BOT;
     char     name[16] = "";
+    bool     escort = false;         // a story NPC you protect: follows the player, never respawns
+    bool     escortMet = false;      // the escort waits until you reach them
     bool     alive = true;
     float    respawnT = 0.f;
     float    hitFlash = 0.f, shootAnim = 0.f, walkPhase = 0.f;
@@ -218,9 +223,14 @@ struct Actor : Player {
     float    thinkT = 0.f, fireT = 0.f, aimErr = 0.f;
 };
 
+// --- Story bosses (bosses.cpp) ------------------------------------------------------
+enum BossKind { BK_NONE = 0, BK_WARDEN, BK_TWIN_A, BK_TWIN_B, BK_SEED_QUEEN, BK_EGG, BK_GUNSHIP,
+                BK_GUARD_HEAVY, BK_GUARD_MEDIC, BK_MIRAGE, BK_ENGINEER, BK_PYLON, BK_JUGGERNAUT, BK_FOUNDER, BK_COUNT };
+
 // --- Enemy -------------------------------------------------------------------
 enum EnemyState { ES_IDLE, ES_ALERT, ES_DEAD };
-enum EnemyType  { ET_RIFLEMAN=0, ET_SCOUT=1, ET_SHOTGUNNER=2, ET_SNIPER=3 };
+enum EnemyType  { ET_RIFLEMAN=0, ET_SCOUT=1, ET_SHOTGUNNER=2, ET_SNIPER=3,
+                  ET_GRENADIER=4, ET_SHIELD=5, ET_MEDIC=6, ET_HEAVY=7, ET_STALKER=8, ET_DRONE=9, ET_TURRET=10, ET_COUNT=11 };
 struct Enemy {
     float x,y;
     int   hp=75, maxHp=75;
@@ -240,10 +250,25 @@ struct Enemy {
     float burnT=0.f, burnAcc=0.f; // burning: damage over time
     float shockT=0.f;             // shocked: slowed
     float stunT=0.f;              // stunned / flashed: can't move or shoot
+    // Extended roster
+    float hover=0.f;              // drones fly this high above the ground
+    float grenT=2.f;              // grenadier: time to the next lob
+    int   burstLeft=0; float burstT=0.f;   // heavy / drone / turret bursts
+    float reviveT=0.f, healAcc=0.f;        // medic
+    float cloak=1.f, revealT=0.f;          // stalker: 1 = fully cloaked
+    // Bosses (bosses.cpp)
+    int   bossKind=0;             // 0 = not a story boss
+    int   phase=0;                // boss phase 0..2
+    float atkT=1.f, atkPhaseT=0.f; int atk=-1;   // attack timer / telegraph / active attack
+    float tx=0.f, ty=0.f;         // attack target point
+    float armor=0.f;              // 0..1 damage reduction (front plates)
+    bool  shielded=false;         // invulnerable until the shield is broken
+    int   partner=-1;             // twin bosses: the other one
+    bool  decoy=false;            // a boss copy that dies in one hit
 };
 
 // --- Projectiles, throwables, area effects, deployables ------------------------
-enum ProjOwner { PO_PLAYER, PO_ACTOR, PO_TURRET };
+enum ProjOwner { PO_PLAYER, PO_ACTOR, PO_TURRET, PO_ENEMY };
 struct Projectile {
     float x, y, z, vx, vy, vz;
     ProjKind kind = PJ_ROCKET;
@@ -256,6 +281,7 @@ struct Projectile {
     int   bounces = 0;
     bool  armed = false, alive = true;
     bool  incendiary = false;
+    float landX = 0.f, landY = 0.f;   // enemy grenades: where they will land (warning ring)
 };
 struct SmokeCloud { float x, y, z, r, life, maxLife; };
 struct FireZone   { float x, y, r, life; float tick = 0.f; };

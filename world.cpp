@@ -111,8 +111,19 @@ void MainWindow::loadMapGeometry(int map)
 {
     loadLayout(m_parsed[map], TERRAIN_AMP[map], map, MAP_THEME[map]);
     m_loadedMap = map;
-    if (m_sunVisCache[map].empty()) { buildLightMap(); m_sunVisCache[map] = m_sunVis; m_lightCache[map] = m_light; }
-    else { m_sunVis = m_sunVisCache[map]; m_light = m_lightCache[map]; }
+    if (m_sunVisCache[map].empty()) { buildLightMap(); m_sunVisCache[map] = m_sunVis; m_lightCache[map] = m_lmAo; m_sunCache[map] = m_lmSun; }
+    else { m_sunVis = m_sunVisCache[map]; m_lmAo = m_lightCache[map]; m_lmSun = m_sunCache[map]; m_light.assign(m_lmAo.size(), 100); }
+    // trees: pillar cells in the swamp and the snow carry a canopy
+    m_treeCells.clear();
+    if (m_theme == BIO_SWAMP || m_theme == BIO_SNOW)
+        for (int y = 1; y < m_mapH - 1; y++) for (int x = 1; x < m_mapW - 1; x++) if (m_map[y][x] == CELL_PILLAR) m_treeCells.push_back(y * m_mapW + x);
+    if (!m_envLocked) {
+        static const float HOUR[THEME_COUNT] = { 15.5f, 13.f, 16.f, 11.f, 17.2f, 23.f };
+        float hour = m_todSetting == 0 ? HOUR[m_theme] : m_todSetting == 1 ? 12.f : m_todSetting == 2 ? 18.4f : 0.5f;
+        m_dayCycle = m_todSetting == 4;
+        int wx = m_weatherSetting == 0 ? THEMES[m_theme].weather : m_weatherSetting - 1;
+        setEnvironment(hour, wx);
+    } else recomposeLight();
     updateAmbience();
 }
 
@@ -150,7 +161,10 @@ void World::buildLightMap(int x0, int y0, int x1, int y1)
 {
     const Theme &T = THEMES[m_theme];
     const int LW = m_mapW * LM, LH = m_mapH * LM;
-    if (m_sunVis.size() != size_t(LW) * LH) { m_sunVis.assign(size_t(LW) * LH, 255); m_light.assign(size_t(LW) * LH, 100); }
+    if (m_sunVis.size() != size_t(LW) * LH) {
+        m_sunVis.assign(size_t(LW) * LH, 255); m_light.assign(size_t(LW) * LH, 100);
+        m_lmAo.assign(size_t(LW) * LH, 100); m_lmSun.assign(size_t(LW) * LH, 0);
+    }
     if (x1 < 0) x1 = m_mapW;
     if (y1 < 0) y1 = m_mapH;
     x0 = clampi(x0, 0, m_mapW); x1 = clampi(x1, 0, m_mapW); y0 = clampi(y0, 0, m_mapH); y1 = clampi(y1, 0, m_mapH);
@@ -217,8 +231,24 @@ void World::buildLightMap(int x0, int y0, int x1, int y1)
     for (int j = wj0; j < wj1; j++) for (int i = wi0; i < wi1; i++) {
         size_t r = size_t(j - j0) * RW + (i - i0), g = size_t(j) * LW + i;
         m_sunVis[g] = uint8_t(255 * clampf(vis[r], 0.f, 1.f));
-        float light = (T.ambient + T.sunStrength * 0.85f * vis[r] * lam[r]) * ao[r] * 1.12f;
-        m_light[g] = uint8_t(clampi(int(light * 100.f), 0, 255));
+        m_lmAo[g]  = uint8_t(clampi(int(ao[r] * 1.12f * 100.f), 0, 255));
+        m_lmSun[g] = uint8_t(clampi(int(0.85f * vis[r] * lam[r] * ao[r] * 1.12f * 100.f), 0, 255));
+    }
+    recomposeLight(x0, y0, x1, y1);
+}
+
+// ground light = ambient x occlusion + sun strength x (sun x shadow x slope x occlusion)
+void World::recomposeLight(int x0, int y0, int x1, int y1)
+{
+    const int LW = m_mapW * LM;
+    if (m_lmAo.size() != m_light.size() || m_light.empty()) return;
+    if (x1 < 0) x1 = m_mapW;
+    if (y1 < 0) y1 = m_mapH;
+    int a = int(m_lightAmb * 256.f), s = int(m_lightSun * 256.f);
+    for (int j = y0 * LM; j < y1 * LM; j++) {
+        size_t g = size_t(j) * LW + size_t(x0 * LM);
+        for (int i = x0 * LM; i < x1 * LM; i++, g++)
+            m_light[g] = uint8_t(std::min(255, (m_lmAo[g] * a + m_lmSun[g] * s) >> 8));
     }
 }
 
@@ -479,7 +509,7 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay, float startDist) c
         float spX = e.x - m_camX, spY = e.y - m_camY;
         float txX = invDet * (pl.dirY * spX - pl.dirX * spY), txY = invDet * (-eplY * spX + eplX * spY);
         if (txY < 0.1f + m_boomCur * 0.85f || txY < startDist || txY >= res.depth) continue;
-        float base = floorH(e.x, e.y);
+        float base = floorH(e.x, e.y) + e.hover;
         float scrX = W / 2.f * (1.f + txX / txY);
         float sz = m_K * e.scale / txY;
         float top = m_hor + (m_eye - base - e.scale) * m_K / txY;
@@ -487,10 +517,7 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay, float startDist) c
         if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
         int f = enemyFrame(e);
         int tx = int(u * ENEMY_TS), ty = int(v * ENEMY_TS);
-        const std::vector<uint8_t> &mask = e.elite ? m_eliteMask :
-                                            e.type == ET_SCOUT ? m_scoutMask :
-                                            e.type == ET_SHOTGUNNER ? m_shotgunMask :
-                                            e.type == ET_SNIPER ? m_sniperMask : m_enemyMask;
+        const std::vector<uint8_t> &mask = maskFor(e);
         uint8_t part = mask[size_t(f) * ENEMY_TS * ENEMY_TS + ty * ENEMY_TS + tx];
         if (!part) continue;
         res.enemy = i; res.part = HitPart(part); res.depth = txY;
@@ -498,4 +525,50 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay, float startDist) c
         res.wall = res.floor = res.sky = false;
     }
     return res;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Secret walls give themselves away a little: a draft blows dust out of the
+//  crack at their base, you hear a whisper the first time you come close, and
+//  the cell shimmers on the minimap when you are nearby
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::updateSecretHints(float dt)
+{
+    const Player &pl = m_gs.player;
+    m_secretDustT -= dt;
+    bool puff = m_secretDustT <= 0.f;
+    if (puff) m_secretDustT = 0.22f;
+    const int RAD = 9;
+    int px = int(pl.posX), py = int(pl.posY);
+    static const int N4[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+    for (int y = py - RAD; y <= py + RAD; y++) for (int x = px - RAD; x <= px + RAD; x++) {
+        if (x < 1 || y < 1 || x >= m_mapW - 1 || y >= m_mapH - 1) continue;
+        if (m_map[y][x] != CELL_SECRET || m_doorMoving[y][x] || m_doorT[y][x] > 0.05f) continue;
+        float cx = x + 0.5f, cy = y + 0.5f;
+        float d2 = (cx - pl.posX) * (cx - pl.posX) + (cy - pl.posY) * (cy - pl.posY);
+        if (d2 > float(RAD * RAD)) continue;
+        int key = y * m_mapW + x;
+        if (d2 < 5.5f * 5.5f && std::find(m_secretHinted.begin(), m_secretHinted.end(), key) == m_secretHinted.end()) {
+            m_secretHinted.push_back(key);
+            pushFeed("YOU FEEL A COLD DRAFT...", 3.5f);
+            sfxAt(SND_SECRET, cx, cy, 0.18f, 0.55f);
+        }
+        if (!puff || rand() % 3) continue;
+        for (const auto &n : N4) {
+            int nx = x + n[0], ny = y + n[1];
+            if (solidCell(nx, ny)) continue;
+            // a mote leaves the seam along this face and drifts out into the room
+            float along = float(rand()) / RAND_MAX - 0.5f;
+            Particle p; p.type = PT_DUST;
+            p.x = cx + n[0] * 0.52f + (n[0] ? 0.f : along * 0.9f);
+            p.y = cy + n[1] * 0.52f + (n[1] ? 0.f : along * 0.9f);
+            p.z = groundAt(p.x, p.y) + 0.03f + 0.5f * float(rand()) / RAND_MAX;
+            float sp = 0.35f + 0.35f * float(rand()) / RAND_MAX;
+            p.vx = n[0] * sp + (n[0] ? 0.f : along * 0.2f); p.vy = n[1] * sp + (n[1] ? 0.f : along * 0.2f); p.vz = 0.05f;
+            p.life = p.maxLife = 1.4f + 0.6f * float(rand()) / RAND_MAX;
+            p.size = 0.045f;
+            p.color = lerpCol(m_env.haze, rgb(225, 220, 205), 0.6f);
+            m_gs.particles.push_back(p);
+        }
+    }
 }

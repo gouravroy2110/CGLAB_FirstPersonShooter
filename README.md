@@ -7,7 +7,19 @@
 
 ---
 
-## Latest update: engine groundwork, third person, full arsenal, new UI
+## Latest update: story campaign, six distinct worlds, bosses, map editor
+
+| Area | What changed |
+|---|---|
+| **Campaign: Operation Ashfall** | 9 story missions in 3 acts + finale. Each has a **comic-panel briefing** (live 3D flyover of the map, pixel portrait, tactical map, typed-out text), an **intro flyby** along a Catmull-Rom spline, scripted objectives (kill, reach, collect key cards / intel, **hold E** to interact, capture zones, survive waves, **escort Dr. Ortiz**, **stealth with an alarm meter**, boss), **radio messages** with portraits, and a **debrief** with an S/A/B/C rank and coins. Progress, ranks, coins and your kit are saved between runs |
+| **Permanent upgrades** | Coins buy body armour, max health, stamina and faster reloads in the campaign menu |
+| **Bosses** | 9 story bosses (Warden, Bresenham Twins, Seed Queen, Gunship, Black Site guards, Mirage, Engineer, Juggernaut, **VECTOR**): telegraphed attacks, phases at 66 % / 33 %, shield pylons, weak points, decoys, laser walls, overload floors, spreading acid. Free play uses them as zone commanders |
+| **New hostiles** | Grenadier, riot Shield (blocks rounds), Medic (revives the fallen), Heavy, cloaked Stalker (refraction shimmer), flying Drone, Turret |
+| **Six different worlds** | The three old maps are re-themed and two new ones are added: **Emberforge** (volcanic, lava), **Dune Outpost** (desert), **Mire Hollow** (swamp, trees, bog), **Frostline** (snow, pines), **Ashen City** (ruins 64×64), **Helix Facility** (labs 56×56, coolant). Each has its own textures, sky, hazard and default weather |
+| **Weather & time of day** | Rain, snow, sandstorm, ash and blizzard particles, lightning; sun and ambient light baked separately and re-mixed for any hour, stars at night, **flashlight (L)** |
+| **Map editor** | MAP EDITOR in the main menu: paint walls / floor / hazards / markers with a pencil or **seed fill**, flood-fill validation (start present, every marker reachable), save over a map, **F5 to play-test** |
+
+## Engine groundwork, third person, full arsenal, new UI
 
 | Area | What changed |
 |---|---|
@@ -66,6 +78,7 @@
 | **C** | Re-centre crosshair and view |
 | **Space** | Jump — onto ledges, out of pits, across acid |
 | **N** | Sound on / off |
+| **L** | Flashlight |
 | **← / →** | Turn |
 | **[ / ]** | Pixel-block size 1–8 (raster proof) |
 | **ESC** | Pause (ESC again quits) · **M** main menu · **Q** quit |
@@ -262,6 +275,10 @@ Everything visible is written into `m_pixels[y*W + x]` by our own code:
 | Craters | Heightfield vertices lowered locally, light map re-baked for the region |
 | Chain lightning | Nearest-neighbour hops with line-of-sight checks |
 | Kill cam | Ring buffer of game-state snapshots replayed through the renderer from another camera |
+| Campaign flyby | Catmull-Rom spline through the mission points, camera kept above the heightfield |
+| Map editor fill | Stack-based 4-connected seed fill; BFS flood fill to validate reachability |
+| Acid spread | BFS growth front over the grid, receding when its source dies |
+| Time of day | Two light-map layers (ambient occlusion, sun) re-mixed per hour |
 
 ---
 
@@ -284,12 +301,18 @@ fps_game/
 ├── gunmodels.h         Weapon + glove polygons (view model, HUD icon, pickups)
 ├── assets.h/.cpp       Procedural sky, floors, walls (+mips), soldier painter,
 │                       enemy animation atlas, pickup sprites, theme table
-├── maps.h              ASCII layouts: three 40x40 maps + FRONTIER 64x64 (legend in the file header)
+├── maps.h              ASCII layouts of the six maps (legend in the file header)
 ├── mainwindow.h/.cpp   Game loop, enemy AI, zones, input, free aim, third-person camera, tests
 ├── combat.cpp          Firing, projectiles, explosions, melee, throwables, gadgets, pickups
 ├── upgrades.cpp        Zone-clear upgrade cards
 ├── actors.cpp          Squad bots (AI teammates driven by InputCmd)
 ├── killcam.cpp         Death replay from the killer's view
+├── missions.h          Campaign data: 9 missions, objectives, briefings, radio lines
+├── campaign.cpp        Campaign menu, briefing, objectives, radio, flyby, debrief, save
+├── bosses.cpp          Boss table and fights
+├── enemies.cpp         New hostile types
+├── environment.cpp     Weather, time of day, flashlight
+├── editor.cpp          In-game map editor
 ├── menus.cpp           Settings (saved) and the Arsenal browser
 ├── world.cpp           World methods + heightfield, light-map baking, doors & secrets, bullet-hole
 │                       decals, 3D hitscan, line of sight, movement checks

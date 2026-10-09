@@ -41,6 +41,7 @@ void MainWindow::openSettings(GameScreen fromScreen)
 
 void MainWindow::loadSettings()
 {
+    loadLayoutRows(true);                                   // saved editor maps replace the built-in ones
     QSettings s("RasterFPS", "RasterFPS");
     m_mouseSens  = clampf(s.value("mouseSens", 1.0).toFloat(), 0.2f, 6.0f);
     m_fovDeg     = clampi(s.value("fov", 67).toInt(), 55, 100);

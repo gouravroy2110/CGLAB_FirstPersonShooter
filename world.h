@@ -55,6 +55,11 @@ public:
     // -- Light map (12 texels per tile): sun visibility + final ground light ---------
     static const int LM = 12;
     std::vector<uint8_t> m_sunVis, m_light;
+    // the light map is stored as two layers so the time of day can re-mix it:
+    //   m_lmAo  = occlusion (x ambient), m_lmSun = sun x shadow x slope x occlusion
+    std::vector<uint8_t> m_lmAo, m_lmSun;
+    float m_lightAmb = 0.5f, m_lightSun = 0.8f;
+    void  recomposeLight(int x0 = 0, int y0 = 0, int x1 = -1, int y1 = -1);
     void  buildLightMap(int x0 = 0, int y0 = 0, int x1 = -1, int y1 = -1);   // -1 = to the map edge
     float sunVisAt(float x, float y) const;
 

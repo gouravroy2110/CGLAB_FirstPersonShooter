@@ -12,16 +12,31 @@
 
 using namespace rs;
 
-const Theme THEMES[3] = {
-    // DUNGEON — overcast, wet stone
-    { rgb(52,60,74),  rgb(128,134,140), rgb(118,124,130), rgb(235,235,225), rgb(178,182,190), rgb(84,88,98),
-      0.55f, 0.55f, 0.075f, 0.95f, 0.78f },
-    // ARENA — bright midday
-    { rgb(34,86,168), rgb(176,200,222), rgb(172,192,210), rgb(255,244,214), rgb(250,250,252), rgb(150,160,178),
-      1.00f, 0.42f, 0.040f, 0.75f, 0.42f },
-    // CRYPT — dusk
-    { rgb(26,20,50),  rgb(220,126,82),  rgb(96,66,74),    rgb(255,156,88),  rgb(255,178,140), rgb(70,48,76),
-      0.75f, 0.36f, 0.085f, 0.30f, 0.50f },
+const Theme THEMES[THEME_COUNT] = {
+    // VOLCANIC: ember sky, basalt, lava pools
+    { rgb(44,14,12),  rgb(196,74,34),  rgb(112,52,38),  rgb(255,150,80),  rgb(170,80,56),  rgb(44,22,22),
+      0.62f, 0.44f, 0.060f, 0.42f, 0.86f,
+      rgb(170,30,0), rgb(255,196,70), true, 45.f, 0.f, 4, "VOLCANIC" },
+    // DESERT: bright sun, sandstone, tar pits
+    { rgb(52,118,204), rgb(244,218,172), rgb(228,206,164), rgb(255,242,206), rgb(255,255,255), rgb(206,196,184),
+      1.15f, 0.46f, 0.026f, 0.95f, 0.14f,
+      rgb(26,22,18), rgb(96,84,62), false, 10.f, 0.55f, 0, "DESERT" },
+    // SWAMP FOREST: green overcast, mud, bog water, trees
+    { rgb(62,82,74),  rgb(156,174,146), rgb(112,132,106), rgb(232,242,204), rgb(196,206,186), rgb(92,102,92),
+      0.55f, 0.50f, 0.085f, 0.80f, 0.72f,
+      rgb(36,54,18), rgb(112,140,52), false, 18.f, 0.45f, 1, "SWAMP" },
+    // SNOW: pale overcast, snow, frozen water, pines
+    { rgb(112,142,184), rgb(222,232,242), rgb(214,222,232), rgb(255,250,240), rgb(255,255,255), rgb(172,182,198),
+      0.80f, 0.64f, 0.050f, 0.50f, 0.62f,
+      rgb(24,56,90), rgb(150,206,236), false, 14.f, 0.5f, 2, "SNOW" },
+    // CITY RUINS: smoggy dusk, asphalt, chemical spills
+    { rgb(66,58,60),  rgb(206,152,110), rgb(142,120,104), rgb(255,182,122), rgb(222,172,142), rgb(72,62,66),
+      0.75f, 0.40f, 0.060f, 0.33f, 0.56f,
+      rgb(40,70,20), rgb(150,210,60), true, 28.f, 0.f, 0, "CITY RUINS" },
+    // FACILITY: night, floodlit steel, coolant
+    { rgb(8,12,28),   rgb(46,66,98),   rgb(38,50,68),   rgb(206,222,255), rgb(96,116,148), rgb(18,22,34),
+      0.50f, 0.52f, 0.050f, 1.05f, 0.42f,
+      rgb(6,50,84), rgb(90,226,255), true, 30.f, 0.f, 0, "FACILITY" },
 };
 
 static inline float smooth(float e0, float e1, float x) {
@@ -70,13 +85,15 @@ void bakeSky(std::vector<uint32_t> &sky, int theme)
             // faint high-altitude streaks
             float st = vnoise(float(x) * 64.f / SKY_W, persp * 0.6f, 64, 77 + theme);
             col = lerpCol(col, T.cloudLit, smooth(0.78f, 0.95f, st) * 0.18f * (1.f - v));
+            if (theme == 0) col = lerpCol(col, rgb(255, 120, 40), smooth(0.55f, 1.f, v) * 0.35f);      // volcano glow on the horizon
+            if (theme == 5 && hash2(x, y, 91) > 0.9975f && v < 0.7f) col = lerpCol(col, rgb(240, 245, 255), 0.8f);   // stars
             sky[size_t(y) * SKY_W + x] = col;
         }
     }
 }
 
 // -----------------------------------------------------------------------------
-//  Floor textures (256×256 = 2×2 world units, tileable)
+//  Floor textures (256×256 = 2×2 world units, tileable), one per biome
 // -----------------------------------------------------------------------------
 // Tileable Voronoi: distance to nearest and second-nearest feature points
 static void voronoi(float x, float y, int cells, int size, int seed, float &d1, float &d2, int &id)
@@ -98,75 +115,104 @@ static void voronoi(float x, float y, int cells, int size, int seed, float &d1, 
 void bakeFloor(std::vector<uint32_t> &tex, int theme)
 {
     const int S = FLOOR_TS;
+    const float TAU = 6.2831853f;
     tex.assign(size_t(S) * S, 0);
     for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
         float fx = float(x), fy = float(y);
         uint32_t c = 0;
-        if (theme == 1) {
-            // Grass & dirt patches with pebbles
-            float patch = fbm(fx, fy, S, 3, 5, 3);
-            float g = smooth(0.44f, 0.56f, patch);
-            float fine = fbm(fx, fy, S, 32, 3, 5);
-            float blade = hash2(x, y, 9);
-            uint32_t grass = rgb(int(62 + 34 * fine + 26 * blade), int(88 + 40 * fine + 34 * blade), int(34 + 14 * fine));
-            float dn = fbm(fx, fy, S, 16, 4, 21);
-            uint32_t dirt = rgb(int(112 + 40 * dn), int(92 + 30 * dn), int(64 + 22 * dn));
-            // pebbles in the dirt
+        switch (theme) {
+        case 0: { // Basalt plates split by glowing magma cracks, with ash drifts
             float d1, d2; int id;
-            voronoi(fx, fy, 24, S, 31, d1, d2, id);
-            if (hash2(id, 3, 7) > 0.55f && d1 < 2.2f + 1.5f * hash2(id, 4, 7)) {
-                int v = int(140 + 50 * hash2(id, 5, 7));
-                dirt = rgb(v, v - 6, v - 14);
-            }
-            c = lerpCol(dirt, grass, g);
-            // large-scale darkening for variation
-            c = scaleCol(c, 0.82f + 0.3f * fbm(fx, fy, S, 2, 2, 41));
-        } else if (theme == 0) {
-            // Cobblestones with moss in the joints
-            float d1, d2; int id;
-            voronoi(fx, fy, 8, S, 17, d1, d2, id);
+            voronoi(fx, fy, 6, S, 117, d1, d2, id);
             float edge = d2 - d1;
-            float n = fbm(fx, fy, S, 32, 3, 19);
-            int base = int(92 + 34 * hash2(id, 1, 3));
-            uint32_t stone = rgb(base + int(18 * n), base + int(16 * n) - 2, base + int(12 * n) - 6);
-            float bevel = smooth(0.f, 9.f, edge);                 // rounded tops
-            stone = scaleCol(stone, 0.55f + 0.5f * bevel);
-            float moss = fbm(fx, fy, S, 8, 3, 23);
-            uint32_t joint = lerpCol(rgb(38, 36, 32), rgb(52, 74, 36), smooth(0.45f, 0.65f, moss));
-            c = edge < 2.6f ? joint : lerpCol(joint, stone, smooth(2.6f, 4.0f, edge));
-            // wet sheen patches
-            c = lerpCol(c, rgb(150, 160, 170), smooth(0.68f, 0.8f, fbm(fx, fy, S, 4, 3, 27)) * 0.18f);
-        } else {
-            // Large flagstones with cracks
-            int row = y / 64;
-            int off = (row & 1) ? 48 : 0;
-            int sx = ((x + off) % 96), sy = y % 64;
-            int slabId = ((x + off) / 96) * 7 + row * 13;
-            float n = fbm(fx, fy, S, 16, 4, 51);
-            int base = int(62 + 26 * hash2(slabId, 2, 5));
-            uint32_t slab = rgb(base + int(26 * n), base + int(24 * n), base + int(30 * n) + 6);
-            float ex = std::min(float(sx), float(95 - sx)), ey = std::min(float(sy), float(63 - sy));
-            float e = std::min(ex, ey);
-            slab = scaleCol(slab, 0.6f + 0.4f * smooth(0.f, 6.f, e));
-            // crack: thin noise ridge
-            float cr = std::fabs(fbm(fx, fy, S, 8, 4, 57) - 0.5f);
-            if (cr < 0.012f) slab = scaleCol(slab, 0.45f);
-            float moss = fbm(fx, fy, S, 8, 3, 59);
-            uint32_t joint = lerpCol(rgb(26, 24, 26), rgb(44, 60, 34), smooth(0.5f, 0.7f, moss));
-            c = e < 1.5f ? joint : slab;
+            float n = fbm(fx, fy, S, 32, 3, 119);
+            int base = int(46 + 18 * hash2(id, 1, 3));
+            uint32_t rock = rgb(base + int(14 * n), base + int(10 * n) - 4, base + int(10 * n) - 6);
+            rock = scaleCol(rock, 0.7f + 0.45f * smooth(0.f, 10.f, edge));
+            float heat = smooth(2.2f, 0.f, edge) * (0.6f + 0.4f * fbm(fx, fy, S, 8, 3, 121));
+            c = lerpCol(rock, lerpCol(rgb(200, 50, 10), rgb(255, 190, 70), heat), heat * 0.95f);
+            float ash = smooth(0.55f, 0.75f, fbm(fx, fy, S, 4, 4, 123));
+            c = lerpCol(c, rgb(110, 104, 100), ash * 0.55f);
+            break;
+        }
+        case 1: { // Sand: wind ripples warped by noise, a few pebbles
+            float warp = fbm(fx, fy, S, 4, 3, 131) * 40.f;
+            float rip = 0.5f + 0.5f * std::sin((fy * 0.9f + fx * 0.25f + warp) * TAU / 18.f);
+            float n = fbm(fx, fy, S, 32, 3, 133);
+            c = rgb(int(206 + 26 * n + 16 * rip), int(176 + 22 * n + 14 * rip), int(122 + 18 * n + 10 * rip));
+            c = scaleCol(c, 0.86f + 0.2f * fbm(fx, fy, S, 2, 2, 135));
+            float d1, d2; int id;
+            voronoi(fx, fy, 20, S, 137, d1, d2, id);
+            if (hash2(id, 3, 7) > 0.8f && d1 < 2.f + 1.5f * hash2(id, 4, 7)) { int v = int(120 + 40 * hash2(id, 5, 7)); c = rgb(v, v - 12, v - 26); }
+            break;
+        }
+        case 2: { // Swamp: dark mud, moss mats, grass tufts, fallen leaves
+            float patch = fbm(fx, fy, S, 3, 5, 141);
+            float fine = fbm(fx, fy, S, 32, 3, 143);
+            float blade = hash2(x, y, 9);
+            uint32_t moss = rgb(int(46 + 30 * fine + 22 * blade), int(70 + 36 * fine + 30 * blade), int(26 + 12 * fine));
+            float dn = fbm(fx, fy, S, 16, 4, 145);
+            uint32_t mud = rgb(int(64 + 26 * dn), int(52 + 20 * dn), int(34 + 14 * dn));
+            c = lerpCol(mud, moss, smooth(0.4f, 0.58f, patch));
+            float d1, d2; int id;
+            voronoi(fx, fy, 22, S, 147, d1, d2, id);
+            if (hash2(id, 3, 7) > 0.7f && d1 < 2.6f) c = lerpCol(rgb(150, 96, 40), rgb(120, 60, 30), hash2(id, 8, 7));   // leaves
+            float wet = smooth(0.62f, 0.75f, fbm(fx, fy, S, 4, 3, 149));
+            c = lerpCol(c, rgb(40, 48, 40), wet * 0.4f);
+            break;
+        }
+        case 3: { // Snow with soft drifts, blue shadows, sparkles and rock showing through
+            float n = fbm(fx, fy, S, 8, 4, 151), fine = fbm(fx, fy, S, 32, 3, 153);
+            int v = int(214 + 26 * n + 10 * fine);
+            c = rgb(v - 8, v - 2, std::min(255, v + 10));
+            c = lerpCol(c, rgb(170, 190, 220), smooth(0.6f, 0.3f, n) * 0.35f);
+            if (hash2(x, y, 155) > 0.996f) c = rgb(255, 255, 255);
+            float rock = smooth(0.72f, 0.8f, fbm(fx, fy, S, 4, 4, 157));
+            c = lerpCol(c, rgb(90, 94, 102), rock * 0.85f);
+            break;
+        }
+        case 4: { // City: cracked asphalt, faded lane paint, broken concrete slabs, rubble
+            float n = fbm(fx, fy, S, 32, 3, 161);
+            int v = int(58 + 22 * n);
+            c = rgb(v, v, v + 3);
+            if (hash2(x, y, 163) > 0.93f) c = scaleCol(c, 1.25f);                 // aggregate
+            if ((x % 128) >= 60 && (x % 128) < 66 && (y % 64) < 36) c = lerpCol(c, rgb(210, 190, 110), 0.55f);   // faded lane dashes
+            float cr = std::fabs(fbm(fx, fy, S, 8, 4, 165) - 0.5f);
+            if (cr < 0.01f) c = scaleCol(c, 0.4f);
+            float slab = smooth(0.62f, 0.66f, fbm(fx, fy, S, 3, 3, 167));
+            int sv = int(120 + 30 * n);
+            c = lerpCol(c, rgb(sv, sv - 4, sv - 10), slab);
+            float d1, d2; int id;
+            voronoi(fx, fy, 26, S, 169, d1, d2, id);
+            if (hash2(id, 3, 7) > 0.78f && d1 < 2.4f) { int r = int(90 + 50 * hash2(id, 5, 7)); c = rgb(r, r - 6, r - 12); }
+            break;
+        }
+        default: { // Facility: diamond-plate steel panels, seams, hazard stripes
+            int px = x % 64, py = y % 64;
+            float n = fbm(fx, fy, S, 16, 3, 171);
+            int v = int(92 + 20 * n);
+            c = rgb(v, v + 4, v + 10);
+            int dx = (x + (y / 6) * 3) % 12, dy = y % 6;                           // raised diamonds
+            if ((dx == 3 || dx == 4) && (dy == 2 || dy == 3)) c = scaleCol(c, 1.28f);
+            if (px < 2 || py < 2) c = rgb(36, 40, 46);
+            if (px == 2 || py == 2) c = scaleCol(c, 1.2f);
+            if ((px == 8 || px == 56) && (py == 8 || py == 56)) c = rgb(150, 156, 166);   // bolts
+            if (y % 128 > 118) c = ((x + y) / 8) % 2 ? rgb(220, 180, 30) : rgb(30, 30, 34);   // hazard stripe
+            break;
+        }
         }
         tex[size_t(y) * S + x] = c;
     }
 }
 
 // -----------------------------------------------------------------------------
-//  Wall textures (128×128 per world unit)
+//  Wall textures (128×128 per world unit), per biome
 // -----------------------------------------------------------------------------
 void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
 {
     const int S = WALL_TS;
     if (type == 5) {
-        // Secret wall: the stone texture plus a faint doorway seam, cracks, and an engraved ancient sigil
+        // Secret wall: the stone texture plus a faint doorway seam, cracks, and an engraved sigil
         bakeWall(tex, 1, theme);
         for (int y = 14; y < S; y++) for (int x = 22; x < S - 22; x++) {
             bool seam = (x == 22 || x == S - 23 || y == 14);
@@ -180,34 +226,58 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
                 x += hash2(c, k, 405) * 2.f - 1.f; y += 1.f;
             }
         }
-        // Engraved mystic diamond sigil at the center of the secret wall
         const int cx = S / 2, cy = S / 2;
         for (int dy = -18; dy <= 18; dy++) for (int dx = -18; dx <= 18; dx++) {
             int d = std::abs(dx) + std::abs(dy);
             int px = cx + dx, py = cy + dy;
             if (px < 0 || px >= S || py < 0 || py >= S) continue;
-            // Outer diamond ring and inner eye/dot
             if (d == 16 || d == 15 || d == 8 || d == 7 || (d <= 2)) {
-                uint32_t orig = tex[size_t(py) * S + px];
-                // Deep carved groove with subtle amber/gold tint
-                uint32_t carved = scaleCol(orig, 0.40f);
-                carved = lerpCol(carved, rgb(215, 170, 75), 0.35f);
-                tex[size_t(py) * S + px] = carved;
-            } else if (d == 17) {
-                // Highlighted chisel edge on the outside
-                tex[size_t(py) * S + px] = scaleCol(tex[size_t(py) * S + px], 1.25f);
-            }
+                uint32_t carved = scaleCol(tex[size_t(py) * S + px], 0.40f);
+                tex[size_t(py) * S + px] = lerpCol(carved, rgb(215, 170, 75), 0.35f);
+            } else if (d == 17) tex[size_t(py) * S + px] = scaleCol(tex[size_t(py) * S + px], 1.25f);
         }
         return;
     }
     tex.assign(size_t(S) * S, 0);
-    uint32_t stoneCol[3] = { rgb(112,114,104), rgb(180,152,112), rgb(84,82,92) };
-    uint32_t brickCol[3] = { rgb(130,62,46),  rgb(176,120,82),  rgb(98,54,50) };
+    const uint32_t stoneCol[THEME_COUNT] = { rgb(64,58,56), rgb(196,160,112), rgb(96,104,90), rgb(118,124,136), rgb(140,136,128), rgb(120,128,140) };
+    const uint32_t brickCol[THEME_COUNT] = { rgb(96,40,30), rgb(186,138,92), rgb(120,64,48), rgb(126,70,60), rgb(140,66,48), rgb(176,180,186) };
     for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
         float fx = float(x), fy = float(y);
         uint32_t c = 0;
         switch (type) {
-        case 1: { // Big irregular stone blocks
+        case 1: { // Main wall material
+            if (theme == 1) {                        // desert: layered sandstone strata
+                float wob = (fbm(fx, fy, S, 4, 3, 211) - 0.5f) * 14.f;
+                float band = fy + wob;
+                float layer = 0.5f + 0.5f * std::sin(band * 0.25f) * 0.6f + 0.4f * fbm(fx * 0.3f, band, S, 8, 2, 213);
+                c = scaleCol(stoneCol[1], 0.72f + 0.38f * layer);
+                if (std::fabs(std::fmod(band + 200.f, 22.f)) < 1.3f) c = scaleCol(c, 0.7f);
+                break;
+            }
+            if (theme == 4) {                        // ruins: cast concrete, form lines, holes, rebar
+                float n = fbm(fx, fy, S, 16, 5, 221);
+                int v = int(124 + 46 * (n - 0.5f));
+                c = rgb(v, v - 2, v - 6);
+                if (y % 42 < 1) c = scaleCol(c, 0.7f);
+                float hole = fbm(fx, fy, S, 4, 4, 223);
+                if (hole > 0.7f) { c = rgb(30, 28, 26); if (hash2(x, y, 225) > 0.93f) c = rgb(130, 60, 30); }
+                float soot = smooth(0.4f, 1.0f, fy / S) * fbm(fx, fy, S, 4, 3, 227);
+                c = scaleCol(c, 1.f - 0.4f * soot);
+                break;
+            }
+            if (theme == 5) {                        // facility: riveted steel panels with a stencil band
+                int px = x % 64, py = y % 64;
+                float n = fbm(fx, fy, S, 16, 3, 231);
+                int v = int(104 + 26 * n);
+                c = rgb(v, v + 6, v + 14);
+                if (px < 2 || py < 2) c = rgb(40, 44, 52);
+                if ((px == 6 || px == 58) && (py % 12 == 6)) c = rgb(170, 176, 186);
+                if (y > 52 && y < 64) c = ((x + y) / 6) % 2 ? rgb(210, 170, 30) : rgb(36, 36, 40);
+                float streak = fbm(fx * 0.2f, fy, S, 16, 3, 233);
+                c = scaleCol(c, 1.f - 0.25f * smooth(0.6f, 0.8f, streak));
+                break;
+            }
+            // stone blocks (volcanic basalt with glowing seams, swamp mossy, snow icy)
             float wob = (fbm(fx, fy, S, 8, 2, 61) - 0.5f) * 6.f;
             int rowH = 32;
             int row = int((fy + wob) / rowH);
@@ -219,21 +289,21 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
             float e = std::min(std::min(lx, bw - lx), std::min(ly, rowH - ly));
             float n = fbm(fx, fy, S, 16, 4, 67 + bid % 5);
             uint32_t st = scaleCol(stoneCol[theme], 0.78f + 0.3f * hash2(bid, 1, 65) + 0.35f * (n - 0.5f));
-            // bevel: lit top edge, shadowed bottom edge
-            float shade = 1.f;
-            if (ly < 4) shade = 1.18f; else if (rowH - ly < 4) shade = 0.7f;
+            float shade = ly < 4 ? 1.18f : rowH - ly < 4 ? 0.7f : 1.f;
             st = scaleCol(st, shade);
-            c = e < 1.6f ? rgb(46, 44, 40) : st;
-            if (theme != 1) {
-                float moss = fbm(fx, fy, S, 8, 4, 69) + fy / S * 0.45f;
-                c = lerpCol(c, rgb(58, 82, 40), smooth(0.78f, 0.95f, moss) * 0.85f);
+            uint32_t joint = theme == 0 ? lerpCol(rgb(150, 40, 10), rgb(255, 150, 40), hash2(x, y, 241) * 0.5f) : rgb(46, 44, 40);
+            c = e < 1.6f ? joint : st;
+            if (theme == 2) c = lerpCol(c, rgb(58, 86, 40), smooth(0.7f, 0.92f, fbm(fx, fy, S, 8, 4, 69) + fy / S * 0.45f) * 0.9f);
+            if (theme == 3) {
+                c = lerpCol(c, rgb(176, 200, 226), smooth(0.65f, 0.85f, fbm(fx, fy, S, 8, 3, 243)) * 0.5f);   // frost
+                if (y < 10 + int(6 * fbm(fx, 0.f, S, 8, 2, 245))) c = rgb(236, 242, 250);                 // snow cap
             }
             break;
         }
-        case 2: { // Brick
-            int bh = 16, bw = 32;
+        case 2: { // Brick (adobe in the desert, glazed tiles in the facility)
+            int bh = theme == 5 ? 32 : 16, bw = theme == 5 ? 32 : 32;
             int row = y / bh;
-            int off = (row & 1) ? bw / 2 : 0;
+            int off = (row & 1) && theme != 5 ? bw / 2 : 0;
             int lx = (x + off) % bw, ly = y % bh;
             int bid = ((x + off) / bw) * 7 + row * 11;
             bool mortar = (ly < 2) || (lx < 2);
@@ -242,27 +312,48 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
             if (ly == 2) br = scaleCol(br, 1.15f);
             if (ly == bh - 1) br = scaleCol(br, 0.78f);
             c = mortar ? rgb(int(150 + 30 * n), int(144 + 30 * n), int(132 + 26 * n)) : br;
-            // soot / grime from the ground up
             float grime = smooth(0.4f, 1.0f, fy / S) * (0.5f + 0.5f * fbm(fx, fy, S, 4, 3, 75));
             c = scaleCol(c, 1.f - 0.35f * grime);
+            if (theme == 4 && fbm(fx, fy, S, 3, 2, 251) > 0.66f)                      // graffiti blobs
+                c = lerpCol(c, hash2(int(fx / 40), int(fy / 40), 253) > 0.5f ? rgb(220, 60, 120) : rgb(60, 200, 220), 0.55f);
+            if (theme == 3 && y < 8) c = rgb(236, 242, 250);
             break;
         }
-        case 3: { // Concrete pillar with stains and form-tie holes
+        case 3: { // Pillar: bark in the swamp / snow (tree trunks), obsidian, columns, beams
+            if (theme == 2 || theme == 3) {
+                float grain = fbm(fx * 0.15f, fy * 1.5f, S, 16, 4, 261);
+                int v = int(60 + 50 * grain);
+                c = theme == 2 ? rgb(v, int(v * 0.72f), int(v * 0.48f)) : rgb(int(v * 0.85f), int(v * 0.7f), int(v * 0.55f));
+                if (std::fabs(std::sin(fx * 0.35f + grain * 6.f)) < 0.12f) c = scaleCol(c, 0.55f);   // bark ridges
+                if (theme == 2) c = lerpCol(c, rgb(70, 100, 46), smooth(0.65f, 0.85f, fbm(fx, fy, S, 8, 3, 263)) * 0.7f);
+                break;
+            }
             float n = fbm(fx, fy, S, 16, 5, 81);
             float streak = fbm(fx, fy * 0.08f, S, 16, 3, 83);
             int v = int(128 + 50 * (n - 0.5f));
             c = rgb(v, v, v + 4);
+            if (theme == 0) c = rgb(int(30 + 20 * n), int(26 + 16 * n), int(34 + 22 * n));        // obsidian
+            if (theme == 1) c = scaleCol(stoneCol[1], 0.8f + 0.3f * n);
+            if (theme == 5) { c = rgb(70, 76, 86); if (x % 32 < 4) c = rgb(110, 118, 130); }
             c = scaleCol(c, 1.f - 0.3f * smooth(0.5f, 0.75f, streak));
             if (x % 64 < 1 || y % 64 < 1) c = scaleCol(c, 0.65f);
-            int hx = x % 32 - 16, hy = y % 32 - 16;
-            if (hx * hx + hy * hy < 5) c = rgb(40, 40, 44);
-            if (theme == 0) c = lerpCol(c, rgb(70, 90, 70), smooth(0.7f, 0.9f, n + fy / S * 0.3f) * 0.6f);
             break;
         }
-        default: { // Door: vertical planks, iron bands, rivets, ring handle
+        default: { // Door: wood planks; steel blast door in the facility and ruins
+            if (theme >= 4) {
+                float n = fbm(fx, fy, S, 16, 3, 271);
+                int v = int(90 + 30 * n);
+                c = rgb(v, v + 4, v + 8);
+                if (theme == 4 && (y % 12) < 2) c = scaleCol(c, 0.7f);                // corrugation
+                if (x > 60 && x < 68) c = rgb(30, 32, 36);                             // split line
+                if (y > 100 && y < 116) c = ((x + y) / 8) % 2 ? rgb(220, 180, 30) : rgb(30, 30, 34);
+                if (std::abs(x - 64) > 50 && y > 40 && y < 70) c = rgb(60, 200, 90);      // status light
+                break;
+            }
             int plank = x / 21;
             float grain = fbm(fx * 0.25f + plank * 40.f, fy * 2.f, S, 16, 4, 91 + plank);
             uint32_t wood = rgb(int(104 + 50 * grain), int(64 + 30 * grain), int(34 + 16 * grain));
+            if (theme == 0) wood = scaleCol(wood, 0.6f);
             if (x % 21 < 1) wood = rgb(34, 22, 14);
             c = wood;
             bool band = (y > 18 && y < 30) || (y > 98 && y < 110);
@@ -280,6 +371,36 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
             break;
         }
         }
+        tex[size_t(y) * S + x] = c;
+    }
+}
+
+// Tree canopy billboards for pillar cells in the swamp (broadleaf) and snow (pine)
+void bakeCanopy(std::vector<uint32_t> &tex, int theme)
+{
+    const int S = CANOPY_TS;
+    tex.assign(size_t(S) * S, 0);
+    for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+        float u = (x + 0.5f) / S * 2.f - 1.f, v = (y + 0.5f) / S;           // u -1..1, v 0 top..1 bottom
+        float n = fbm(float(x), float(y), S, 8, 4, 281 + theme);
+        bool in;
+        float shade;
+        if (theme == 3) {                                                    // pine: stacked cones
+            float tier = std::fmod(v * 4.f, 1.f);
+            float w = (0.25f + 0.75f * v) * (0.55f + 0.45f * tier);
+            in = std::fabs(u) < w * (0.85f + 0.3f * n) && v < 0.92f;
+            shade = 0.6f + 0.6f * tier - 0.3f * u;
+        } else {                                                             // broadleaf: lumpy round crown
+            float cx = u, cy = (v - 0.45f) * 2.f;
+            float r = std::sqrt(cx * cx + cy * cy);
+            in = r < 0.78f + 0.3f * (n - 0.5f) && v < 0.88f;
+            shade = 1.1f - 0.5f * cy - 0.3f * u + 0.4f * (n - 0.5f);
+        }
+        if (!in) continue;
+        uint32_t base = theme == 3 ? rgb(34, 70, 52) : rgb(58, 96, 40);
+        uint32_t c = scaleCol(base, clampf(shade, 0.35f, 1.4f));
+        if (theme == 3 && hash2(x, y, 291) > 0.7f && std::fmod(v * 4.f, 1.f) < 0.25f) c = rgb(232, 240, 248);   // snow on the boughs
+        if (hash2(x, y, 293) > 0.92f) c = scaleCol(c, 1.3f);
         tex[size_t(y) * S + x] = c;
     }
 }
@@ -319,6 +440,27 @@ const SoldierLook SNIPER_LOOK = {
 const SoldierLook SQUAD_LOOK = {
     rgb(150,138,104), rgb(110,100,74), rgb(170,160,126), rgb(58,92,140), rgb(40,66,104),
     rgb(64,100,150), rgb(196,150,116), rgb(40,40,44), rgb(110,230,255), rgb(52,44,36), rgb(46,44,42)
+};
+
+const SoldierLook GRENADIER_LOOK = {
+    rgb(112,104,70), rgb(78,72,46), rgb(150,120,60), rgb(96,86,52), rgb(66,58,36),
+    rgb(90,84,56), rgb(196,150,116), rgb(56,48,40), rgb(255,150,40), rgb(48,40,32), rgb(40,36,30)
+};
+const SoldierLook SHIELD_LOOK = {
+    rgb(40,52,78), rgb(26,34,52), rgb(58,72,104), rgb(30,40,62), rgb(20,26,42),
+    rgb(30,38,58), rgb(190,146,112), rgb(24,28,36), rgb(120,200,255), rgb(22,24,30), rgb(20,22,28)
+};
+const SoldierLook MEDIC_LOOK = {
+    rgb(206,208,204), rgb(150,152,150), rgb(226,226,222), rgb(184,186,182), rgb(120,122,120),
+    rgb(232,232,228), rgb(196,150,116), rgb(70,72,74), rgb(255,90,80), rgb(70,70,72), rgb(60,60,62)
+};
+const SoldierLook HEAVY_LOOK = {
+    rgb(54,56,60), rgb(36,38,42), rgb(80,82,88), rgb(66,62,40), rgb(46,42,26),
+    rgb(52,54,58), rgb(180,138,106), rgb(30,30,32), rgb(255,200,40), rgb(28,28,30), rgb(26,26,28)
+};
+const SoldierLook STALKER_LOOK = {
+    rgb(26,28,34), rgb(14,15,20), rgb(40,44,56), rgb(20,22,28), rgb(12,13,16),
+    rgb(18,20,26), rgb(150,120,100), rgb(10,10,12), rgb(80,255,230), rgb(12,12,14), rgb(16,16,18)
 };
 
 SoldierLook lookForClass(int cls)
@@ -406,7 +548,7 @@ struct SP {
 };
 }
 
-void paintSoldier(uint32_t *px, uint8_t *mask, int size, const SoldierLook &look, SoldierPose pose, float walk, bool bulky)
+void paintSoldier(uint32_t *px, uint8_t *mask, int size, const SoldierLook &look, SoldierPose pose, float walk, bool bulky, int gear)
 {
     std::fill(px, px + size * size, 0u);
     if (mask) std::fill(mask, mask + size * size, uint8_t(0));
@@ -483,7 +625,43 @@ void paintSoldier(uint32_t *px, uint8_t *mask, int size, const SoldierLook &look
     p.box(24.8f, 5.0f + hy, 39.2f, 6.0f + hy, scaleCol(look.helmet, 0.7f), HEAD);
     p.box(30.6f, 2.2f + hy, 33.4f, 4.8f + hy, rgb(26, 26, 26), HEAD);
 
-    if (pose == POSE_SHOOT) p.flash(31, 22, 9.f);
+    // --- Extra kit -------------------------------------------------------------------
+    if (gear == GEAR_GRENADIER) {
+        // bandolier of grenades across the chest + a fat launcher tube instead of the rifle
+        p.capsule(24, 18 + by, 40, 34 + by, 1.6f, rgb(60, 50, 34), BODY);
+        for (int g = 0; g < 4; g++) p.ellipse(26.5f + g * 3.8f, 20.5f + g * 3.8f + by, 1.7f, 1.9f, rgb(70, 90, 50), BODY);
+        if (pose != POSE_WALK) { p.ellipse(31, 22, 4.4f, 4.4f, rgb(54, 60, 40), BODY); p.ellipse(31, 22, 2.6f, 2.6f, rgb(10, 10, 10), BODY); }
+        else p.capsule(44, 24 + by, 18, 34 + by, 3.2f, rgb(60, 66, 44), BODY);
+    }
+    if (gear == GEAR_SHIELD) {
+        // riot shield held on the left: blocks rounds (its own hit-mask value), slit window near the top
+        p.box(12, 15 + by, 33, 52 + by, rgb(46, 52, 60), MASK_SHIELD);
+        p.box(13, 16 + by, 32, 51 + by, rgb(64, 72, 84), MASK_SHIELD);
+        p.box(15, 19 + by, 30, 22 + by, rgb(150, 190, 220), MASK_SHIELD);
+        p.box(14, 40 + by, 31, 42 + by, rgb(220, 220, 220), MASK_SHIELD);
+    }
+    if (gear == GEAR_MEDIC) {
+        p.box(29, 19 + by, 35, 31 + by, rgb(240, 240, 238), BODY);
+        p.box(30.5f, 20.5f + by, 33.5f, 29.5f + by, rgb(210, 36, 36), BODY);
+        p.box(27.5f, 23.5f + by, 36.5f, 26.5f + by, rgb(210, 36, 36), BODY);
+        p.box(20 - bw, 21 + by, 24 - bw, 24 + by, rgb(210, 36, 36), LIMB);               // arm band
+    }
+    if (gear == GEAR_HEAVY) {
+        // rotary cannon held at the hip: barrel cluster facing the viewer
+        float gy = pose == POSE_WALK ? 32.f + by : 27.f;
+        p.box(25, gy - 6, 41, gy + 6, rgb(30, 30, 34), BODY);
+        for (int k = 0; k < 6; k++) {
+            float a = k * 1.047f + (pose == POSE_SHOOT ? 0.5f : 0.f);
+            p.ellipse(33 + std::cos(a) * 3.2f, gy + std::sin(a) * 3.2f, 1.4f, 1.4f, rgb(8, 8, 8), BODY);
+        }
+        p.box(42 + bw, 22 + by, 47 + bw, 34 + by, rgb(140, 110, 40), BODY);              // ammo drum
+    }
+    if (gear == GEAR_STALKER) {
+        p.capsule(44, 26 + by, 50, 42 + by, 1.3f, rgb(200, 210, 220), LIMB);            // arm blade
+        p.ellipse(32, 9.7f + hy, 6.f, 1.6f, rgb(80, 255, 230), HEAD);                    // visor
+    }
+
+    if (pose == POSE_SHOOT) p.flash(31, 22, gear == GEAR_HEAVY ? 12.f : 9.f);
 
     // Rim darkening: texels bordering transparency get darker (reads as an outline)
     std::vector<uint32_t> copy(px, px + size * size);
@@ -512,20 +690,81 @@ static void rotateFrame(const uint32_t *src, const uint8_t *sm, uint32_t *dst, u
     }
 }
 
-void bakeEnemyAtlas(std::vector<uint32_t> &atlas, std::vector<uint8_t> &mask, const SoldierLook &look)
+void bakeEnemyAtlas(std::vector<uint32_t> &atlas, std::vector<uint8_t> &mask, const SoldierLook &look, int gear, bool bulkyIn)
 {
     const int S = ENEMY_TS, F = S * S;
     atlas.assign(size_t(EF_COUNT) * F, 0);
     mask.assign(size_t(EF_COUNT) * F, 0);
-    bool bulky = &look == &ELITE_LOOK;
-    paintSoldier(&atlas[EF_AIM * F], &mask[EF_AIM * F], S, look, POSE_AIM, 0, bulky);
+    bool bulky = &look == &ELITE_LOOK || bulkyIn;
+    paintSoldier(&atlas[EF_AIM * F], &mask[EF_AIM * F], S, look, POSE_AIM, 0, bulky, gear);
     for (int i = 0; i < 4; i++)
-        paintSoldier(&atlas[(EF_WALK0 + i) * F], &mask[(EF_WALK0 + i) * F], S, look, POSE_WALK, i * 0.25f, bulky);
-    paintSoldier(&atlas[EF_SHOOT * F], &mask[EF_SHOOT * F], S, look, POSE_SHOOT, 0, bulky);
+        paintSoldier(&atlas[(EF_WALK0 + i) * F], &mask[(EF_WALK0 + i) * F], S, look, POSE_WALK, i * 0.25f, bulky, gear);
+    paintSoldier(&atlas[EF_SHOOT * F], &mask[EF_SHOOT * F], S, look, POSE_SHOOT, 0, bulky, gear);
     // Hit flinch: lean back a few degrees around the feet
     rotateFrame(&atlas[EF_AIM * F], &mask[EF_AIM * F], &atlas[EF_HIT * F], &mask[EF_HIT * F], S, -8.f, 32, 62, 32, 62);
     // Death: topple sideways in four steps
     const float ang[4] = { 24.f, 50.f, 74.f, 90.f };
+    for (int i = 0; i < 4; i++) {
+        float k = ang[i] / 90.f;
+        rotateFrame(&atlas[EF_AIM * F], &mask[EF_AIM * F], &atlas[(EF_DEATH0 + i) * F], &mask[(EF_DEATH0 + i) * F],
+                    S, ang[i], 32, 62, 32 - 27 * k, 62 - 9 * k);
+    }
+}
+
+// Hover drone and sentry gun, painted with the same shaded primitives
+void bakeMachineAtlas(std::vector<uint32_t> &atlas, std::vector<uint8_t> &mask, int kind)
+{
+    const int S = ENEMY_TS, F = S * S;
+    atlas.assign(size_t(EF_COUNT) * F, 0);
+    mask.assign(size_t(EF_COUNT) * F, 0);
+    SoldierLook dummy = ENEMY_LOOK;
+    for (int f = 0; f < EF_DEATH0; f++) {
+        SP p{&atlas[size_t(f) * F], &mask[size_t(f) * F], S, float(S) / 64.f, &dummy};
+        const uint8_t BODY = 1, HEAD = 2, LIMB = 3;
+        if (kind == 0) {                                     // drone: body, four rotors, red eye
+            float spin = f * 0.9f;
+            for (int k = 0; k < 4; k++) {
+                float rx = k % 2 ? 50.f : 14.f, ry = k < 2 ? 22.f : 34.f;
+                p.capsule(32, 28, rx, ry, 1.6f, rgb(50, 52, 58), LIMB);
+                // blurred rotor disc: a thin bright ellipse that wobbles per frame
+                p.ellipse(rx, ry - 3.f, 9.f, 1.6f + 0.6f * std::sin(spin + k), rgb(150, 156, 166), LIMB);
+            }
+            p.ellipse(32, 29, 12.f, 8.f, rgb(70, 74, 82), BODY);
+            p.box(24, 33, 40, 38, rgb(44, 46, 52), BODY);
+            p.ellipse(32, 31, 4.f, 4.f, rgb(30, 30, 34), HEAD);
+            p.ellipse(32, 31, 2.4f, 2.4f, f == EF_SHOOT ? rgb(255, 230, 160) : rgb(255, 40, 40), HEAD);
+            p.capsule(26, 38, 22, 44, 1.2f, rgb(40, 40, 44), LIMB);
+            p.capsule(38, 38, 42, 44, 1.2f, rgb(40, 40, 44), LIMB);
+            if (f == EF_SHOOT) p.flash(32, 40, 8.f);
+        } else if (kind == 2) {                              // egg sac: a glowing pod on roots
+            float beat = 1.f + 0.06f * std::sin(f * 1.6f);
+            for (int k = 0; k < 5; k++) p.capsule(32, 56, 14.f + k * 9.f, 63, 1.6f, rgb(70, 60, 40), LIMB);
+            p.ellipse(32, 42, 14.f * beat, 18.f * beat, rgb(110, 170, 60), BODY);
+            p.ellipse(32, 40, 9.f * beat, 12.f * beat, rgb(170, 230, 90), BODY);
+            p.ellipse(32, 36, 4.f, 5.f, rgb(230, 255, 160), HEAD);                  // the core is the weak spot
+            for (int k = 0; k < 6; k++) p.capsule(32, 30, 20.f + k * 5.f, 50.f - (k % 2) * 6.f, 0.7f, rgb(60, 110, 40), BODY);
+        } else if (kind == 3) {                              // shield pylon: post + glowing core
+            p.box(26, 20, 38, 63, rgb(70, 76, 86), BODY);
+            p.box(24, 56, 40, 63, rgb(50, 54, 62), BODY);
+            p.box(28, 24, 36, 30, rgb(90, 220, 255), HEAD);
+            p.box(29, 34, 35, 52, rgb(40, 140, 200), BODY);
+            p.ellipse(32, 16, 6.f, 6.f, rgb(140, 240, 255), HEAD);
+        } else {                                             // sentry gun on a tripod
+            p.capsule(32, 40, 18, 62, 2.f, rgb(46, 48, 52), LIMB);
+            p.capsule(32, 40, 46, 62, 2.f, rgb(46, 48, 52), LIMB);
+            p.capsule(32, 40, 32, 63, 2.f, rgb(40, 42, 46), LIMB);
+            p.box(20, 22, 44, 40, rgb(110, 46, 40), BODY);
+            p.box(21, 24, 43, 30, rgb(140, 60, 50), BODY);
+            p.ellipse(32, 33, 5.f, 5.f, rgb(30, 30, 34), BODY);
+            p.ellipse(32, 33, 2.6f, 2.6f, rgb(6, 6, 6), BODY);
+            p.box(27, 16, 37, 22, rgb(36, 38, 42), HEAD);
+            p.ellipse(32, 19, 2.f, 2.f, rgb(255, 50, 40), HEAD);
+            if (f == EF_SHOOT) p.flash(32, 33, 10.f);
+        }
+    }
+    // hit flinch and destruction: tip over like the soldiers
+    rotateFrame(&atlas[EF_AIM * F], &mask[EF_AIM * F], &atlas[EF_HIT * F], &mask[EF_HIT * F], S, -6.f, 32, 62, 32, 62);
+    const float ang[4] = { 20.f, 45.f, 70.f, 90.f };
     for (int i = 0; i < 4; i++) {
         float k = ang[i] / 90.f;
         rotateFrame(&atlas[EF_AIM * F], &mask[EF_AIM * F], &atlas[(EF_DEATH0 + i) * F], &mask[(EF_DEATH0 + i) * F],

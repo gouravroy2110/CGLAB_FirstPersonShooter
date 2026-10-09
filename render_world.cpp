@@ -24,7 +24,7 @@ static const float MAXD = 60.f;
 
 uint32_t MainWindow::fog(uint32_t c, float dist) const
 {
-    const Theme &T = THEMES[m_theme];
+    const Theme &T = m_env;
     float f = std::exp(-T.fogDensity * dist);
     int hr = R(T.haze), hg = G(T.haze), hb = B(T.haze);
     return (c & 0xFF000000) | (uint32_t(hr + int((R(c) - hr) * f)) << 16) |
@@ -37,7 +37,7 @@ uint32_t MainWindow::fog(uint32_t c, float dist) const
 void MainWindow::renderTerrain()
 {
     const Player &pl = m_gs.player;
-    const Theme &T = THEMES[m_theme];
+    const Theme &T = m_env;
     const MipTex &ft = m_floorTex[m_theme];
     const int LW = m_mapW * LM, DW = m_mapW * DM;
     const int hr = R(T.haze), hg = G(T.haze), hb = B(T.haze);
@@ -111,12 +111,16 @@ void MainWindow::renderTerrain()
                 float wx = m_camX + rdX * d, wy = m_camY + rdY * d;
                 uint32_t out;
                 if (acid) {
-                    // murky acid: two crossing ripple bands + sparse bubbles, self-lit
-                    float w1 = std::sin(m_time * 2.1f + wx * 5.f + wy * 3.f), w2 = std::sin(m_time * 1.3f - wx * 3.f + wy * 6.f);
+                    // hazard pool in the biome's colours: crossing ripple bands + bubbles;
+                    // lava / coolant are self-lit and slowly flow, others take the light map
+                    float flow = T.hazGlow ? m_time * 0.25f : 0.f;
+                    float w1 = std::sin(m_time * 2.1f + (wx + flow) * 5.f + wy * 3.f), w2 = std::sin(m_time * 1.3f - wx * 3.f + (wy + flow) * 6.f);
                     float w = 0.5f + 0.25f * (w1 + w2);
                     float hl = w > 0.85f ? (w - 0.85f) * 6.f : 0.f;
                     float bub = hash2(int(wx * 20.f), int(wy * 20.f), int(m_time * 3.f)) > 0.975f ? 1.f : 0.f;
-                    out = shadeFog(int(34 + 40 * w + 90 * hl + 80 * bub), int(70 + 70 * w + 120 * hl + 110 * bub), int(22 + 18 * w + 40 * hl + 40 * bub), fogI(d));
+                    uint32_t hc = lerpCol(T.hazDeep, T.hazLight, clampf(w * 0.8f + hl * 0.5f + bub * 0.6f, 0.f, 1.f));
+                    int L = T.hazGlow ? 256 : lightLut[m_light[size_t(clampi(int(wy * LM), 0, m_mapH * LM - 1)) * LW + clampi(int(wx * LM), 0, LW - 1)]];
+                    out = shadeFog((R(hc) * L) >> 8, (G(hc) * L) >> 8, (B(hc) * L) >> 8, T.hazGlow ? std::min(256, fogI(d) + 60) : fogI(d));
                 } else if (kind == 1) {
                     int lvl = mipFor(d, wallFoot);
                     int sz = WALL_TS >> lvl, msk = sz - 1;
@@ -234,7 +238,7 @@ void MainWindow::renderTerrain()
 void MainWindow::renderSky()
 {
     const Player &pl = m_gs.player;
-    const Theme &T = THEMES[m_theme];
+    const Theme &T = m_env;
     const std::vector<uint32_t> &sky = m_sky[m_theme];
     float facing = std::atan2(pl.dirY, pl.dirX);
     static int colIdx[W], rowIdx[H];
@@ -249,10 +253,16 @@ void MainWindow::renderSky()
         float v = 1.f - std::atan(slope) / (PI / 2);
         rowIdx[y] = clampi(int(v * (SKY_H - 1)), 0, SKY_H - 1) * SKY_W;
     }
+    const int tr = int(m_skyTint[0] * 256), tg = int(m_skyTint[1] * 256), tb = int(m_skyTint[2] * 256);
+    const bool tinted = tr != 256 || tg != 256 || tb != 256;
+    const float night = clampf(1.f - m_dayLevel * 1.6f, 0.f, 1.f);
     for (int x = 0; x < W; x++) {
         int top = m_colTop[x];
         for (int y = 0; y < top; y++) {
-            m_pixels[y * W + x] = sky[rowIdx[y] + colIdx[x]];
+            uint32_t c = sky[rowIdx[y] + colIdx[x]];
+            if (tinted) c = rgb(std::min(255, (R(c) * tr) >> 8), std::min(255, (G(c) * tg) >> 8), std::min(255, (B(c) * tb) >> 8));
+            if (night > 0.f && m_weather == WX_NONE && hash2(colIdx[x], rowIdx[y] / SKY_W, 17) > 0.9965f && y < m_hor) c = lerpCol(c, rgb(235, 240, 255), night);
+            m_pixels[y * W + x] = c;
             m_depth[y * W + x] = 1e30f;
         }
     }
@@ -295,7 +305,7 @@ void MainWindow::pixelate()
 void MainWindow::renderLensFlare()
 {
     const Player &pl = m_gs.player;
-    const Theme &T = THEMES[m_theme];
+    const Theme &T = m_env;
     float facing = std::atan2(pl.dirY, pl.dirX);
     float d = SUN_AZIMUTH - facing;
     while (d < -PI) d += 2 * PI;
@@ -330,8 +340,8 @@ static const uint8_t BAYER4[4][4] = { {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 
 void MainWindow::renderSprites()
 {
     const Player &pl = m_gs.player;
-    const Theme &T = THEMES[m_theme];
-    enum SpType { SP_ENEMY, SP_KIT, SP_PICKUP, SP_EBULLET };
+    const Theme &T = m_env;
+    enum SpType { SP_ENEMY, SP_KIT, SP_PICKUP, SP_EBULLET, SP_TREE };
     struct Sp { float depth; SpType t; int idx; };
     std::vector<Sp> list;
     float eplX = pl.planeX * m_adsFOVMult, eplY = pl.planeY * m_adsFOVMult;
@@ -347,8 +357,14 @@ void MainWindow::renderSprites()
     for (int i = 0; i < int(m_gs.healthKits.size()); i++) if (m_gs.healthKits[i].active) list.push_back({depthOf(m_gs.healthKits[i].x, m_gs.healthKits[i].y), SP_KIT, i});
     for (int i = 0; i < int(m_gs.weaponPickups.size()); i++) if (m_gs.weaponPickups[i].active) list.push_back({depthOf(m_gs.weaponPickups[i].x, m_gs.weaponPickups[i].y), SP_PICKUP, i});
     for (int i = 0; i < int(m_gs.bullets.size()); i++) list.push_back({depthOf(m_gs.bullets[i].x, m_gs.bullets[i].y), SP_EBULLET, i});
+    for (int i = 0; i < int(m_treeCells.size()); i++) {
+        float tx = m_treeCells[i] % m_mapW + 0.5f, ty = m_treeCells[i] / m_mapW + 0.5f;
+        float dd = depthOf(tx, ty);
+        if (dd > 0.2f && dd < 40.f) list.push_back({dd, SP_TREE, i});
+    }
     std::sort(list.begin(), list.end(), [](const Sp &a, const Sp &b) { return a.depth > b.depth; });
 
+    float shimmer = 0.f;   // > 0: draw as a refraction shimmer (cloaked stalker / Mirage)
     // Billboard blitter: tex (ts×ts), world size, bottom at world z0
     auto blit = [&](float wx, float wy, float z0, float wsize, const uint32_t *tex, int ts, float light,
                     float flash, float fade, bool shadow) {
@@ -381,6 +397,18 @@ void MainWindow::renderSprites()
                 uint32_t a = c >> 24;
                 if (!a) continue;
                 if (fade < 1.f && BAYER4[y & 3][x & 3] >= int(fade * 16)) continue;
+                if (shimmer > 0.f) {
+                    // cloaked: bend the pixels behind the silhouette sideways, with a faint edge
+                    int off = int(std::sin(y * 0.35f + m_time * 7.f) * 4.f * shimmer);
+                    uint32_t bg = m_pixels[y * W + clampi(x + off, 0, W - 1)];
+                    bool edge = tx > 0 && tx < ts - 1 && ((tex[ty * ts + tx - 1] >> 24) == 0 || (tex[ty * ts + tx + 1] >> 24) == 0);
+                    uint32_t sc = scaleCol(c, light);
+                    uint32_t outc = lerpCol(sc, scaleCol(bg, 1.08f), shimmer);
+                    if (edge) outc = lerpCol(outc, rgb(200, 230, 255), 0.35f * shimmer);
+                    m_pixels[y * W + x] = outc | 0xFF000000;
+                    m_depth[y * W + x] = d;
+                    continue;
+                }
                 if (a < 255) { m_cv.add(x, y, c); continue; }          // muzzle-flash texels glow
                 int r = std::min(255, (R(c) * L) >> 8), g = std::min(255, (G(c) * L) >> 8), b = std::min(255, (B(c) * L) >> 8);
                 if (flash > 0) { r += int((255 - r) * flash); g += int((235 - g) * flash * 0.8f); b += int((220 - b) * flash * 0.8f); }
@@ -396,14 +424,25 @@ void MainWindow::renderSprites()
         case SP_ENEMY: {
             const Enemy &e = m_gs.enemies[s.idx];
             int f = enemyFrame(e);
-            float base = floorH(e.x, e.y);
+            float base = floorH(e.x, e.y) + e.hover;
             float light = (T.ambient + T.sunStrength * 0.8f * sunVisAt(e.x, e.y)) * 1.12f;
             float flash = e.alive && e.hitFlash > 0 ? std::min(1.f, e.hitFlash / 0.16f) * 0.35f : 0.f;
-            const std::vector<uint32_t> &atlas = e.elite ? m_eliteAtlas :
-                                                 e.type == ET_SCOUT ? m_scoutAtlas :
-                                                 e.type == ET_SHOTGUNNER ? m_shotgunAtlas :
-                                                 e.type == ET_SNIPER ? m_sniperAtlas : m_enemyAtlas;
-            blit(e.x, e.y, base, e.scale, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive);
+            const std::vector<uint32_t> &atlas = atlasFor(e);
+            if (e.bossKind) { light *= 1.1f; if (e.shielded) flash = 0.25f + 0.15f * std::sin(m_time * 8.f); }
+            shimmer = (e.alive && e.type == ET_STALKER) ? e.cloak : (e.bossKind && e.decoy == false && e.cloak < 1.f && e.cloak > 0.f) ? e.cloak : 0.f;
+            blit(e.x, e.y, base, e.scale, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive && e.hover <= 0.f);
+            shimmer = 0.f;
+            if (e.hover > 0.f && e.alive) {                       // drone: a soft shadow on the ground below
+                float gx, gy, gd;
+                if (project(e.x, e.y, floorH(e.x, e.y), gx, gy, gd) && gd > 0.3f) {
+                    int rx = std::max(2, int(0.3f * m_K / gd)), ry = std::max(1, rx / 4);
+                    for (int yy = int(gy) - ry; yy <= int(gy) + ry; yy++) for (int xx = int(gx) - rx; xx <= int(gx) + rx; xx++) {
+                        if (xx < 0 || yy < 0 || xx >= W || yy >= H || std::fabs(m_depth[yy * W + xx] - gd) > 0.6f) continue;
+                        float q = float((xx - gx) * (xx - gx)) / (rx * rx) + float((yy - gy) * (yy - gy)) / (ry * ry);
+                        if (q < 1.f) m_cv.blend(xx, yy, withAlpha(0, int(90 * (1.f - q))));
+                    }
+                }
+            }
             if (e.alive && e.hpShow > 0) {
                 float sx, sy, d;
                 if (project(e.x, e.y, base + 1.08f * e.scale, sx, sy, d) && d < depthAt(int(sx), int(sy)) + 0.5f) {
@@ -437,11 +476,12 @@ void MainWindow::renderSprites()
             if (wp.reward) gc = rgb(255, 205, 60);
             if (wp.type == PICKUP_WEAPON && wp.load.rarity > 0) gc = RARITY_COLORS[wp.load.rarity];
             if (wp.type == PICKUP_THROW) gc = THROWS[wp.throwKind].color;
+            if (wp.type == PICKUP_KEY) gc = rgb(80, 230, 255);
             if (project(wp.x, wp.y, base, sx, sy, d) && d > 0.1f && d < depthAt(int(sx), int(sy)) + 0.4f) {
                 m_cv.glow(int(sx), int(sy), int((ti == 4 || wp.reward ? 0.55f : 0.38f) * m_K / d), gc, 0.35f + 0.15f * std::sin(wp.bobPhase * 2));
                 // Loot beam for boss / elite drops: an additive light column, depth-tested per pixel
                 float tx, ty, td;
-                if ((wp.reward || (wp.type == PICKUP_WEAPON && wp.load.rarity >= 3)) && project(wp.x, wp.y, base + 2.6f, tx, ty, td)) {
+                if ((wp.reward || wp.type == PICKUP_KEY || (wp.type == PICKUP_WEAPON && wp.load.rarity >= 3)) && project(wp.x, wp.y, base + 2.6f, tx, ty, td)) {
                     int x0 = int(sx), y0 = int(sy), y1 = std::max(0, int(ty));
                     int half = std::max(1, int(0.05f * m_K / d));
                     for (int yy = std::min(H - 1, y0); yy >= y1; yy--) {
@@ -457,6 +497,15 @@ void MainWindow::renderSprites()
                 }
             }
             if (!model3d) blit(wp.x, wp.y, base + bob, ti == 1 || ti == 4 ? 0.42f : 0.62f, &m_pickupTex[size_t(ti) * PICKUP_TS * PICKUP_TS], PICKUP_TS, 1.2f, 0, 1.f, false);
+            break;
+        }
+        case SP_TREE: {
+            int cx = m_treeCells[s.idx] % m_mapW, cy = m_treeCells[s.idx] / m_mapW;
+            float top = cellTop(cx, cy);
+            float light = (T.ambient + T.sunStrength * 0.7f) * 1.05f;
+            // a big crown that hides most of the trunk block (pines start low, broadleaf higher)
+            float base = m_theme == BIO_SNOW ? floorH(cx + 0.5f, cy + 0.5f) + 0.35f : top - 0.75f;
+            blit(cx + 0.5f, cy + 0.5f, base, m_theme == BIO_SNOW ? 2.5f : 2.2f, m_canopyTex[m_theme].data(), CANOPY_TS, light, 0, 1.f, false);
             break;
         }
         case SP_EBULLET: {

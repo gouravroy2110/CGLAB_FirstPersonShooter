@@ -39,7 +39,7 @@ void MainWindow::applyUpgrade(const UpgradeCard &c)
     } else if (c.slot == UC_GADGET) {
         pl.gadget = c.option; pl.gadgetCd = 0.f;
     } else {
-        pl.hp = std::min(CHAR_PROFILES[m_charChoice].hp, pl.hp + 50);
+        pl.hp = std::min(maxHP(), pl.hp + 50);
         for (int g = 0; g < WPN_COUNT; g++) if (pl.owned[g] && usesAmmo(g)) pl.reserve[g] = WEAPONS[g].maxReserve;
     }
 }

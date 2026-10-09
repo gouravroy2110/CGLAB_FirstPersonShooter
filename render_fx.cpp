@@ -30,6 +30,23 @@ void MainWindow::renderWorldFX()
             m_cv.thickLine(int(tx), int(ty), int(sx), int(sy), withAlpha(rgb(120, 220, 255), 160), std::max(1, r));
     }
 
+    // --- Enemy grenades: a red warning ring on the ground where each will land --------
+    for (const Projectile &p : m_gs.projectiles) {
+        if (p.owner != PO_ENEMY || p.kind != PJ_GRENADE) continue;
+        float pulse = 0.6f + 0.4f * std::sin(m_time * 14.f);
+        float gz = floorH(p.landX, p.landY) + 0.03f;
+        float px0 = 0, py0 = 0; bool have = false;
+        for (int k = 0; k <= 32; k++) {
+            float a = k * 6.2831853f / 32.f;
+            float sx, sy, d;
+            bool ok = project(p.landX + std::cos(a) * p.splashR, p.landY + std::sin(a) * p.splashR, gz, sx, sy, d) && d > 0.2f;
+            if (ok && have) m_cv.thickLine(int(px0), int(py0), int(sx), int(sy), withAlpha(rgb(255, 50, 30), int(200 * pulse)), 2);
+            px0 = sx; py0 = sy; have = ok;
+        }
+        float cx, cy, cd;
+        if (project(p.landX, p.landY, gz, cx, cy, cd) && cd > 0.2f) m_cv.glow(int(cx), int(cy), std::max(4, int(0.4f * m_K / cd)), rgb(255, 60, 30), 0.5f * pulse);
+    }
+
     // --- Beams ------------------------------------------------------------------------
     unsigned seed = unsigned(m_gs.frameNum * 2654435761u);
     auto rnd = [&seed]() { seed = seed * 1103515245u + 12345u; return float((seed >> 16) & 0x7FFF) / 32767.f; };

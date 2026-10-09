@@ -210,7 +210,7 @@ void MainWindow::startReload()
         pl.reloadTimer = t; m_reloadTotal = t;
         sfx(SND_SHELL_IN, 0.6f, frandC(0.95f, 1.05f), t * 0.7f);
     } else {
-        float t = d.reloadTime * (pl.load[w].att[AT_MAG] == 1 ? 1.1f : 1.f);
+        float t = d.reloadTime * (pl.load[w].att[AT_MAG] == 1 ? 1.1f : 1.f) * reloadMul();
         pl.reloadTimer = t; m_reloadTotal = t;
         sfx(SND_MAG_OUT, 0.7f, 1.f, t * 0.15f);
         sfx(SND_MAG_IN, 0.75f, 1.f, t * 0.6f);
@@ -506,9 +506,14 @@ void MainWindow::fireHitscan(int w, float ax, float ay, float spreadPx, float sX
                 t.len = std::sqrt((ex - sX) * (ex - sX) + (ey - sY) * (ey - sY) + (ez - sZ) * (ez - sZ)); t.t = 0.f;
                 m_gs.tracers.push_back(t);
             }
+            if (h.enemy >= 0 && h.part == PART_SHIELD && pen < 0.5f) {
+                spawnImpact(h.x, h.y, h.z, false);
+                if (p < 2) sfxAt(SND_RICOCHET, h.x, h.y, 0.7f, frandC(0.9f, 1.2f));
+                break;
+            }
             if (h.enemy >= 0) {
                 anyHit = true;
-                float mult = h.part == PART_HEAD ? d.headMult : h.part == PART_LIMB ? d.limbMult : 1.f;
+                float mult = h.part == PART_HEAD ? d.headMult : h.part == PART_LIMB ? d.limbMult : h.part == PART_SHIELD ? 0.4f : 1.f;
                 if (L.att[AT_AMMO] == 3) mult *= h.part == PART_HEAD ? 0.9f : 1.25f;    // hollow-point
                 float dist = std::sqrt((h.x - pl.posX) * (h.x - pl.posX) + (h.y - pl.posY) * (h.y - pl.posY));
                 int dmg = std::max(1, int(effectiveDamage(w) * mult * falloffFor(d, dist) * dmgScale * frandC(0.9f, 1.1f) + 0.5f));
@@ -595,7 +600,7 @@ void MainWindow::fireRail(int w, float ax, float ay, float sX, float sY, float s
     for (int i = 0; i < int(m_gs.enemies.size()); i++) {
         const Enemy &e = m_gs.enemies[size_t(i)];
         if (!e.alive) continue;
-        float base = floorH(e.x, e.y);
+        float base = floorH(e.x, e.y) + e.hover;
         // closest approach between the ray and the enemy's vertical axis
         float ex = e.x - sX, ey = e.y - sY;
         float hl2 = dx * dx + dy * dy;
@@ -782,7 +787,7 @@ int MainWindow::enemyAtPoint(float x, float y, float z, float pad, HitPart *part
         float r = 0.22f * e.scale + pad;
         float dx = x - e.x, dy = y - e.y;
         if (dx * dx + dy * dy > r * r) continue;
-        float base = floorH(e.x, e.y), hz = z - base;
+        float base = floorH(e.x, e.y) + e.hover, hz = z - base;
         if (hz < -pad || hz > 0.95f * e.scale + pad) continue;
         if (part) *part = hz > 0.74f * e.scale ? PART_HEAD : hz < 0.35f * e.scale ? PART_LIMB : PART_BODY;
         return i;
@@ -823,9 +828,24 @@ void MainWindow::updateProjectiles(float dt)
             p.x += p.vx * h; p.y += p.vy * h; p.z += p.vz * h;
             int cx = int(std::floor(p.x)), cy = int(std::floor(p.y));
             if (!inside(cx, cy)) { p.alive = false; done = true; break; }
+            if (p.owner == PO_ENEMY) {
+                const Player &tp = m_gs.player;
+                if (p.kind == PJ_ROCKET) {                       // slow homing missiles you can outrun / dodge
+                    float hx = tp.posX - p.x, hy = tp.posY - p.y, hz = tp.footZ + 0.5f - p.z;
+                    float hl = std::sqrt(hx * hx + hy * hy + hz * hz) + 1e-4f;
+                    float sp = std::sqrt(p.vx * p.vx + p.vy * p.vy + p.vz * p.vz);
+                    float k = std::min(1.f, 1.1f * h);
+                    p.vx += (hx / hl * sp - p.vx) * k; p.vy += (hy / hl * sp - p.vy) * k; p.vz += (hz / hl * sp - p.vz) * k;
+                }
+                float ddx = p.x - tp.posX, ddy = p.y - tp.posY;
+                if (ddx * ddx + ddy * ddy < 0.16f && p.z > tp.footZ - 0.1f && p.z < tp.footZ + 0.95f && p.kind == PJ_ROCKET) {
+                    explode(p.x, p.y, p.z, p.splashR, p.splashDmg, PO_ENEMY, false);
+                    p.alive = false; done = true; break;
+                }
+            }
             // hostiles
             HitPart part = PART_BODY;
-            int ei = enemyAtPoint(p.x, p.y, p.z, p.kind == PJ_BULLET ? 0.02f : 0.08f, &part);
+            int ei = p.owner == PO_ENEMY ? -1 : enemyAtPoint(p.x, p.y, p.z, p.kind == PJ_BULLET ? 0.02f : 0.08f, &part);
             if (ei >= 0 && p.throwKind < 0) {
                 if (p.kind == PJ_BULLET) {
                     const WeaponDef &d = WEAPONS[p.weapon];
@@ -895,6 +915,15 @@ void MainWindow::updateProjectiles(float dt)
                     m_gs.smokes.push_back(SmokeCloud{p.x, p.y, groundAt(p.x, p.y), THROWS[TH_SMOKE].radius, 14.f, 14.f});
                     sfxAt(SND_SMOKE_HISS, p.x, p.y, 0.9f);
                 } else if (p.throwKind == TH_FLASH) flashbang(p.x, p.y, p.z);
+                else if (p.owner == PO_ENEMY && p.incendiary) {    // acid glob: a pool that dries up after a while
+                    SeedSpread s; s.egg = -1; s.t = 0.f; s.life = 9.f;
+                    int cx0 = int(p.x), cy0 = int(p.y);
+                    for (int yy = cy0 - 1; yy <= cy0 + 1; yy++) for (int xx = cx0 - 1; xx <= cx0 + 1; xx++)
+                        if (inside(xx, yy) && !solidCell(xx, yy) && !m_acid[yy][xx] && (std::abs(xx - cx0) + std::abs(yy - cy0)) < 2) { m_acid[yy][xx] = 1; s.cells.push_back(yy * m_mapW + xx); }
+                    m_seeds.push_back(s);
+                    sfxAt(SND_ACID, p.x, p.y, 0.9f);
+                    explode(p.x, p.y, p.z + 0.05f, 1.2f, p.splashDmg, PO_ENEMY, true);
+                }
                 else explode(p.x, p.y, p.z + 0.05f, p.throwKind == TH_FRAG ? THROWS[TH_FRAG].radius : p.splashR,
                              p.throwKind == TH_FRAG ? THROWS[TH_FRAG].damage : p.splashDmg, p.owner, false);
             }
@@ -937,7 +966,7 @@ void MainWindow::explode(float x, float y, float z, float radius, float damage, 
     m_blastLight = std::max(m_blastLight, (small ? 0.35f : 0.8f) * clampf(1.2f - std::sqrt((x - m_camX) * (x - m_camX) + (y - m_camY) * (y - m_camY)) / 25.f, 0.f, 1.f));
 
     // damage: hostiles, squad, the player (all need line of sight to the blast)
-    for (int i = 0; i < int(m_gs.enemies.size()); i++) {
+    for (int i = 0; i < int(m_gs.enemies.size()) && owner != PO_ENEMY; i++) {
         Enemy &e = m_gs.enemies[size_t(i)];
         if (!e.alive) continue;
         float ez = floorH(e.x, e.y) + 0.5f;
@@ -958,12 +987,13 @@ void MainWindow::explode(float x, float y, float z, float radius, float damage, 
     }
     float pd = std::sqrt((pl.posX - x) * (pl.posX - x) + (pl.posY - y) * (pl.posY - y) + (pl.footZ + 0.4f - z) * (pl.footZ + 0.4f - z));
     if (pd < radius && hasLOS(x, y, z + 0.15f, pl.posX, pl.posY, pl.footZ + 0.5f)) {
-        int dmg = int(damage * 0.45f * (1.f - pd / radius) * (1.f - pl.damageReduction));
+        int dmg = int(damage * (owner == PO_ENEMY ? 1.f : 0.45f) * (1.f - pd / radius) * (1.f - pl.damageReduction));
         pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = 0.5f;
         m_damageAngle = std::atan2(y - pl.posY, x - pl.posX); m_damageDirTimer = 2.f;
         addDamageMark(x, y, 1.f);
         sfx(SND_PLAYER_HURT, 0.8f);
         if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; m_killerX = x; m_killerY = y; m_killerZ = z + 0.5f; m_killerIdx = owner == PO_PLAYER ? -2 : -1; }
+        if (owner == PO_ENEMY) sfx(SND_PLAYER_HURT, 0.9f);
     }
     pl.shakeY += 14.f * std::max(0.f, 1.f - pd / (radius * 4.f));
 
@@ -1288,7 +1318,7 @@ void MainWindow::updateAreaEffects(float dt)
     m_gs.turrets.erase(std::remove_if(m_gs.turrets.begin(), m_gs.turrets.end(), [](const Turret &t) { return t.life <= 0; }), m_gs.turrets.end());
 
     // medkit stations
-    int maxHP = CHAR_PROFILES[m_charChoice].hp;
+    const int maxHP = this->maxHP();
     for (MedStation &m : m_gs.medStations) {
         m.life -= dt;
         if ((pl.posX - m.x) * (pl.posX - m.x) + (pl.posY - m.y) * (pl.posY - m.y) < 4.f && pl.hp < maxHP) {
@@ -1345,7 +1375,7 @@ void MainWindow::updatePickups(float dt)
 {
     Player &pl = m_gs.player;
     m_nearPickup = -1;
-    int maxHP = CHAR_PROFILES[m_charChoice].hp;
+    const int maxHP = this->maxHP();
     for (auto &k : m_gs.healthKits) {
         if (!k.active) continue;
         k.bobPhase += dt * 2.2f;
@@ -1365,8 +1395,12 @@ void MainWindow::updatePickups(float dt)
         if (wp.type == PICKUP_SHOTGUN || wp.type == PICKUP_RIFLE) { wp.weapon = wp.type == PICKUP_SHOTGUN ? WPN_SHOTGUN : WPN_RIFLE; wp.type = PICKUP_WEAPON; }
         float dx = pl.posX - wp.x, dy = pl.posY - wp.y;
         if (dx * dx + dy * dy >= 0.35f || std::fabs(pl.footZ - floorH(wp.x, wp.y)) > 0.6f) continue;
-        if (wp.type == PICKUP_INTEL) {
-            wp.active = false;
+        if (wp.type == PICKUP_KEY) {
+            wp.active = false; m_keyCount++;
+            pushFeed("KEY CARD ACQUIRED", 3.f, true);
+            sfx(SND_INTEL, 0.8f);
+        } else if (wp.type == PICKUP_INTEL) {
+            wp.active = false; m_intelCount++;
             for (int w = 0; w < WPN_COUNT; w++) if (pl.owned[w] && usesAmmo(w)) pl.reserve[w] = WEAPONS[w].maxReserve;
             pl.hp = maxHP;
             m_gs.score += 1000;

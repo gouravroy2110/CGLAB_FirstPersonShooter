@@ -26,10 +26,16 @@ SOURCES += \
     render_fx.cpp \
     menus.cpp \
     killcam.cpp \
+    environment.cpp \
+    editor.cpp \
+    campaign.cpp \
+    enemies.cpp \
+    bosses.cpp \
     audio.cpp
 
 HEADERS += \
     mainwindow.h \
+    missions.h \
     game.h \
     raster.h \
     assets.h \

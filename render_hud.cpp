@@ -73,6 +73,7 @@ void MainWindow::flushText()
 void MainWindow::render()
 {
     m_text.clear();
+    if (m_screen == SCR_EDITOR) { m_menuRects.clear(); renderEditor(); flushText(); return; }
     if (m_screen != SCR_PLAYING) {
         m_menuRects.clear();
         if (m_screen == SCR_SETTINGS && m_settingsReturnScreen == SCR_PLAYING) {
@@ -109,12 +110,16 @@ void MainWindow::render()
         case SCR_CHAR_SELECT: renderCharSelect(); break;
         case SCR_SETTINGS:    renderSettings();   break;
         case SCR_ARSENAL:     renderArsenal();    break;
+        case SCR_CAMPAIGN:    renderCampaign();   break;
+        case SCR_BRIEFING:    renderBriefing();   break;
+        case SCR_DEBRIEF:     m_debriefT += m_dt; renderDebrief(); break;
         default: break;
         }
         flushText();
         return;
     }
     if (m_killcamActive) { renderKillcam(); return; }
+    if (m_flyActive) { renderFlyby(); return; }
     computeView();
     renderTerrain();
     renderSky();
@@ -122,7 +127,11 @@ void MainWindow::render()
     renderSprites();
     renderParticles();
     renderWorldFX();
+    renderBossFX();
+    renderMissionWorld();
     renderTracers();
+    renderWeather();
+    renderFlashlight();
     renderLensFlare();
     pixelate();
     renderDamageNumbers();
@@ -136,6 +145,7 @@ void MainWindow::render()
     renderPostFX();
     renderScreenFlash();
     renderHUD();
+    renderMissionHUD();
     flushText();
     renderLevelBanner();
     if (m_showArmory) renderArmoryOverlay();
@@ -167,7 +177,7 @@ void MainWindow::renderPostFX()
         }
     }
     const Player &pl = m_gs.player;
-    int maxHP = CHAR_PROFILES[m_charChoice].hp;
+    const int maxHP = this->maxHP();
     float hpFrac = float(pl.hp) / maxHP;
     float lowHP = hpFrac < 0.3f && !m_gs.gameOver ? (0.3f - hpFrac) / 0.3f : 0.f;
     float pulse = 0.65f + 0.35f * std::sin(m_time * 6.f);
@@ -226,20 +236,7 @@ void MainWindow::renderHUD()
     renderHealthPanel();
     renderWeaponPanel();
     if (!scoped) renderTargetInfo();
-    for (const Enemy &e : m_gs.enemies) {
-        if (!e.alive || !e.boss) continue;
-        float dx = e.x - pl.posX, dy = e.y - pl.posY;
-        if (e.state != ES_ALERT && dx * dx + dy * dy > 18.f * 18.f) break;
-        const int bw = 320, bx = W / 2 - bw / 2, by = 134;
-        float frac = float(e.hp) / float(std::max(1, e.maxHp));
-        m_cv.blendRect(bx - 6, by - 16, bw + 12, 30, withAlpha(UI_BG, 190));
-        m_cv.blendRect(bx, by, bw, 8, withAlpha(0xFFFFFFFF, 30));
-        m_cv.fillRect(bx, by, int(bw * frac), 8, RED);
-        m_cv.blendRect(bx, by, int(bw * frac), 2, withAlpha(0xFFFFFFFF, 90));
-        text(bx, by - 15, bw, 14, Qt::AlignLeft, "COMMANDER", QColor(255, 120, 100), 11, 900, false);
-        text(bx, by - 15, bw, 14, Qt::AlignRight, QString("%1 / %2").arg(e.hp).arg(e.maxHp), QColor(220, 220, 220), 10, 700, false);
-        break;
-    }
+    renderBossBar();
     renderDamageDirection();
     renderSquadTags();
     renderCrosshair();
@@ -423,6 +420,9 @@ void MainWindow::renderMinimap()
         uint32_t c;
         if (cx < 0 || cy < 0 || cx >= m_mapW || cy >= m_mapH) c = withAlpha(0xFF05070A, 200);
         else if (m_map[cy][cx] == CELL_DOOR && m_doorT[cy][cx] < 0.9f) c = withAlpha(rgb(170, 120, 60), 235);
+        else if (m_map[cy][cx] == CELL_SECRET && m_doorT[cy][cx] < 0.9f &&
+                 (cx + 0.5f - pl.posX) * (cx + 0.5f - pl.posX) + (cy + 0.5f - pl.posY) * (cy + 0.5f - pl.posY) < 49.f)
+            c = withAlpha(lerpCol(rgb(150, 156, 164), rgb(235, 200, 120), 0.18f + 0.14f * std::sin(m_time * 3.f)), 235);   // a faint shimmer
         else if (solidCell(cx, cy)) c = withAlpha(rgb(150, 156, 164), 235);
         else if (m_acid[cy][cx]) c = withAlpha(rgb(90, 190, 50), 220);
         else {
@@ -761,10 +761,7 @@ void MainWindow::renderTargetInfo()
     m_cv.blendRect(x, y, w, 26, withAlpha(UI_BG, 160));
     m_cv.blendRect(x + 8, y + 17, w - 16, 4, withAlpha(0xFFFFFFFF, 30));
     m_cv.blendRect(x + 8, y + 17, int((w - 16) * frac), 4, frac > 0.5f ? GREEN : frac > 0.25f ? AMBER : RED);
-    const char *typeStr = e.elite ? "ELITE GUARD" :
-                          e.type == ET_SCOUT ? "SCOUT" :
-                          e.type == ET_SHOTGUNNER ? "SHOTGUNNER" :
-                          e.type == ET_SNIPER ? "SNIPER" : "INFANTRY";
+    const char *typeStr = enemyTypeName(e);
     text(x + 8, y + 2, w - 16, 14, Qt::AlignLeft, typeStr, e.elite ? QColor(255, 60, 50) : e.type == ET_SNIPER ? QColor(255, 90, 70) : QColor(255, 160, 90), 11, 800, false);
     text(x + 8, y + 2, w - 16, 14, Qt::AlignRight, m_probePart == PART_HEAD ? QString("HEAD  x%1").arg(WEAPONS[m_gs.player.curWeapon].headMult, 0, 'f', 1)
                                                    : m_probePart == PART_LIMB ? "LIMB" : "BODY",
@@ -1151,10 +1148,10 @@ void MainWindow::renderMenu()
     text(70, 182, 520, 30, Qt::AlignLeft | Qt::AlignVCenter, "T A C T I C A L   S H O O T E R", qc(AMBER), 18, 700);
     text(70, 212, 520, 18, Qt::AlignLeft, "Every pixel is computed on the CPU  -  pure software rasterization", QColor(170, 175, 180), 12, 500);
 
-    const char *opts[5] = { "NEW GAME", "ARSENAL", "SETTINGS", "FIRING RANGE", "EXIT" };
-    for (int i = 0; i < 5; i++) {
+    const char *opts[7] = { "CAMPAIGN", "FREE PLAY", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "EXIT" };
+    for (int i = 0; i < 7; i++) {
         bool sel = m_menuCursor == i;
-        int x = 48, y = 250 + i * 50, w = 300, h = 44;
+        int x = 48, y = 236 + i * 46, w = 300, h = 40;
         m_menuRects.push_back({x, y, w, h, i});
         if (sel) {
             m_cv.hGrad(x, y, w, h, withAlpha(AMBER, 70), withAlpha(AMBER, 0));
@@ -1188,25 +1185,24 @@ void MainWindow::renderMenu()
 void MainWindow::renderMapSelect()
 {
     menuHeader("STEP 1 / 3", "SELECT DEPLOYMENT ZONE");
-    static const char *TAGS[MAP_COUNT] = { "OVERCAST  |  2 SECRETS", "MIDDAY HILLS  |  1 SECRET", "DUSK  |  2 SECRETS", "64x64  |  2 SECRETS" };
+    static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  DUNES", "SWAMP  |  BOG + TREES", "SNOW  |  64x64", "CITY RUINS  |  64x64", "FACILITY  |  56x56" };
     for (int i = 0; i < MAP_COUNT; i++) {
         bool sel = m_mapChoice == i;
-        int w = 178, h = 262, x = 26 + i * (w + 14), y = H - 34 - h - 22 - (sel ? 8 : 0);
+        int w = 244, h = 228, col = i % 3, row = i / 3;
+        int x = 22 + col * (w + 12), y = 78 + row * (h + 12) - (sel ? 4 : 0);
         m_menuRects.push_back({x, y, w, h, i});
         panel(x, y, w, h, sel, AMBER);
-        // top-down layout preview, tinted by theme
+        // top-down layout preview in the biome's own colours
         const ParsedMap &pm = m_parsed[i];
-        // preview scaled so every map fits a 120-pixel square (integer texel blocks)
-        const int ts = std::max(1, 120 / pm.w), pw = pm.w * ts, ph = pm.h * ts;
-        const int px0 = x + (w - pw) / 2, py0 = y + 12 + (120 - ph) / 2;
-        int th = MAP_THEME[i];
-        uint32_t wallC = th == 0 ? rgb(140, 146, 140) : th == 1 ? rgb(200, 176, 130) : rgb(120, 110, 130);
-        uint32_t floorC = th == 0 ? rgb(40, 44, 42) : th == 1 ? rgb(52, 66, 36) : rgb(36, 30, 40);
-        if (i == 3) floorC = rgb(64, 60, 34);
+        const Theme &T = THEMES[MAP_THEME[i]];
+        const int box = 128, ts = std::max(1, box / pm.w), pw = pm.w * ts, ph = pm.h * ts;
+        const int px0 = x + (w - pw) / 2, py0 = y + 10 + (box - ph) / 2;
+        uint32_t floorC = m_floorTex[MAP_THEME[i]].lv[MIP_LEVELS - 1][0];
+        uint32_t wallC = m_wallTex[MAP_THEME[i]][1].lv[MIP_LEVELS - 1][0];
         for (int my = 0; my < pm.h; my++) for (int mx = 0; mx < pm.w; mx++) {
             int t = pm.type[my][mx];
-            uint32_t c = t == CELL_DOOR ? rgb(170, 110, 50) : t == CELL_SECRET ? wallC : t ? wallC
-                       : pm.acid[my][mx] ? rgb(90, 190, 50) : scaleCol(floorC, 1.f + pm.plat[my][mx] * 0.9f);
+            uint32_t c = t == CELL_DOOR ? rgb(170, 110, 50) : t == CELL_PILLAR ? scaleCol(wallC, 0.7f) : t ? wallC
+                       : pm.acid[my][mx] ? T.hazLight : scaleCol(floorC, 1.f + pm.plat[my][mx] * 0.9f);
             m_cv.fillRect(px0 + mx * ts, py0 + my * ts, ts, ts, c);
         }
         m_cv.fillCircle(px0 + int(pm.spawnX * ts), py0 + int(pm.spawnY * ts), 2, AMBER);
@@ -1214,12 +1210,12 @@ void MainWindow::renderMapSelect()
             int scan = py0 + int(std::fmod(m_time * 40.f, float(ph)));
             m_cv.blendRect(px0, scan, pw, 2, withAlpha(AMBER, 120));
         }
-        text(x, y + 136, w, 30, Qt::AlignCenter, MAP_NAMES[i], sel ? QColor(255, 255, 255) : QColor(200, 200, 200), 20, 900);
-        text(x, y + 164, w, 16, Qt::AlignCenter, TAGS[i], qc(sel ? AMBER : AMBER_DIM), 11, 800, false);
-        text(x + 14, y + 184, w - 28, 50, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, MAP_DESCS[i], QColor(180, 180, 180), 12, 500, false);
-        text(x, y + h - 22, w, 16, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(130, 130, 130), 11, 700, false);
+        text(x, y + 142, w, 24, Qt::AlignCenter, MAP_NAMES[i], sel ? QColor(255, 255, 255) : QColor(200, 200, 200), 15, 900);
+        text(x, y + 166, w, 14, Qt::AlignCenter, TAGS[i], qc(sel ? AMBER : AMBER_DIM), 10, 800, false);
+        text(x + 12, y + 182, w - 24, 40, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, MAP_DESCS[i], QColor(180, 180, 180), 10, 500, false);
+        text(x + w - 30, y + 6, 24, 14, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(130, 130, 130), 10, 700, false);
     }
-    menuFooter("LEFT/RIGHT browse   ENTER or 1-4 select   ESC back");
+    menuFooter("ARROWS browse   ENTER or 1-6 select   ESC back");
 }
 
 void MainWindow::renderDiffSelect()

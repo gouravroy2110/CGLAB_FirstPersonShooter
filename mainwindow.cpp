@@ -14,6 +14,7 @@
 // =============================================================================
 #include "mainwindow.h"
 #include "pixelfont.h"
+#include "missions.h"
 #include <QPainter>
 #include <QDir>
 #include <QFile>
@@ -25,6 +26,7 @@
 
 static inline float frand() { return float(rand()) / float(RAND_MAX); }
 static inline float frand(float a, float b) { return a + (b - a) * frand(); }
+static inline float frandB2(float a, float b) { return frand(a, b); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Constructor — bake every texture procedurally
@@ -42,10 +44,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_pixels = reinterpret_cast<uint32_t *>(m_buf.bits());
     m_cv = rs::Canvas{m_pixels, W, H};
     m_depth.assign(size_t(W) * H, 1e30f);
+    loadLayoutRows(false);
     for (int m = 0; m < MAP_COUNT; m++) parseLayout(ALL_LAYOUTS[m], LAYOUT_ROWS[m], m_parsed[m]);
 
     std::vector<uint32_t> tmp;
-    for (int t = 0; t < 3; t++) {
+    for (int t = 0; t < THEME_COUNT; t++) {
+        bakeCanopy(m_canopyTex[t], t);
         bakeSky(m_sky[t], t);
         bakeFloor(tmp, t);
         m_floorTex[t].build(tmp, FLOOR_TS);
@@ -59,6 +63,19 @@ MainWindow::MainWindow(QWidget *parent)
     bakeEnemyAtlas(m_scoutAtlas, m_scoutMask, SCOUT_LOOK);
     bakeEnemyAtlas(m_shotgunAtlas, m_shotgunMask, SHOTGUN_LOOK);
     bakeEnemyAtlas(m_sniperAtlas, m_sniperMask, SNIPER_LOOK);
+    m_typeAtlas[ET_RIFLEMAN] = m_enemyAtlas; m_typeMask[ET_RIFLEMAN] = m_enemyMask;
+    m_typeAtlas[ET_SCOUT] = m_scoutAtlas; m_typeMask[ET_SCOUT] = m_scoutMask;
+    m_typeAtlas[ET_SHOTGUNNER] = m_shotgunAtlas; m_typeMask[ET_SHOTGUNNER] = m_shotgunMask;
+    m_typeAtlas[ET_SNIPER] = m_sniperAtlas; m_typeMask[ET_SNIPER] = m_sniperMask;
+    bakeEnemyAtlas(m_typeAtlas[ET_GRENADIER], m_typeMask[ET_GRENADIER], GRENADIER_LOOK, GEAR_GRENADIER);
+    bakeEnemyAtlas(m_typeAtlas[ET_SHIELD], m_typeMask[ET_SHIELD], SHIELD_LOOK, GEAR_SHIELD);
+    bakeEnemyAtlas(m_typeAtlas[ET_MEDIC], m_typeMask[ET_MEDIC], MEDIC_LOOK, GEAR_MEDIC);
+    bakeEnemyAtlas(m_typeAtlas[ET_HEAVY], m_typeMask[ET_HEAVY], HEAVY_LOOK, GEAR_HEAVY, true);
+    bakeEnemyAtlas(m_typeAtlas[ET_STALKER], m_typeMask[ET_STALKER], STALKER_LOOK, GEAR_STALKER);
+    bakeMachineAtlas(m_typeAtlas[ET_DRONE], m_typeMask[ET_DRONE], 0);
+    bakeMachineAtlas(m_typeAtlas[ET_TURRET], m_typeMask[ET_TURRET], 1);
+    bakeBossAtlases();
+    bakePortraits();
     bakePickups(m_pickupTex);
     for (int c = 0; c < 3; c++) {
         m_portrait[c].assign(PORTRAIT * PORTRAIT, 0);
@@ -208,6 +225,7 @@ void MainWindow::loadLevel(int lv)
     m_ixPage = 0;
     int nEnemies = cfg.numEnemies + (lv > 1 ? (lv - 1) * 3 : 0);
     m_gs.killsNeeded = std::min(nEnemies, 4 + (lv - 1) * 2);
+    if (m_campaignRun) { static const float DM[3] = { 0.75f, 1.f, 1.3f }; nEnemies = std::max(1, int(MISSIONS[m_mission].enemies * DM[rs::clampi(m_difficulty, 0, 2)] + 0.5f)); }
 
     m_gs.levelComplete = false; m_gs.levelTransTimer = 0;
     m_upgradeCards.clear(); m_selectedUpgradeCard = -1; m_upgradePicked = false; m_showArmory = false;
@@ -220,7 +238,7 @@ void MainWindow::loadLevel(int lv)
 
     Player &pl = m_gs.player;
     if (lv > 1) {
-        pl.hp = std::min(pl.hp + 35, CHAR_PROFILES[m_charChoice].hp);
+        pl.hp = std::min(pl.hp + 35, maxHP());
         for (int w = 0; w < WPN_COUNT; w++) {
             if (pl.owned[w] && usesAmmo(w)) {
                 int addMag = effectiveMagSize(w);
@@ -279,15 +297,12 @@ void MainWindow::loadLevel(int lv)
     for (size_t i = validFloorTiles.size(); i > 1; i--)
         std::swap(validFloorTiles[i - 1], validFloorTiles[size_t(rand()) % i]);
 
+    // markers behind secret walls (or cut off in an edited map) aren't used for regular troops
+    spawns.erase(std::remove_if(spawns.begin(), spawns.end(), [&](const Marker &mk) { return !reachable(int(mk.x), int(mk.y)); }), spawns.end());
     // 1) Fixed tactical choke/ambush markers (up to 50% of spawns)
     int fixedCount = std::min(int(spawns.size()), nEnemies / 2);
     for (int i = 0; i < fixedCount; i++) {
-        EnemyType et = ET_RIFLEMAN;
-        int roll = rand() % 100;
-        if (roll < 35) et = ET_SHOTGUNNER;
-        else if (roll < 60) et = ET_RIFLEMAN;
-        else if (roll < 80) et = ET_SCOUT;
-        else if (lv >= 2)   et = ET_SNIPER;
+        EnemyType et = m_campaignRun ? missionEnemyType() : rollEnemyType(lv, false);
         spawnEnemy(spawns[i].x, spawns[i].y, false, et);
     }
 
@@ -298,16 +313,7 @@ void MainWindow::loadLevel(int lv)
         float fx = validFloorTiles[floorIdx].first;
         float fy = validFloorTiles[floorIdx].second;
         bool elevated = (floorH(fx, fy) > 0.2f);
-        EnemyType et = ET_RIFLEMAN;
-        if (elevated && lv >= 2) {
-            et = ET_SNIPER;
-        } else {
-            int roll = rand() % 100;
-            if (roll < 30) et = ET_SCOUT;
-            else if (roll < 60) et = ET_SHOTGUNNER;
-            else if (roll < 80 && lv >= 2) et = ET_SNIPER;
-            else et = ET_RIFLEMAN;
-        }
+        EnemyType et = m_campaignRun ? missionEnemyType() : rollEnemyType(lv, elevated);
         spawnEnemy(fx, fy, false, et);
     }
 
@@ -333,15 +339,22 @@ void MainWindow::loadLevel(int lv)
             if (dsq > bestD && posValid(t.first, t.second, 0.4f)) { bestD = dsq; bx = t.first; by = t.second; }
         }
         if (bestD > 0) {
-            static const EnemyType bossTypes[3] = { ET_RIFLEMAN, ET_SHOTGUNNER, ET_SNIPER };
-            spawnEnemy(bx, by, true, bossTypes[(lv - 1) % 3]);
-            Enemy &b = m_gs.enemies.back();
-            b.boss = true; b.scale = 1.35f;
-            b.hp = b.maxHp = int(b.maxHp * 1.8f);
-            b.aggroRange += 3.f;
+            // the zone commander is one of the story bosses, in campaign order
+            static const int ROTATION[9] = { BK_WARDEN, BK_TWIN_A, BK_SEED_QUEEN, BK_GUNSHIP, BK_GUARD_HEAVY, BK_MIRAGE, BK_ENGINEER, BK_JUGGERNAUT, BK_FOUNDER };
+            int kind = ROTATION[(lv - 1) % 9];
+            // a second far tile (the other twin), well away from the first
+            float fx2 = bx, fy2 = by, best2 = -1;
+            for (const auto &t : validFloorTiles) {
+                float d1 = (t.first - bx) * (t.first - bx) + (t.second - by) * (t.second - by);
+                float d2 = (t.first - pl.posX) * (t.first - pl.posX) + (t.second - pl.posY) * (t.second - pl.posY);
+                if (d2 > 64.f && d1 > best2 && d1 < 26.f * 26.f && posValid(t.first, t.second, 0.4f)) { best2 = d1; fx2 = t.first; fy2 = t.second; }
+            }
+            if (!m_campaignRun) spawnZoneBoss(kind, bx, by, fx2, fy2);
             m_gs.zoneHadBoss = true;
         }
     }
+    m_seeds.clear(); m_overloadCells.clear(); m_overloadPhase = 9.f;
+    m_baseAcid = m_acid.v;
     // The zone is cleared only when every enemy is dead (vault guards and the commander included)
     m_gs.killsNeeded = int(m_gs.enemies.size());
     m_reinforceTimer = frand(14.f, 22.f);
@@ -353,6 +366,7 @@ void MainWindow::loadLevel(int lv)
         m_gs.healthKits.push_back(k);
     }
     m_gs.secretsTotal = 0;
+    m_secretHinted.clear();
     for (int y = 0; y < m_mapH; y++) for (int x = 0; x < m_mapW; x++) if (m_map[y][x] == CELL_SECRET) m_gs.secretsTotal++;
     m_gs.zoneSecretsTotal = m_gs.secretsTotal;
     for (const Marker &mk : pm.markers) {
@@ -402,7 +416,15 @@ void MainWindow::advance(float dt)
             if (m_loadedMap != m_mapChoice) loadMapGeometry(m_mapChoice);
         }
     }
+    if (playing && m_flyActive) {
+        // intro flyby: the world holds still while the camera travels
+        m_flyT += dt;
+        if (m_flyT >= m_flyDur) m_flyActive = false;
+        updateEnvironment(dt);
+        return;
+    }
     if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
+    if (playing && m_campaignRun && m_gs.gameOver) updateRadio(dt);
 
     // ADS blend + FOV
     bool canAim = playing && pl.adsMode && !isMelee(pl.curWeapon) && pl.curWeapon >= 0 && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !pl.sprinting && !m_gs.gameOver && !m_gs.levelComplete;
@@ -418,11 +440,13 @@ void MainWindow::advance(float dt)
     if (m_prevAdsT < 0.5f && m_adsT >= 0.5f) sfx(SND_SCOPE_IN, effectiveScope(pl.curWeapon) ? 0.5f : 0.25f);
     m_prevAdsT = m_adsT;
     if (playing) updateCamera(dt);
+    updateEnvironment(dt);
+    m_edMsgT = std::max(0.f, m_edMsgT - dt);
 
     // Sound timers, heartbeat at low health, game-over sting
     m_hurtSndT -= dt; m_alertSndT -= dt;
     if (playing && !m_paused && !m_gs.gameOver && !m_gs.levelComplete &&
-        pl.hp <= std::max(25, CHAR_PROFILES[m_charChoice].hp / 4)) {
+        pl.hp <= std::max(25, maxHP() / 4)) {
         m_heartbeatT -= dt;
         if (m_heartbeatT <= 0) { sfx(SND_HEARTBEAT, 0.8f); m_heartbeatT = 0.85f; }
     }
@@ -555,7 +579,8 @@ void MainWindow::sfxAt(SoundId id, float wx, float wy, float gain, float pitch, 
 void MainWindow::updateAmbience()
 {
     if (!m_snd) return;
-    int want = m_theme == 0 ? SND_AMB_DUNGEON : m_theme == 1 ? SND_AMB_WIND : SND_AMB_CRYPT;
+    // drone underground / in the facility, wind outdoors, low drone in the swamp and ruins
+    int want = (m_theme == BIO_VOLCANIC || m_theme == BIO_FACILITY) ? SND_AMB_DUNGEON : (m_theme == BIO_DESERT || m_theme == BIO_SNOW) ? SND_AMB_WIND : SND_AMB_CRYPT;
     if (want == m_ambId) return;
     m_snd->setAmbience(want, 0.32f);
     m_ambId = want;
@@ -672,7 +697,7 @@ void MainWindow::buyShopItem(int i)
         pl.throwCount[TH_FRAG] = std::min(THROWS[TH_FRAG].maxCarry, pl.throwCount[TH_FRAG] + 1);
         sfx(SND_PICKUP_AMMO, 0.7f); m_ixMsg = "AMMO RESUPPLIED  +2 MAGAZINES PER GUN";
     } else if (i == 1) {
-        pl.hp = std::min(pl.hp + 50, CHAR_PROFILES[m_charChoice].hp);
+        pl.hp = std::min(pl.hp + 50, maxHP());
         sfx(SND_PICKUP_HEALTH, 0.7f); m_ixMsg = "MEDKIT USED  +50 HP";
     } else {
         generateUpgradeChoices();
@@ -783,7 +808,7 @@ void MainWindow::gameStep(float dt)
     } else if (!shift) {
         pl.stamina += 28.f * dt;
     }
-    pl.stamina = std::max(0.f, std::min(CHAR_PROFILES[m_charChoice].stamina, pl.stamina));
+    pl.stamina = std::max(0.f, std::min(maxStamina(), pl.stamina));
     pl.sprinting = wantSprint;
 
     // Movement: the keyboard becomes an InputCmd, moved by the same code as every actor
@@ -807,7 +832,7 @@ void MainWindow::gameStep(float dt)
     // Acid burns while standing in it
     int pcx = int(pl.posX), pcy = int(pl.posY);
     if (m_acid[pcy][pcx] && m_gs.player.footZ <= g + 0.05f) {
-        m_acidAcc += 28.f * dt * (1.f - pl.damageReduction * 0.5f);
+        m_acidAcc += THEMES[m_theme].hazDps * dt * (1.f - pl.damageReduction * 0.5f);
         m_acidFlash = 1.f;
         m_acidSndT -= dt;
         if (m_acidSndT <= 0) { sfx(SND_ACID, 0.6f, frand(0.9f, 1.1f)); m_acidSndT = 0.35f; }
@@ -833,6 +858,8 @@ void MainWindow::gameStep(float dt)
 
     updateActors(dt);
     updateEnemies(dt);
+    updateBossWorld(dt);
+    updateSecretHints(dt);
     checkReinforcements(dt);
 
     // Enemy projectiles
@@ -858,9 +885,17 @@ void MainWindow::gameStep(float dt)
             }
         }
         if (hitActor) { b.alive = false; continue; }
-        float dx = b.x - pl.posX, dy = b.y - pl.posY;
+        // closest point of this frame's path (prev -> now) to the player: fast rounds can't skip through
+        auto closest = [&](float cx, float cy, float &ox, float &oy, float &oz) {
+            float sx = b.x - b.px, sy = b.y - b.py, l2 = sx * sx + sy * sy;
+            float t = l2 > 1e-6f ? rs::clampf(((cx - b.px) * sx + (cy - b.py) * sy) / l2, 0.f, 1.f) : 1.f;
+            ox = b.px + sx * t; oy = b.py + sy * t; oz = b.pz + (b.z - b.pz) * t;
+        };
+        float cbx, cby, cbz;
+        closest(pl.posX, pl.posY, cbx, cby, cbz);
+        float dx = cbx - pl.posX, dy = cby - pl.posY;
         if (!b.whizzed && dx * dx + dy * dy < 1.6f) { b.whizzed = true; sfxAt(SND_BULLET_WHIZ, b.x, b.y, 0.9f, frand(0.9f, 1.15f)); }
-        if (dx * dx + dy * dy < 0.15f && b.z > m_gs.player.footZ - 0.1f && b.z < m_gs.player.footZ + 0.95f) {
+        if (dx * dx + dy * dy < 0.15f && cbz > m_gs.player.footZ - 0.1f && cbz < m_gs.player.footZ + 0.95f) {
             b.alive = false;
             int dmg = b.damage > 0 ? b.damage : int((10 + 4 * (m_gs.level - 1)) * (1.f - pl.damageReduction) * dc.dmgReceivedMult);
             pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = 0.45f; pl.shakeY = -9.f;
@@ -904,7 +939,8 @@ void MainWindow::gameStep(float dt)
     for (auto &d : m_gs.damageNums) { d.life -= dt; d.z += dt * 0.5f; }
     m_gs.damageNums.erase(std::remove_if(m_gs.damageNums.begin(), m_gs.damageNums.end(), [](const DamageNum &d) { return d.life <= 0; }), m_gs.damageNums.end());
 
-    if (!m_gs.levelComplete && !m_gs.enemies.empty() && aliveEnemies() == 0) {
+    updateMission(dt);
+    if (!m_campaignRun && !m_gs.levelComplete && !m_gs.enemies.empty() && aliveEnemies() == 0) {
         m_gs.levelComplete = true;
         m_upgradeDecisionTimer = 60.0f;
         m_intermissionT = 0.f;
@@ -963,6 +999,8 @@ void MainWindow::updateEnemies(float dt)
             }
             e.alertDist = 0.f; // Player detected! Pursue & engage
         }
+        if (e.bossKind) { updateBoss(int(i), dt, tgX, tgY, tgZ, d, los); continue; }
+        if (e.type >= ET_GRENADIER) { updateSpecialEnemy(int(i), dt, tgX, tgY, tgZ, d, los, detectRange); continue; }
 
         // Pick movement vector based on archetype and tactical posture
         float vx = 0, vy = 0, spd = 0;
@@ -1111,7 +1149,16 @@ void MainWindow::spawnEnemy(float x, float y, bool elite, EnemyType type)
     if (type == ET_SCOUT) hp = int(baseHp * 0.70f);
     else if (type == ET_SHOTGUNNER) hp = int(baseHp * 1.35f);
     else if (type == ET_SNIPER) hp = int(baseHp * 0.85f);
+    else if (type == ET_GRENADIER) hp = int(baseHp * 0.9f);
+    else if (type == ET_SHIELD) hp = int(baseHp * 1.2f);
+    else if (type == ET_MEDIC) hp = int(baseHp * 0.8f);
+    else if (type == ET_HEAVY) hp = int(baseHp * 3.0f);
+    else if (type == ET_STALKER) hp = int(baseHp * 0.9f);
+    else if (type == ET_DRONE) hp = int(baseHp * 0.5f);
+    else if (type == ET_TURRET) hp = int(baseHp * 1.6f);
     e.hp = e.maxHp = elite ? hp * 2 : hp;
+    if (type == ET_DRONE) e.hover = 1.35f;
+    if (type == ET_HEAVY) e.scale = 1.12f;
 
     const LevelCfg &cfg = LEVEL_CFG[std::min(m_gs.level, 5)];
     const DiffConfig &dc = DIFF_CFG[m_difficulty];
@@ -1195,8 +1242,13 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     if (!e.alive) return;
     bool head = part == PART_HEAD;
     bool mine = byActor < 0;
+    if (e.shielded) { spawnImpact(hx, hy, hz, false); sfxAt(SND_RICOCHET, hx, hy, 0.6f); return; }
+    dmg = std::max(1, int(dmg * (1.f - e.armor)));
     e.hp -= dmg; e.hitFlash = 0.16f;
     e.hpShow = 2.2f;
+    if (e.type == ET_STALKER) e.revealT = 1.5f;
+    if (e.bossKind) bossDamaged(idx, dmg);
+    if (e.hp <= 0 && (e.type == ET_DRONE || e.type == ET_TURRET)) { e.hover = 0.f; explode(e.x, e.y, floorH(e.x, e.y) + 0.4f, 1.2f, 0.f, PO_ENEMY, true); }
     sfxAt(SND_HIT_FLESH, hx, hy, 0.8f, frand(0.9f, 1.1f));
     if (mine) sfx(head ? SND_HEADSHOT : SND_HITMARK, head ? 0.8f : 0.55f);
 
@@ -1231,6 +1283,13 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     }
     spawnBlood(hx, hy, hz, head ? 22 : 9, head ? 1.7f : 1.f);
 
+    if (e.hp <= 0 && e.decoy) {                              // a decoy pops: no loot, no score
+        e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0; e.corpseFade = 0.3f;
+        for (int k = 0; k < 10; k++) spawnImpact(e.x, e.y, floorH(e.x, e.y) + frandB2(0.2f, 1.f), false);
+        sfxAt(SND_ARC, e.x, e.y, 0.7f);
+        if (mine) pushFeed("A DECOY - THE REAL ONE CASTS A SHADOW", 2.f);
+        return;
+    }
     if (e.hp <= 0 && !mine) {
         // squad kill: counts toward clearing the zone, not toward your score or report
         e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0; e.killedByHeadshot = head;
@@ -1267,14 +1326,15 @@ void MainWindow::enemyFire(Enemy &e, float tx, float ty, float tz)
     float dx = tx - e.x, dy = ty - e.y, d = std::sqrt(dx * dx + dy * dy);
     if (d < 0.1f) return;
     SoundId shot = e.type == ET_SNIPER ? SND_ENEMY_SNIPER : e.type == ET_SHOTGUNNER ? SND_ENEMY_SHOTGUN :
-                   e.type == ET_SCOUT ? SND_ENEMY_PISTOL : SND_ENEMY_RIFLE;
+                   (e.type == ET_SCOUT || e.type == ET_SHIELD || e.type == ET_MEDIC) ? SND_ENEMY_PISTOL :
+                   e.type == ET_DRONE ? SND_PLASMA : e.type == ET_TURRET ? SND_TURRET_FIRE : e.type == ET_HEAVY ? SND_LMG : SND_ENEMY_RIFLE;
     sfxAt(shot, e.x, e.y, 1.f, frand(0.94f, 1.06f));
     float acc = DIFF_CFG[m_difficulty].enemyAccuracy;
     if (e.type == ET_SNIPER) acc = std::min(0.98f, acc + 0.18f);
     else if (e.type == ET_SCOUT) acc = std::max(0.40f, acc - 0.12f);
     if (e.elite) acc = std::min(0.98f, acc + 0.1f);
 
-    float z0 = floorH(e.x, e.y) + 0.62f, z1 = tz - 0.05f;
+    float z0 = floorH(e.x, e.y) + 0.62f * e.scale + e.hover, z1 = tz - 0.05f;
     float baseSpd = m_gs.enemyBulletSpeed * (e.elite ? 1.25f : 1.f);
 
     // Calculate base damage scaling
@@ -1561,7 +1621,7 @@ void MainWindow::checkEmergencyDrops(float dt)
     }
 
     // 2. Health drop check: when the player is in critical health condition
-    int maxHP = CHAR_PROFILES[m_charChoice].hp;
+    const int maxHP = this->maxHP();
     bool criticalHealth = (pl.hp <= std::max(25, int(maxHP * 0.25f)));
 
     if (criticalHealth) {
@@ -1740,10 +1800,12 @@ void MainWindow::menuConfirm()
     sfx(SND_UI_SELECT, 0.6f);
     switch (m_screen) {
     case SCR_MENU:
-        if (m_menuCursor == 0) m_screen = SCR_MAP_SELECT;
-        else if (m_menuCursor == 1) m_screen = SCR_ARSENAL;
-        else if (m_menuCursor == 2) { openSettings(SCR_MENU); }
-        else if (m_menuCursor == 3) startDebugMode();
+        if (m_menuCursor == 0) openCampaign();
+        else if (m_menuCursor == 1) { m_campaignRun = false; m_screen = SCR_MAP_SELECT; }
+        else if (m_menuCursor == 2) m_screen = SCR_ARSENAL;
+        else if (m_menuCursor == 3) openEditor(m_mapChoice);
+        else if (m_menuCursor == 4) { openSettings(SCR_MENU); }
+        else if (m_menuCursor == 5) startDebugMode();
         else QApplication::quit();
         break;
     case SCR_SETTINGS: changeSetting(m_settingsRow, 1); break;
@@ -1770,7 +1832,7 @@ void MainWindow::menuBack()
             m_menuCursor = 2;
         }
         break;
-    case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 1; break;
+    case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 2; break;
     case SCR_DIFF_SELECT: m_screen = SCR_MAP_SELECT; break;
     case SCR_CHAR_SELECT: m_screen = SCR_DIFF_SELECT; break;
     default: break;
@@ -1781,6 +1843,10 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
 {
     int k = e->key();
     m_keys.insert(k);
+    if (m_screen == SCR_EDITOR) { editorKey(e); return; }
+    if (m_screen == SCR_CAMPAIGN || m_screen == SCR_BRIEFING || m_screen == SCR_DEBRIEF) { if (!e->isAutoRepeat()) campaignKey(k); return; }
+    if (m_screen == SCR_PLAYING && m_flyActive) { if (!e->isAutoRepeat()) { m_flyActive = false; m_keys.erase(k); } return; }
+    if (m_screen == SCR_PLAYING && k == Qt::Key_F5 && m_edPlaytest) { m_edPlaytest = false; openEditor(m_edMap); return; }
 
     // Global settings key: [O] or [P] opens/toggles settings
     if (k == Qt::Key_O || k == Qt::Key_P) {
@@ -1802,8 +1868,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_Up || k == Qt::Key_Down || k == Qt::Key_Left || k == Qt::Key_Right) sfx(SND_UI_MOVE, 0.5f);
         if (m_screen == SCR_MENU) {
             if (k == Qt::Key_Up)   m_menuCursor = std::max(0, m_menuCursor - 1);
-            if (k == Qt::Key_Down) m_menuCursor = std::min(4, m_menuCursor + 1);
-            if (k >= Qt::Key_1 && k <= Qt::Key_5) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
+            if (k == Qt::Key_Down) m_menuCursor = std::min(6, m_menuCursor + 1);
+            if (k >= Qt::Key_1 && k <= Qt::Key_7) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
         } else if (m_screen == SCR_SETTINGS) {
             if (k == Qt::Key_Up)    m_settingsRow = (m_settingsRow + settingsRows() - 1) % settingsRows();
             if (k == Qt::Key_Down)  m_settingsRow = (m_settingsRow + 1) % settingsRows();
@@ -1825,6 +1891,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         } else if (sel) {
             if (k == Qt::Key_Left)  *sel = std::max(0, *sel - 1);
             int nOpt = m_screen == SCR_MAP_SELECT ? MAP_COUNT : 3;
+            if (m_screen == SCR_MAP_SELECT && k == Qt::Key_Down) *sel = std::min(nOpt - 1, *sel + 3);
+            if (m_screen == SCR_MAP_SELECT && k == Qt::Key_Up) *sel = std::max(0, *sel - 3);
             if (k == Qt::Key_Right) *sel = std::min(nOpt - 1, *sel + 1);
             if (k >= Qt::Key_1 && k < Qt::Key_1 + nOpt) { *sel = k - Qt::Key_1; menuConfirm(); return; }
         }
@@ -1897,6 +1965,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_B) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
         if (k == Qt::Key_V) { m_tpp = !m_tpp; pushFeed(m_tpp ? "THIRD PERSON" : "FIRST PERSON", 1.5f); sfx(SND_UI_MOVE, 0.4f); }
         if (k == Qt::Key_X && m_tpp) m_shoulderLeft = !m_shoulderLeft;
+        if (k == Qt::Key_L) { m_flashlightOn = !m_flashlightOn; sfx(SND_ZOOM_TICK, 0.6f); pushFeed(m_flashlightOn ? "FLASHLIGHT ON" : "FLASHLIGHT OFF", 1.2f); }
         if (k == Qt::Key_Tab) pl.adsMode = !pl.adsMode;
         if (k >= Qt::Key_1 && k <= Qt::Key_4) selectSlot(k - Qt::Key_1);
         if (k == Qt::Key_Q) quickMelee();
@@ -1905,13 +1974,14 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if (m_paused) {
         if (k == Qt::Key_R) { m_paused = false; return; }
         if (k == Qt::Key_O || k == Qt::Key_P) { openSettings(SCR_PLAYING); return; }
-        if (k == Qt::Key_M) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; return; }
+        if (k == Qt::Key_M) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; m_campaignRun = false; m_envLocked = false; return; }
         if (k == Qt::Key_Q || k == Qt::Key_Escape) { QApplication::quit(); return; }
     }
     if (k == Qt::Key_Escape && !m_gs.gameOver) { m_paused = true; pl.adsMode = false; m_lmb = false; }
-    if (k == Qt::Key_R && m_gs.gameOver) { initGame(); m_paused = false; }
+    if (k == Qt::Key_R && m_gs.gameOver) { m_paused = false; if (m_campaignRun) startMission(m_mission); else initGame(); }
+    if (k == Qt::Key_Escape && m_gs.gameOver && m_campaignRun) { finishMission(false); return; }
     if (k == Qt::Key_Q && m_gs.gameOver) QApplication::quit();
-    if (k == Qt::Key_M && m_gs.gameOver) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; }
+    if (k == Qt::Key_M && m_gs.gameOver) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; m_campaignRun = false; m_envLocked = false; }
     if (k == Qt::Key_BracketLeft)  m_pixelScale = std::min(m_pixelScale * 2, 8);
     if (k == Qt::Key_BracketRight) m_pixelScale = std::max(m_pixelScale / 2, 1);
 }
@@ -1920,12 +1990,14 @@ void MainWindow::focusOutEvent(QFocusEvent *) { m_keys.clear(); m_lmb = false; }
 
 void MainWindow::mousePressEvent(QMouseEvent *e)
 {
+    if (m_screen == SCR_EDITOR) { editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
     if (m_screen != SCR_PLAYING) {
         if (e->button() == Qt::RightButton) { menuBack(); return; }
         QPointF f = widgetToFrame(e->position());
         for (const HitRect &r : m_menuRects) {
             if (f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (r.id == 10) { menuBack(); return; }
+            if (m_screen == SCR_CAMPAIGN) { campaignClick(r.id); return; }
             if (m_screen == SCR_SETTINGS) {
                 m_settingsRow = r.id;
                 int vx = 60 + (W - 120) - 300;
@@ -2017,6 +2089,7 @@ void MainWindow::mouseReleaseEvent(QMouseEvent *e)
 void MainWindow::mouseMoveEvent(QMouseEvent *e)
 {
     m_mouseWidget = e->position();
+    if (m_screen == SCR_EDITOR) { if (e->buttons() & (Qt::LeftButton | Qt::RightButton)) editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
     if (m_screen != SCR_PLAYING) {
         QPointF f = widgetToFrame(e->position());
         int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000;
@@ -2234,6 +2307,15 @@ bool MainWindow::snapshot(const QString &dir)
 
     // --- Dungeon: secret wall opens onto a guarded vault ------------------------------
     start(0);
+    {
+        // the hint: dust drifting out of the seam and a one-time whisper
+        place(13.0f, 6.5f, 0.f);
+        for (int i = 0; i < 120; i++) { m_gs.player.hp = 9999; advance(1.f / 60.f); }
+        int motes = 0; for (const Particle &p : m_gs.particles) if (p.type == PT_DUST && p.maxLife > 1.3f && p.maxLife < 2.1f) motes++;
+        render(); save("20_secret_hint");
+        bool whisper = false; for (const auto &f : m_killFeed) if (f.text.contains("COLD DRAFT")) whisper = true;
+        log(QString("secret hint: dust motes=%1 whisper=%2 hinted=%3").arg(motes).arg(whisper).arg(m_secretHinted.size()));
+    }
     place(15.5f, 6.5f, 0.f); run(5); save("20_dungeon_secret_wall");
     tryOpenDoor(); run(70); save("21_dungeon_vault_open");
     log(QString("secrets found: %1 / %2, cell(16,6)=%3").arg(m_gs.secretsFound).arg(m_gs.secretsTotal).arg(m_map[6][16]));
@@ -2379,6 +2461,11 @@ bool MainWindow::snapshot(const QString &dir)
             m_charging = false; m_shellReload = false; pl.hp = 9999;
             Enemy &t = m_gs.enemies[0];
             int hp0 = t.hp;
+            if (d.mode == FM_BOLT) {                            // scope in and centre the target, like a player would
+                m_adsT = 1.f; m_scopeSwayX = m_scopeSwayY = 0.f;
+                float dist = std::sqrt((t.x - pl.posX) * (t.x - pl.posX) + (t.y - pl.posY) * (t.y - pl.posY));
+                m_pitch = (floorH(t.x, t.y) + 0.55f - (pl.footZ + 0.5f)) / dist;
+            }
             m_lmb = true; tryFire();
             int hold = d.mode == FM_CHARGE ? 70 : d.mode == FM_SEMI || d.mode == FM_BOLT ? 1 : 40;
             for (int f = 0; f < hold; f++) { int keep = t.hp; setupTarget(isMelee(w) ? 1.1f : d.proj == PJ_FLAME ? 3.0f : d.proj == PJ_ARC ? 5.f : 6.f); t.hp = keep; advance(1.f / 60.f); }
@@ -2487,6 +2574,253 @@ bool MainWindow::snapshot(const QString &dir)
         startDebugMode(); run(3); save("94_debug_range");
         int onFloor = 0; for (const WeaponPickup &wp : m_gs.weaponPickups) if (wp.type == PICKUP_WEAPON) onFloor++;
         log(QString("debug range: %1 guns on the floor").arg(onFloor));
+    }
+
+    // --- Biomes: every map at its default time + weather, then variations -------------
+    for (int m = 0; m < MAP_COUNT; m++) {
+        start(m);
+        place(m_parsed[m].camX, m_parsed[m].camY, 0.7f);
+        m_pitch = 0.05f;
+        for (int i = 0; i < 20; i++) advance(1.f / 60.f);
+        run(1); save(QString("95_biome_%1_%2").arg(m).arg(QString(MAP_NAMES[m]).replace(' ', '_')));
+        log(QString("biome %1: %2 hour=%3 weather=%4 day=%5 trees=%6 size=%7x%8").arg(MAP_NAMES[m]).arg(THEMES[MAP_THEME[m]].name)
+            .arg(m_hour, 0, 'f', 1).arg(m_weather).arg(m_dayLevel, 0, 'f', 2).arg(m_treeCells.size()).arg(m_mapW).arg(m_mapH));
+    }
+    start(3); place(m_parsed[3].camX, m_parsed[3].camY, 0.7f);
+    setEnvironment(23.f, WX_BLIZZARD); for (int i = 0; i < 30; i++) advance(1.f / 60.f); run(1); save("96_snow_night_blizzard");
+    start(2); place(m_parsed[2].camX, m_parsed[2].camY, 1.2f);
+    setEnvironment(18.4f, WX_RAIN); for (int i = 0; i < 30; i++) advance(1.f / 60.f); run(1); save("96_swamp_dusk_rain");
+    start(1); place(m_parsed[1].camX, m_parsed[1].camY, 0.7f);
+    setEnvironment(15.f, WX_SAND); for (int i = 0; i < 30; i++) advance(1.f / 60.f); run(1); save("96_desert_sandstorm");
+    m_dayCycle = false;
+    // --- Map editor: flood fill + validation ------------------------------------------
+    {
+        openEditor(1);
+        int before = 0; for (const std::string &r : m_edRows) for (char c : r) before += c == '~';
+        m_edFill = true; m_edBrush = 0;                    // fill the acid lake with ground
+        int fx = -1, fy = -1;
+        for (int y = 0; y < int(m_edRows.size()) && fx < 0; y++) for (int x = 0; x < int(m_edRows[0].size()); x++) if (m_edRows[size_t(y)][size_t(x)] == '~') { fx = x; fy = y; break; }
+        editorPaint(fx, fy, false);
+        int after = 0; for (const std::string &r : m_edRows) for (char c : r) after += c == '~';
+        QString okMsg = validateRows(m_edRows);
+        m_edRows[5][5] = '#'; m_edRows[1][1] = '#';        // bury the player start
+        QString badMsg = validateRows(m_edRows);
+        log(QString("editor: fill removed %1 hazard cells (left %2), valid='%3', without start='%4'").arg(before - after).arg(after).arg(okMsg).arg(badMsg));
+        openEditor(4); run(2); save("97_editor");
+        m_screen = SCR_MENU;
+    }
+    m_screen = SCR_MAP_SELECT; run(3); save("02_maps_biomes");
+
+    // --- Extended roster: each new archetype fights; shield / medic / cloak rules ------
+    {
+        start(1);
+        Player &pl = m_gs.player;
+        auto arena = [&]() {
+            place(20.5f, 24.5f, 0.f);
+            for (auto &e : m_gs.enemies) { e.alive = false; e.corpseFade = 0.f; }
+            m_gs.enemies.clear();
+            spawnEnemy(2.5f, 37.5f, false, ET_RIFLEMAN);                 // far away: keeps the zone open
+            m_gs.enemies.back().fireCooldown = 999.f;
+            m_gs.bullets.clear(); m_gs.projectiles.clear();
+        };
+        static const char *TN[ET_COUNT] = { "RIFLE", "SCOUT", "SHOTGUN", "SNIPER", "GRENADIER", "SHIELD", "MEDIC", "HEAVY", "STALKER", "DRONE", "TURRET" };
+        QString line;
+        for (int t = ET_GRENADIER; t < ET_COUNT; t++) {
+            arena();
+            spawnEnemy(27.5f, 24.5f, false, EnemyType(t));
+            Enemy &e = m_gs.enemies.back(); e.state = ES_ALERT; e.fireCooldown = 0.5f;
+            int dmg0 = m_gs.zoneDamage, nan = 0, wall = 0;
+            float x0 = e.x, y0 = e.y;
+            for (int f = 0; f < 60 * 9; f++) {
+                pl.hp = 9999; advance(1.f / 60.f);
+                const Enemy &q = m_gs.enemies.back();
+                if (std::isnan(q.x) || std::isnan(q.y)) nan++;
+                if (q.type != ET_DRONE && !posValid(q.x, q.y, 0.15f)) wall++;
+                if (f == 200 && t == ET_GRENADIER) { render(); save("98_grenadier_ring"); }
+            }
+            const Enemy &q = m_gs.enemies.back();
+            float moved = std::sqrt((q.x - x0) * (q.x - x0) + (q.y - y0) * (q.y - y0));
+            line += QString(" %1:dmg=%2,moved=%3,nan=%4,wall=%5").arg(TN[t]).arg(m_gs.zoneDamage - dmg0).arg(moved, 0, 'f', 1).arg(nan).arg(wall);
+        }
+        log("new hostiles:" + line);
+        // riot shield: a round into the shield is stopped
+        arena();
+        spawnEnemy(25.5f, 24.5f, false, ET_SHIELD); m_gs.enemies.back().fireCooldown = 99.f;
+        computeView();
+        int shieldIdx = int(m_gs.enemies.size()) - 1;
+        float sx, sy, sd;
+        project(m_gs.enemies[size_t(shieldIdx)].x, m_gs.enemies[size_t(shieldIdx)].y, floorH(25.5f, 24.5f) + 0.45f, sx, sy, sd);
+        HitResult hs = hitscan(sx - 0.12f * m_K / sd, sy);
+        int hp0 = m_gs.enemies[size_t(shieldIdx)].hp;
+        pl.curWeapon = WPN_PISTOL; pl.mag[WPN_PISTOL] = 12; pl.attackCooldown = 0; m_aimX = sx - 0.12f * m_K / sd; m_aimY = sy; tryFire();
+        log(QString("riot shield: part=%1 (4 = shield) hp %2 -> %3").arg(int(hs.part)).arg(hp0).arg(m_gs.enemies[size_t(shieldIdx)].hp));
+        // medic: brings a fallen rifleman back
+        arena();
+        spawnEnemy(26.5f, 24.5f, false, ET_RIFLEMAN); int ri = int(m_gs.enemies.size()) - 1;
+        spawnEnemy(29.5f, 24.5f, false, ET_MEDIC); m_gs.enemies.back().state = ES_ALERT; m_gs.enemies.back().fireCooldown = 99.f;
+        m_gs.enemies[size_t(ri)].fireCooldown = 99.f;
+        damageEnemy(ri, 99999, PART_BODY, 26.5f, 24.5f, 0.5f);
+        for (int f = 0; f < 60 * 6; f++) { pl.hp = 9999; advance(1.f / 60.f); }
+        log(QString("medic: fallen rifleman revived=%1").arg(m_gs.enemies[size_t(ri)].alive));
+        // stalker: cloaked at range, revealed when hit
+        arena();
+        spawnEnemy(34.5f, 24.5f, false, ET_STALKER); int si = int(m_gs.enemies.size()) - 1;
+        for (int f = 0; f < 40; f++) { pl.hp = 9999; advance(1.f / 60.f); }
+        float cloakFar = m_gs.enemies[size_t(si)].cloak;
+        m_gs.enemies[size_t(si)].state = ES_ALERT;
+        damageEnemy(si, 5, PART_BODY, 34.5f, 24.5f, 0.5f);
+        for (int f = 0; f < 20; f++) { pl.hp = 9999; advance(1.f / 60.f); }
+        render(); save("98_stalker_shimmer");
+        log(QString("stalker: cloak at range=%1 after a hit=%2").arg(cloakFar, 0, 'f', 2).arg(m_gs.enemies[size_t(si)].cloak, 0, 'f', 2));
+        // line-up screenshot of every new archetype
+        arena();
+        for (int t = ET_GRENADIER; t < ET_COUNT; t++) {
+            spawnEnemy(26.5f, 20.5f + (t - ET_GRENADIER) * 1.15f, false, EnemyType(t));
+            m_gs.enemies.back().fireCooldown = 99.f; m_gs.enemies.back().cloak = 0.f; m_gs.enemies.back().revealT = 99.f;
+        }
+        place(20.5f, 24.5f, 0.f); run(2); save("98_roster");
+    }
+
+    // --- Story bosses: each fight runs, attacks, changes phase, dies, drops loot -------
+    {
+        static const int KINDS[9] = { BK_WARDEN, BK_TWIN_A, BK_SEED_QUEEN, BK_GUNSHIP, BK_GUARD_HEAVY, BK_MIRAGE, BK_ENGINEER, BK_JUGGERNAUT, BK_FOUNDER };
+        for (int kk = 0; kk < 9; kk++) {
+            int kind = KINDS[kk];
+            start(1);
+            Player &pl = m_gs.player;
+            place(18.5f, 24.5f, 0.f);
+            m_gs.enemies.clear(); m_gs.bullets.clear(); m_gs.projectiles.clear(); m_seeds.clear();
+            spawnEnemy(2.5f, 37.5f, false, ET_RIFLEMAN); m_gs.enemies.back().fireCooldown = 999.f;
+            size_t first = m_gs.enemies.size();
+            spawnZoneBoss(kind, 28.5f, 24.5f, 30.5f, 12.5f);
+            int bi = int(first);
+            for (size_t i = first; i < m_gs.enemies.size(); i++) m_gs.enemies[i].state = ES_ALERT;
+            bool shieldedAtStart = m_gs.enemies[size_t(bi)].shielded;
+            int dmg0 = m_gs.zoneDamage, attacks = 0, nan = 0, wall = 0, lastAtk = -1;
+            int acidPeak = 0, acid0 = 0; for (uint8_t a : m_acid.v) acid0 += a;
+            bool shot = false;
+            auto step = [&](int frames) {
+                for (int f = 0; f < frames; f++) {
+                    pl.hp = 9999; advance(1.f / 60.f);
+                    for (size_t i = first; i < m_gs.enemies.size(); i++) {
+                        const Enemy &q = m_gs.enemies[i];
+                        if (!q.alive) continue;
+                        if (std::isnan(q.x) || std::isnan(q.y)) nan++;
+                        if (q.hover <= 0.f && !posValid(q.x, q.y, 0.1f)) wall++;
+                    }
+                    const Enemy &b = m_gs.enemies[size_t(bi)];
+                    if (b.atk != lastAtk) { if (b.atk >= 0) attacks++; lastAtk = b.atk; }
+                    int ac = 0; for (uint8_t a : m_acid.v) ac += a; acidPeak = std::max(acidPeak, ac);
+                    if (!shot && b.atk == 0 && b.atkPhaseT > 0.3f) { render(); save(QString("99_boss_%1_telegraph").arg(QString(bossName(kind)).replace(' ', '_').replace(':', '_'))); shot = true; }
+                    if (m_gs.gameOver) { m_gs.gameOver = false; pl.hp = 9999; }
+                }
+            };
+            step(60 * 14);
+            if (!shot) { render(); save(QString("99_boss_%1").arg(QString(bossName(kind)).replace(' ', '_').replace(':', '_'))); }
+            // break shields: destroy pylons, then work the boss down through its phases
+            for (size_t i = first; i < m_gs.enemies.size(); i++) if (m_gs.enemies[i].bossKind == BK_PYLON || m_gs.enemies[i].bossKind == BK_EGG) damageEnemy(int(i), 99999, PART_BODY, m_gs.enemies[i].x, m_gs.enemies[i].y, 0.5f);
+            step(30);
+            bool shieldedAfterPylons = m_gs.enemies[size_t(bi)].shielded;
+            int acidAfterEggs = 0; for (uint8_t a : m_acid.v) acidAfterEggs += a;
+            int phases = 0;
+            for (int chunk = 0; chunk < 40 && m_gs.enemies[size_t(bi)].alive; chunk++) {
+                Enemy &b = m_gs.enemies[size_t(bi)];
+                damageEnemy(bi, std::max(1, b.maxHp / 9), PART_BODY, b.x, b.y, floorH(b.x, b.y) + 0.5f);
+                phases = std::max(phases, m_gs.enemies[size_t(bi)].phase);
+                step(50);
+            }
+            // a pair: finish the partner too
+            for (size_t i = first; i < m_gs.enemies.size(); i++) if (m_gs.enemies[i].alive && m_gs.enemies[i].bossKind) damageEnemy(int(i), 99999, PART_BODY, m_gs.enemies[i].x, m_gs.enemies[i].y, 0.5f);
+            int loot = 0; for (const WeaponPickup &wp : m_gs.weaponPickups) if (wp.active && wp.reward) loot++;
+            log(QString("boss %1: attacks=%2 dmgToPlayer=%3 shield %4->%5 phaseReached=%6 killed=%7 loot=%8 nan=%9 wall=%10%11")
+                .arg(bossName(kind)).arg(attacks).arg(m_gs.zoneDamage - dmg0).arg(shieldedAtStart).arg(shieldedAfterPylons).arg(phases)
+                .arg(!m_gs.enemies[size_t(bi)].alive).arg(loot).arg(nan).arg(wall)
+                .arg(kind == BK_SEED_QUEEN ? QString(" acid %1 -> peak %2 -> after eggs %3").arg(acid0).arg(acidPeak).arg(acidAfterEggs) : QString()));
+        }
+    }
+
+    // --- Campaign: menu, briefing, flyby, every mission played through by a script ----
+    {
+        loadCampaign();
+        m_cUnlocked = 3; m_cRank[0] = 4; m_cRank[1] = 2; m_cCoins = 420;
+        m_screen = SCR_CAMPAIGN; m_cSel = 2; run(2); save("97_campaign_menu");
+        m_cSel = 0; m_mapChoice = MISSIONS[0].map; m_screen = SCR_BRIEFING; m_briefT = 7.f; run(2); save("97_briefing");
+        for (int mi = 0; mi < MISSION_COUNT; mi++) {
+            loadCampaign();
+            m_charChoice = 0; m_difficulty = 1; m_cSel = mi;
+            m_flyForTest = mi == 2;
+            startMission(mi);
+            m_flyForTest = false;
+            if (m_flyActive) {
+                QString pts; for (const FlyPt &q : m_flyPts) pts += QString(" (%1,%2,%3)").arg(q.x, 0, 'f', 1).arg(q.y, 0, 'f', 1).arg(q.z, 0, 'f', 1);
+                float fx, fy, fz; flybyPoint(0.35f, fx, fy, fz);
+                log(QString("flyby: %1 pts:%2 at35%%=(%3,%4,%5) ground=%6 map=%7x%8").arg(m_flyPts.size()).arg(pts).arg(fx).arg(fy).arg(fz).arg(groundAt(fx, fy)).arg(m_mapW).arg(m_mapH));
+                m_flyT = m_flyDur * 0.35f; render(); save("97_flyby"); m_flyT = m_flyDur * 0.1f; render(); save("97_flyby_a"); m_flyT = m_flyDur * 0.7f; render(); save("97_flyby_b"); m_flyActive = false;
+            }
+            Player &pl = m_gs.player;
+            int frames = 0, nan = 0, objSeen = 0, shot = 0;
+            QString trail;
+            int lastObj = -1;
+            while (m_screen == SCR_PLAYING && frames < 60 * 400) {
+                pl.hp = 9999;
+                if (m_gs.gameOver) { m_gs.gameOver = false; }
+                const MissionDef &M = MISSIONS[mi];
+                if (m_obj != lastObj) { lastObj = m_obj; objSeen++; trail += QString(" %1@%2s").arg(m_obj).arg(int(m_missionTime)); }
+                m_keys.erase(Qt::Key_E);
+                if (m_obj >= 0 && m_obj < M.objCount && !m_missionDone) {
+                    const ObjectiveDef &O = M.obj[m_obj];
+                    float tx, ty;
+                    switch (O.type) {
+                    case OBJ_KILL_COUNT: case OBJ_KILL_ALL: case OBJ_SURVIVE:
+                        if (frames % 20 == 0) for (int i = 0; i < int(m_gs.enemies.size()); i++) {
+                            const Enemy &e = m_gs.enemies[size_t(i)];
+                            if (e.alive && !e.bossKind) { damageEnemy(i, 99999, PART_HEAD, e.x, e.y, floorH(e.x, e.y) + 0.8f); break; }
+                        }
+                        break;
+                    case OBJ_REACH: case OBJ_COLLECT: case OBJ_INTERACT: case OBJ_HOLD:
+                        if (objectiveTarget(tx, ty) && frames % 10 == 0) place(tx, ty, 0.f);
+                        if (O.type == OBJ_INTERACT) m_keys.insert(Qt::Key_E);
+                        if (O.type == OBJ_HOLD && frames % 40 == 0) for (int i = 0; i < int(m_gs.enemies.size()); i++)
+                            if (m_gs.enemies[size_t(i)].alive && !m_gs.enemies[size_t(i)].bossKind) { damageEnemy(i, 99999, PART_BODY, pl.posX, pl.posY, 0.5f); break; }
+                        break;
+                    case OBJ_ESCORT:
+                        if (m_escort >= 0) {
+                            Actor &a = m_gs.actors[size_t(m_escort)];
+                            a.hp = 160;
+                            if (!a.escortMet) place(a.posX + 1.f, a.posY, 3.14159f);
+                            else if (frames % 30 == 0 && missionMarker(O.markers[0], tx, ty)) { place(tx + 0.8f, ty, 0.f); a.posX = tx; a.posY = ty; a.footZ = floorH(tx, ty); }
+                        }
+                        break;
+                    case OBJ_BOSS:
+                        if (frames % 30 == 0) {
+                            for (int i = 0; i < int(m_gs.enemies.size()); i++) {
+                                Enemy &e = m_gs.enemies[size_t(i)];
+                                if (!e.alive || !e.bossKind) continue;
+                                damageEnemy(i, std::max(1, e.maxHp / 6), PART_BODY, e.x, e.y, floorH(e.x, e.y) + 0.5f);
+                            }
+                            if (!shot && m_bossIntroT > 1.f) { render(); save(QString("97_mission%1_boss").arg(mi + 1)); shot = 1; }
+                        }
+                        break;
+                    }
+                }
+                advance(1.f / 60.f);
+                for (const Enemy &e : m_gs.enemies) if (e.alive && (std::isnan(e.x) || std::isnan(e.y))) nan++;
+                if (frames == 240) { render(); save(QString("97_mission%1").arg(mi + 1)); }
+                frames++;
+            }
+            m_keys.erase(Qt::Key_E);
+            log(QString("mission %1 %2: debrief=%3 won=%4 rank=%5 coins=%6 objectives=%7/%8 time=%9s nan=%10 trail:%11")
+                .arg(mi + 1).arg(MISSIONS[mi].name).arg(m_screen == SCR_DEBRIEF).arg(m_debriefWon).arg(m_debriefRank).arg(m_debriefCoins)
+                .arg(m_obj).arg(MISSIONS[mi].objCount).arg(int(m_missionTime)).arg(nan).arg(trail));
+            if (mi == 0) { m_debriefT = 3.f; render(); save("97_debrief"); }
+        }
+        // a failed escort fails the mission
+        loadCampaign(); startMission(2); m_flyActive = false;
+        for (int f = 0; f < 600 && m_escort < 0; f++) { m_gs.player.hp = 9999; float tx, ty; if (objectiveTarget(tx, ty)) place(tx, ty, 0.f); advance(1.f / 60.f); }
+        if (m_escort >= 0) m_gs.actors[size_t(m_escort)].alive = false;
+        for (int f = 0; f < 60 * 5 && m_screen == SCR_PLAYING; f++) { m_gs.player.hp = 9999; advance(1.f / 60.f); }
+        log(QString("escort killed: failed=%1 screen=debrief:%2 won=%3").arg(m_missionFailed).arg(m_screen == SCR_DEBRIEF).arg(m_debriefWon));
+        m_campaignRun = false; m_envLocked = false;
     }
 
     // --- FRONTIER: 64x64 map, runtime map size --------------------------------------

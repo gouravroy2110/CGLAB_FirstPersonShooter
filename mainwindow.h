@@ -62,16 +62,36 @@ private:
     ParsedMap  m_parsed[MAP_COUNT];
 
     // -- Baked assets ------------------------------------------------------------
-    std::vector<uint32_t> m_sky[3];
-    MipTex                m_floorTex[3];
-    MipTex                m_wallTex[3][6];
+    std::vector<uint32_t> m_sky[THEME_COUNT];
+    MipTex                m_floorTex[THEME_COUNT];
+    MipTex                m_wallTex[THEME_COUNT][6];
+    std::vector<uint32_t> m_canopyTex[THEME_COUNT];
     std::vector<uint32_t> m_enemyAtlas, m_eliteAtlas, m_scoutAtlas, m_shotgunAtlas, m_sniperAtlas;
     std::vector<uint8_t>  m_enemyMask, m_eliteMask, m_scoutMask, m_shotgunMask, m_sniperMask;
     std::vector<uint32_t> m_pickupTex;
     std::vector<uint32_t> m_portrait[3];
     static const int PORTRAIT = 160;
 
-    std::vector<uint8_t> m_sunVisCache[MAP_COUNT], m_lightCache[MAP_COUNT];   // pristine maps, baked once
+    std::vector<uint8_t> m_sunVisCache[MAP_COUNT], m_lightCache[MAP_COUNT], m_sunCache[MAP_COUNT];   // pristine light layers, baked once
+    // -- Environment (environment.cpp): time of day, weather, flashlight, trees ------------
+    Theme m_env = THEMES[0];          // this frame's palette (biome + hour + weather)
+    float m_hour = 12.f;              // time of day, 0..24
+    bool  m_dayCycle = false;
+    int   m_weather = 0;              // Weather
+    float m_dayLevel = 1.f;           // 0 night .. 1 day
+    float m_skyTint[3] = {1.f, 1.f, 1.f};
+    float m_envTimer = 0.f, m_lightning = 0.f;
+    bool  m_envDirty = true, m_envLocked = false;   // locked: a mission set the environment
+    bool  m_flashlightOn = true;
+    int   m_todSetting = 0, m_weatherSetting = 0;  // Settings: 0 = map default
+    struct WxDrop { float x, y, z, vx, vy, vz; int seed; };
+    std::vector<WxDrop> m_wx;
+    std::vector<int> m_treeCells;
+    void  setEnvironment(float hour, int weather);
+    void  computeEnv();
+    void  updateEnvironment(float dt);
+    void  renderWeather();
+    void  renderFlashlight();
 
     // -- Raster proof: magnifier (mouse wheel) + pixel-block mode ([ / ]) --------
     int     m_rasterZoom = 1;                     // 1,2,4,...,32: framebuffer pixels -> boxes
@@ -108,6 +128,46 @@ private:
     bool  thirdPerson() const { return m_boomT > 0.5f; }
     void  playerMuzzle(float &x, float &y, float &z) const;   // world-space gun muzzle (third person)
     void  renderActors3D();
+    // -- Extended hostile roster (enemies.cpp) -------------------------------------------
+    std::vector<uint32_t> m_typeAtlas[ET_COUNT];
+    std::vector<uint8_t>  m_typeMask[ET_COUNT];
+    const std::vector<uint32_t> &atlasFor(const Enemy &e) const;
+    const std::vector<uint8_t>  &maskFor(const Enemy &e) const;
+    const char *enemyTypeName(const Enemy &e) const;
+    void  moveEnemy(Enemy &e, int idx, float vx, float vy, float spd, float dt);
+    void  enemyGrenade(Enemy &e, float tx, float ty);
+    void  updateSpecialEnemy(int idx, float dt, float tgX, float tgY, float tgZ, float d, bool los, float detectRange);
+    EnemyType rollEnemyType(int lv, bool elevated) const;
+    // -- Story bosses (bosses.cpp) --------------------------------------------------------
+    const char *bossName(int kind) const;
+    const char *bossTitle(int kind) const;
+    bool  bossIsMinor(int kind) const;
+    std::vector<uint32_t> m_bossAtlas[13];
+    std::vector<uint8_t>  m_bossMask[13];
+    void  bakeBossAtlases();
+    const std::vector<uint32_t> *bossAtlas(const Enemy &e) const;
+    const std::vector<uint8_t>  *bossMask(const Enemy &e) const;
+    int   spawnBoss(int kind, float x, float y, float hpScale);
+    void  spawnBossPair(int kindA, float ax, float ay, int kindB, float bx, float by);
+    void  hurtPlayer(int dmg, float fromX, float fromY, int killer);
+    void  bossShot(Enemy &e, float tx, float ty, float tz, float speed, int dmg, float spread);
+    void  bossReinforce(Enemy &e, int count, EnemyType t);
+    void  bossDamaged(int idx, int dmg);
+    void  spawnDecoy(int idx);
+    void  updateBoss(int idx, float dt, float tgX, float tgY, float tgZ, float d, bool los);
+    void  updateBossWorld(float dt);
+    void  renderBossFX();
+    void  renderBossBar();
+    void  spawnZoneBoss(int kind, float x, float y, float farX, float farY);
+    float m_bossBanner = 0.f;
+    float m_bossRunAX = 0, m_bossRunAY = 0, m_bossRunBX = 0, m_bossRunBY = 0;   // gunship strafing line
+    float m_laserAngle = 0.f, m_laserHitT = 0.f;                              // VECTOR's laser walls
+    float m_overloadT = 0.f, m_overloadPhase = 9.f;
+    std::vector<int> m_overloadCells;
+    // acid that grows from an egg sac (or a glob that dries up after a while)
+    struct SeedSpread { int egg; std::vector<int> cells, frontier; float t; float life = -1.f; };
+    std::vector<SeedSpread> m_seeds;
+    std::vector<uint8_t> m_baseAcid;   // the map's own hazard cells (never receded)
     void  renderProps3D(struct Raster3D &r, const struct WorldCam &cam);
     void  renderWorldFX();             // plasma, beams, laser, radar marks, smoke shading
     void  renderScreenFlash();         // flashbang white-out + explosion light
@@ -187,6 +247,85 @@ private:
     uint32_t crosshairColor() const;
     void  renderSettings();
     void  renderArsenal();
+    // -- Map editor (editor.cpp) ---------------------------------------------------------
+    std::vector<std::string> m_layoutRows[MAP_COUNT];   // the rows each map is parsed from
+    std::vector<std::string> m_edRows;
+    int   m_edMap = 0, m_edBrush = 1, m_edZoom = 12, m_edPanX = 0, m_edPanY = 0;
+    bool  m_edFill = false, m_edDirty = false, m_edPlaytest = false;
+    char  m_edDigit = '1';
+    QString m_edMsg; float m_edMsgT = 0.f;
+    void  loadLayoutRows(bool overrides);
+    void  applyLayoutRows(int map);
+    QString validateRows(const std::vector<std::string> &rows) const;
+    void  openEditor(int map);
+    bool  editorCellAt(float fx, float fy, int &cx, int &cy) const;
+    void  editorPaint(int cx, int cy, bool erase);
+    void  editorSave();
+    void  editorPlaytest();
+    void  editorKey(QKeyEvent *e);
+    void  editorMouse(const QPointF &f, Qt::MouseButtons buttons);
+    void  renderEditor();
+    // -- Campaign (campaign.cpp) ---------------------------------------------------------
+    bool  m_campaignRun = false;        // playing a story mission (not free play)
+    void  openCampaign();
+    int   maxHP() const;
+    float maxStamina() const;
+    float reloadMul() const;
+    // save
+    int   m_cUnlocked = 1, m_cCoins = 0, m_cSel = 0, m_cRank[16] = {}, m_cBest[16] = {}, m_upg[4] = {};
+    QString m_cInventory;
+    void  loadCampaign();
+    void  saveCampaign() const;
+    QString packInventory() const;
+    void  unpackInventory(const QString &s);
+    // menu / briefing / debrief
+    void  renderCampaign();
+    void  buyCampaignUpgrade(int u);
+    void  campaignKey(int k);
+    void  campaignClick(int id);
+    void  renderBriefing();
+    void  renderDebrief();
+    float m_briefT = 0.f, m_debriefT = 0.f;
+    std::vector<uint32_t> m_briefView;
+    struct DebriefRow { QString label, detail; bool ok; };
+    std::vector<DebriefRow> m_debriefRows;
+    bool  m_debriefWon = false; int m_debriefRank = 0, m_debriefCoins = 0, m_debriefScore = 0;
+    // radio
+    static const int PORT = 64;
+    std::vector<uint32_t> m_speakerPortrait[5];
+    struct RadioMsg { int speaker; QString text; float dur; float t = -1.f; RadioMsg(int s, const QString &x, float d) : speaker(s), text(x), dur(d), t(d) {} };
+    std::vector<RadioMsg> m_radio;
+    void  bakePortraits();
+    void  say(int speaker, const QString &line, float seconds);
+    void  sayTagged(const char *tagged);
+    void  updateRadio(float dt);
+    void  renderRadio();
+    // mission runtime
+    int   m_mission = 0, m_obj = -1, m_objCount = 0, m_objMask = 0, m_objZone = -1, m_waveCount = 0, m_alarms = 0;
+    int   m_intelCount = 0, m_keyCount = 0, m_escort = -1, m_objKillBase = 0, m_squadSizeSaved = 0;
+    float m_objTimer = 0.f, m_waveT = 0.f, m_missionTime = 0.f, m_alarm = 0.f, m_missionEndT = 0.f, m_bossIntroT = 0.f, m_finaleT = 0.f;
+    bool  m_missionDone = false, m_missionFailed = false, m_bossSpawned = false;
+    QString m_failReason;
+    bool  missionMarker(char c, float &x, float &y, int nth = 0) const;
+    void  startMission(int i);
+    void  nextObjective();
+    EnemyType missionEnemyType() const;
+    void  spawnMissionWave(int n);
+    void  updateMission(float dt);
+    bool  objectiveTarget(float &x, float &y) const;
+    QString objectiveLine() const;
+    void  renderMissionHUD();
+    void  renderMissionWorld();
+    void  finishMission(bool won);
+    // camera: flyby along a spline
+    struct FlyPt { float x, y, z; };
+    std::vector<FlyPt> m_flyPts;
+    float m_flyT = 0.f, m_flyDur = 1.f;
+    bool  m_flyActive = false, m_flyForTest = false;
+    void  startFlyby();
+    void  flybyPoint(float u, float &x, float &y, float &z) const;
+    void  renderFlyby();
+    void  renderWorldFrom(float cx, float cy, float cz, float dx, float dy, float slope);
 
     // -- Feedback ------------------------------------------------------------------
     float m_hitMarker = 0, m_headMarker = 0, m_killMarker = 0, m_headshotBanner = 0, m_secretBanner = 0, m_acidFlash = 0;
@@ -200,6 +339,9 @@ private:
     float m_comboTimer = 0, m_comboDisplay = 0;
     int   m_probeEnemy = -1, m_probePart = 0;
     bool  m_nearSecret = false, m_nearDoor = false;
+    float m_secretDustT = 0.f;
+    std::vector<int> m_secretHinted;     // secret cells that already whispered this zone
+    void  updateSecretHints(float dt);
     float m_enemyHPDisplay[12] = {};
     struct KFEntry { QString text; float life; bool head; };
     std::vector<KFEntry> m_killFeed;

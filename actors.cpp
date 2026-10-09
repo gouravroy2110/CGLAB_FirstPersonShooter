@@ -91,6 +91,7 @@ void MainWindow::updateActors(float dt)
         a.hitFlash = std::max(0.f, a.hitFlash - dt);
         a.shootAnim = std::max(0.f, a.shootAnim - dt);
         if (!a.alive) {
+            if (a.escort) continue;                        // a story NPC stays down
             a.respawnT -= dt;
             if (a.respawnT <= 0.f) {                       // rejoin beside the leader
                 a.alive = true; a.hp = 120; a.target = -1;
@@ -163,6 +164,10 @@ void MainWindow::updateActors(float dt)
                 t.len = std::sqrt((t.x1 - t.x0) * (t.x1 - t.x0) + (t.y1 - t.y0) * (t.y1 - t.y0) + (t.z1 - t.z0) * (t.z1 - t.z0));
                 m_gs.tracers.push_back(t);
             }
+        } else if (a.escort && !a.escortMet) {
+            // a rescue waits where you found them until you get close
+            a.target = -1;
+            if (leadD < 3.f) { a.escortMet = true; pushFeed(QString("%1 IS WITH YOU").arg(a.name), 2.5f); }
         } else {
             a.target = -1;
             // Follow: hold a slot behind and to the side of the leader
@@ -191,7 +196,7 @@ void MainWindow::updateActors(float dt)
         (void)mv;
         float moved = std::sqrt((a.posX - ox) * (a.posX - ox) + (a.posY - oy) * (a.posY - oy));
         if ((std::fabs(cmd.forward) > 0.3f) && moved < 0.3f * dt && a.onGround) { InputCmd j; j.jump = true; stepMovement(*this, a, j, 0.f); }
-        if (leadD > 16.f && !hasLOS(pl.posX, pl.posY, pl.footZ + 0.5f, a.posX, a.posY, az)) {
+        if (leadD > 16.f && (!a.escort || a.escortMet) && !hasLOS(pl.posX, pl.posY, pl.footZ + 0.5f, a.posX, a.posY, az)) {
             float bx = pl.posX - pl.dirX * 1.2f, by = pl.posY - pl.dirY * 1.2f;
             if (posValid(bx, by, 0.3f)) { a.posX = bx; a.posY = by; a.footZ = floorH(bx, by); a.velX = a.velY = a.velZ = 0.f; }
         }
