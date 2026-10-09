@@ -94,7 +94,7 @@ void MainWindow::initGame()
     pl.slot[SLOT_MELEE] = WPN_KNIFE; pl.slot[SLOT_SIDEARM] = WPN_PISTOL; pl.slot[SLOT_PRIMARY] = -1; pl.slot[SLOT_PRIMARY2] = -1;
     pl.throwCount[TH_FRAG] = 2; pl.throwCount[TH_SMOKE] = 1; pl.throwCount[TH_FLASH] = 1; pl.throwCount[TH_MOLOTOV] = 0; pl.throwCount[TH_MINE] = 0;
     pl.throwSel = TH_FRAG; pl.gadget = GD_RADAR; pl.gadgetCd = 0.f; pl.heat = 0.f; pl.overheatT = 0.f; pl.charge = 0.f; pl.burstLeft = 0;
-    m_charging = m_cooking = m_shellReload = m_grappling = false; m_bloom = 0.f; m_radarT = m_flashT = 0.f; m_inspectT = 0.f;
+    m_charging = m_cooking = m_shellReload = m_grappling = m_staminaExhausted = false; m_bloom = 0.f; m_radarT = m_flashT = 0.f; m_inspectT = 0.f;
     m_upgradeCards.clear();
     m_selectedUpgradeCard = -1;
     m_upgradePicked = false;
@@ -248,7 +248,7 @@ void MainWindow::loadLevel(int lv)
     pl.dirY = 0.f;
     
     pl.planeX = 0.f; pl.planeY = m_planeLen;
-    pl.shakeY = 0;  pl.adsMode = false;
+    pl.shakeY = 0;  pl.adsMode = false; m_staminaExhausted = false;
     computeReachable(pl.posX, pl.posY);
     spawnSquad();
     pl.reloadTimer = 0; pl.switchTimer = 0;
@@ -754,11 +754,35 @@ void MainWindow::gameStep(float dt)
     bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
     bool shift = m_keys.count(Qt::Key_Shift) > 0;
     bool scoped = effectiveScope(pl.curWeapon) && m_adsT > 0.85f;
-    bool wantSprint = moving && shift && pl.stamina > 0 && !pl.adsMode && !m_charging && !m_cooking;
-    m_holdBreath = scoped && shift && pl.stamina > 4.f;
-    pl.sprinting = wantSprint;
-    pl.stamina += wantSprint ? -45.f * dt : m_holdBreath ? -22.f * dt : 28.f * dt;
+
+    // Player must release Shift to recover from stamina exhaustion
+    if (!shift) {
+        m_staminaExhausted = false;
+    }
+
+    bool canStartSprint = pl.sprinting ? (pl.stamina > 0.f) : (pl.stamina > 5.f);
+    bool wantSprint = moving && shift && !m_staminaExhausted && canStartSprint && !pl.adsMode && !m_charging && !m_cooking;
+    m_holdBreath = scoped && shift && !m_staminaExhausted && pl.stamina > 4.f;
+
+    if (wantSprint) {
+        pl.stamina -= 45.f * dt;
+        if (pl.stamina <= 0.f) {
+            pl.stamina = 0.f;
+            m_staminaExhausted = true;
+            wantSprint = false;
+        }
+    } else if (m_holdBreath) {
+        pl.stamina -= 22.f * dt;
+        if (pl.stamina <= 0.f) {
+            pl.stamina = 0.f;
+            m_staminaExhausted = true;
+            m_holdBreath = false;
+        }
+    } else if (!shift) {
+        pl.stamina += 28.f * dt;
+    }
     pl.stamina = std::max(0.f, std::min(CHAR_PROFILES[m_charChoice].stamina, pl.stamina));
+    pl.sprinting = wantSprint;
 
     // Movement: the keyboard becomes an InputCmd, moved by the same code as every actor
     InputCmd cmd;

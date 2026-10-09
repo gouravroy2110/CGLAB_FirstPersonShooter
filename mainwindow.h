@@ -151,6 +151,7 @@ private:
     std::set<int> m_keys;
     bool m_lmb = false;
     bool m_jumpQueued = false;
+    bool m_staminaExhausted = false;
 
     // -- UI state ------------------------------------------------------------------
     GameScreen m_screen     = SCR_MENU;
