@@ -169,6 +169,8 @@ private:
     void menuBack();
     // -- Settings + Arsenal (menus.cpp) ------------------------------------------------
     bool  m_testMode = false;           // --snapshot run
+    GameScreen m_settingsReturnScreen = SCR_MENU;
+    bool  m_settingsWasPaused = false;
     float m_mouseSens = 1.f;
     int   m_fovDeg = 67;
     int   m_volume = 80;
@@ -177,6 +179,7 @@ private:
     float m_planeLen = 0.66f;           // camera plane length = tan(FOV / 2)
     int   m_settingsRow = 0;
     int   m_arsenalSel = WPN_RIFLE;
+    void  openSettings(GameScreen fromScreen);
     void  saveSettings() const;
     void  applySettings();
     int   settingsRows() const;

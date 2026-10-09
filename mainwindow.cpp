@@ -397,8 +397,10 @@ void MainWindow::advance(float dt)
     bool playing = m_screen == SCR_PLAYING;
 
     if (!playing) {
-        m_menuCamAng += dt * 0.10f;
-        if (m_loadedMap != m_mapChoice) loadMapGeometry(m_mapChoice);
+        if (m_screen != SCR_SETTINGS || m_settingsReturnScreen != SCR_PLAYING) {
+            m_menuCamAng += dt * 0.10f;
+            if (m_loadedMap != m_mapChoice) loadMapGeometry(m_mapChoice);
+        }
     }
     if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
 
@@ -1705,7 +1707,7 @@ void MainWindow::aimPoint(float &ax, float &ay) const
 // aiming down sights — mouse motion drives the camera directly.
 void MainWindow::applyAimDelta(float dx, float dy)
 {
-    float sens = std::max(0.25f, m_adsFOVMult) * m_mouseSens;
+    float sens = std::max(0.25f, m_adsFOVMult) * m_mouseSens * 2.2f;
     dx *= sens; dy *= sens;
     m_mouseDX += dx; m_mouseDY += dy;
     auto yaw = [&](float px) { turn(std::atan(2.f * px / W * m_planeLen * m_adsFOVMult)); };
@@ -1740,7 +1742,7 @@ void MainWindow::menuConfirm()
     case SCR_MENU:
         if (m_menuCursor == 0) m_screen = SCR_MAP_SELECT;
         else if (m_menuCursor == 1) m_screen = SCR_ARSENAL;
-        else if (m_menuCursor == 2) { m_screen = SCR_SETTINGS; m_settingsRow = 0; }
+        else if (m_menuCursor == 2) { openSettings(SCR_MENU); }
         else if (m_menuCursor == 3) startDebugMode();
         else QApplication::quit();
         break;
@@ -1758,7 +1760,16 @@ void MainWindow::menuBack()
     switch (m_screen) {
     case SCR_MENU:        QApplication::quit(); break;
     case SCR_MAP_SELECT:  m_screen = SCR_MENU; m_menuCursor = 0; break;
-    case SCR_SETTINGS:    m_screen = SCR_MENU; m_menuCursor = 2; saveSettings(); break;
+    case SCR_SETTINGS:
+        saveSettings();
+        if (m_settingsReturnScreen == SCR_PLAYING) {
+            m_screen = SCR_PLAYING;
+            m_paused = m_settingsWasPaused;
+        } else {
+            m_screen = SCR_MENU;
+            m_menuCursor = 2;
+        }
+        break;
     case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 1; break;
     case SCR_DIFF_SELECT: m_screen = SCR_MAP_SELECT; break;
     case SCR_CHAR_SELECT: m_screen = SCR_DIFF_SELECT; break;
@@ -1770,6 +1781,21 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
 {
     int k = e->key();
     m_keys.insert(k);
+
+    // Global settings key: [O] or [P] opens/toggles settings
+    if (k == Qt::Key_O || k == Qt::Key_P) {
+        if (m_screen == SCR_SETTINGS) {
+            menuBack();
+            return;
+        } else if (m_screen == SCR_PLAYING) {
+            openSettings(SCR_PLAYING);
+            return;
+        } else if (m_screen == SCR_MENU) {
+            openSettings(SCR_MENU);
+            return;
+        }
+    }
+
     if (m_screen != SCR_PLAYING) {
         int *sel = m_screen == SCR_MAP_SELECT ? &m_mapChoice : m_screen == SCR_DIFF_SELECT ? &m_difficulty :
                    m_screen == SCR_CHAR_SELECT ? &m_charChoice : nullptr;
@@ -1783,6 +1809,15 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
             if (k == Qt::Key_Down)  m_settingsRow = (m_settingsRow + 1) % settingsRows();
             if (k == Qt::Key_Left)  changeSetting(m_settingsRow, -1);
             if (k == Qt::Key_Right) changeSetting(m_settingsRow, 1);
+            if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
+                changeSetting(m_settingsRow, 1);
+                return;
+            }
+            if (k == Qt::Key_Escape || k == Qt::Key_Backspace) {
+                menuBack();
+                return;
+            }
+            return;
         } else if (m_screen == SCR_ARSENAL) {
             if (k == Qt::Key_Up)   m_arsenalSel = (m_arsenalSel + WPN_COUNT - 1) % WPN_COUNT;
             if (k == Qt::Key_Down) m_arsenalSel = (m_arsenalSel + 1) % WPN_COUNT;
@@ -1849,6 +1884,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
 
     bool live = !m_paused && !m_gs.gameOver;
     if (live) {
+        if (k == Qt::Key_O || k == Qt::Key_P) { openSettings(SCR_PLAYING); return; }
         if (k == Qt::Key_Space && m_gs.player.onGround) m_jumpQueued = true;
         if (k == Qt::Key_N && m_snd) { m_snd->setMuted(!m_snd->muted()); pushFeed(m_snd->muted() ? "SOUND: OFF" : "SOUND: ON", 2.f); }
         if (k == Qt::Key_F) tryFire();
@@ -1866,10 +1902,16 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_Q) quickMelee();
         if (k == Qt::Key_R) startReload();
     }
-    if (k == Qt::Key_Escape) { if (m_paused) QApplication::quit(); else if (!m_gs.gameOver) { m_paused = true; pl.adsMode = false; m_lmb = false; } }
-    if (k == Qt::Key_R) { if (m_paused) m_paused = false; else if (m_gs.gameOver) { initGame(); m_paused = false; } }
-    if (k == Qt::Key_Q && (m_paused || m_gs.gameOver)) QApplication::quit();
-    if (k == Qt::Key_M && (m_paused || m_gs.gameOver)) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; }
+    if (m_paused) {
+        if (k == Qt::Key_R) { m_paused = false; return; }
+        if (k == Qt::Key_O || k == Qt::Key_P) { openSettings(SCR_PLAYING); return; }
+        if (k == Qt::Key_M) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; return; }
+        if (k == Qt::Key_Q || k == Qt::Key_Escape) { QApplication::quit(); return; }
+    }
+    if (k == Qt::Key_Escape && !m_gs.gameOver) { m_paused = true; pl.adsMode = false; m_lmb = false; }
+    if (k == Qt::Key_R && m_gs.gameOver) { initGame(); m_paused = false; }
+    if (k == Qt::Key_Q && m_gs.gameOver) QApplication::quit();
+    if (k == Qt::Key_M && m_gs.gameOver) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; }
     if (k == Qt::Key_BracketLeft)  m_pixelScale = std::min(m_pixelScale * 2, 8);
     if (k == Qt::Key_BracketRight) m_pixelScale = std::max(m_pixelScale / 2, 1);
 }
@@ -1884,7 +1926,26 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
         for (const HitRect &r : m_menuRects) {
             if (f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (r.id == 10) { menuBack(); return; }
-            if (m_screen == SCR_SETTINGS) { m_settingsRow = r.id; changeSetting(r.id, 1); return; }
+            if (m_screen == SCR_SETTINGS) {
+                m_settingsRow = r.id;
+                int vx = 60 + (W - 120) - 300;
+                if (f.x() >= vx && f.x() <= vx + 170) {
+                    float frac = rs::clampf((f.x() - vx) / 170.f, 0.f, 1.f);
+                    if (r.id == 0) m_mouseSens = rs::clampf(std::round((0.2f + frac * 5.8f) * 10.f) / 10.f, 0.2f, 6.0f);
+                    else if (r.id == 1) m_fovDeg = rs::clampi(int(55 + frac * 45.f), 55, 100);
+                    else if (r.id == 2) m_volume = rs::clampi(int(frac * 100.f), 0, 100);
+                    else if (r.id == 5) m_squadSize = rs::clampi(int(std::round(frac * 3.f)), 0, 3);
+                    applySettings();
+                    saveSettings();
+                    if (r.id == 2) sfx(SND_UI_SELECT, 0.6f);
+                    else sfx(SND_UI_MOVE, 0.4f);
+                } else if (f.x() < vx) {
+                    changeSetting(r.id, -1);
+                } else {
+                    changeSetting(r.id, 1);
+                }
+                return;
+            }
             if (m_screen == SCR_ARSENAL) { m_arsenalSel = r.id; sfx(SND_UI_MOVE, 0.5f); return; }
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
@@ -1892,6 +1953,21 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
             if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
             menuConfirm();
             return;
+        }
+        return;
+    }
+    if (m_screen == SCR_PLAYING && m_paused) {
+        QPointF f = widgetToFrame(e->position());
+        const int w = 380, h = 340, x = W / 2 - w / 2, y = H / 2 - h / 2;
+        for (int i = 0; i < 5; i++) {
+            int oy = y + 68 + i * 44;
+            if (f.x() >= x + 40 && f.x() < x + w - 40 && f.y() >= oy && f.y() < oy + 36) {
+                if (i == 0) { m_paused = false; sfx(SND_UI_SELECT, 0.6f); }
+                else if (i == 1) { openSettings(SCR_PLAYING); }
+                else if (i == 2) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; sfx(SND_UI_SELECT, 0.6f); }
+                else if (i == 3 || i == 4) { QApplication::quit(); }
+                return;
+            }
         }
         return;
     }
@@ -1943,7 +2019,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
     m_mouseWidget = e->position();
     if (m_screen != SCR_PLAYING) {
         QPointF f = widgetToFrame(e->position());
-        int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000;
+        int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000;
         for (const HitRect &r : m_menuRects) {
             if (r.id == 10 || f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (m_screen == SCR_SETTINGS) m_settingsRow = r.id;
@@ -1952,7 +2028,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
             if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
             if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
         }
-        if (m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 != before) sfx(SND_UI_MOVE, 0.5f);
+        if (m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 != before) sfx(SND_UI_MOVE, 0.5f);
         return;
     }
     if (m_gs.levelComplete || m_showArmory) { if (m_gs.levelComplete) updateIntermissionHover(e->position()); return; }
@@ -1968,6 +2044,10 @@ void MainWindow::wheelEvent(QWheelEvent *e)
 {
     int steps = e->angleDelta().y() / 120;
     if (!steps) return;
+    if (m_screen == SCR_SETTINGS) {
+        changeSetting(m_settingsRow, steps > 0 ? 1 : -1);
+        return;
+    }
     bool live = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver;
     if (live && effectiveScope(m_gs.player.curWeapon) && m_adsT > 0.5f) {
         m_scopeMag = rs::clampf(m_scopeMag + steps, 2.f, 8.f);

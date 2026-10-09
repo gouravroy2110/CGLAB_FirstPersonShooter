@@ -26,14 +26,27 @@ static const uint32_t CROSS_COLORS[4] = { 0xFFFFFFFF, 0xFF5CFF7A, 0xFF4AE0FF, 0x
 
 uint32_t MainWindow::crosshairColor() const { return CROSS_COLORS[clampi(m_crossColor, 0, 3)]; }
 
+void MainWindow::openSettings(GameScreen fromScreen)
+{
+    m_settingsReturnScreen = fromScreen;
+    m_settingsWasPaused = m_paused;
+    m_paused = true;
+    m_screen = SCR_SETTINGS;
+    m_settingsRow = 0;
+    m_keys.clear();
+    m_lmb = false;
+    m_gs.player.adsMode = false;
+    sfx(SND_UI_SELECT, 0.6f);
+}
+
 void MainWindow::loadSettings()
 {
     QSettings s("RasterFPS", "RasterFPS");
-    m_mouseSens  = clampf(s.value("mouseSens", 1.0).toFloat(), 0.25f, 3.f);
+    m_mouseSens  = clampf(s.value("mouseSens", 1.0).toFloat(), 0.2f, 6.0f);
     m_fovDeg     = clampi(s.value("fov", 67).toInt(), 55, 100);
     m_volume     = clampi(s.value("volume", 80).toInt(), 0, 100);
     m_tpp        = s.value("thirdPerson", false).toBool();
-    m_freeAim    = s.value("freeAim", true).toBool();
+    m_freeAim    = s.value("freeAim", false).toBool();
     m_squadSize  = clampi(s.value("squad", 0).toInt(), 0, 3);
     m_crossColor = clampi(s.value("crosshair", 0).toInt(), 0, 3);
     m_showFps    = s.value("showFps", true).toBool();
@@ -69,7 +82,7 @@ int MainWindow::settingsRows() const { return 9; }
 void MainWindow::changeSetting(int row, int dir)
 {
     switch (row) {
-    case 0: m_mouseSens = clampf(std::round((m_mouseSens + 0.05f * dir) * 20.f) / 20.f, 0.25f, 3.f); break;
+    case 0: m_mouseSens = clampf(std::round((m_mouseSens + 0.1f * dir) * 10.f) / 10.f, 0.2f, 6.0f); break;
     case 1: m_fovDeg = clampi(m_fovDeg + 3 * dir, 55, 100); break;
     case 2: m_volume = clampi(m_volume + 5 * dir, 0, 100); break;
     case 3: m_tpp = !m_tpp; break;
@@ -77,10 +90,12 @@ void MainWindow::changeSetting(int row, int dir)
     case 5: m_squadSize = (m_squadSize + dir + 4) % 4; break;
     case 6: m_crossColor = (m_crossColor + dir + 4) % 4; break;
     case 7: m_showFps = !m_showFps; break;
-    case 8: if (dir != 0) { m_mouseSens = 1.f; m_fovDeg = 67; m_volume = 80; m_tpp = false; m_freeAim = true; m_squadSize = 0; m_crossColor = 0; m_showFps = true; } break;
+    case 8: if (dir != 0) { m_mouseSens = 1.f; m_fovDeg = 67; m_volume = 80; m_tpp = false; m_freeAim = false; m_squadSize = 0; m_crossColor = 0; m_showFps = true; } break;
     }
     applySettings();
     saveSettings();
+    if (row == 2) sfx(SND_UI_SELECT, 0.6f);
+    else sfx(SND_UI_MOVE, 0.4f);
 }
 
 void MainWindow::renderSettings()
@@ -89,15 +104,15 @@ void MainWindow::renderSettings()
     const int x = 60, w = W - 120, y0 = 92, rh = 40;
     struct Row { const char *name; QString value; float bar; const char *help; };
     Row rows[9] = {
-        {"MOUSE SENSITIVITY", QString::number(m_mouseSens, 'f', 2) + "x", (m_mouseSens - 0.25f) / 2.75f, "How far the crosshair / view moves per mouse count"},
+        {"MOUSE SENSITIVITY", QString::number(m_mouseSens, 'f', 2) + "x", (m_mouseSens - 0.2f) / 5.8f, "Adjust aiming speed (higher = faster, lower = precision)"},
         {"FIELD OF VIEW", QString("%1 DEG").arg(m_fovDeg), (m_fovDeg - 55) / 45.f, "Horizontal view angle of the raster camera"},
-        {"MASTER VOLUME", QString("%1%").arg(m_volume), m_volume / 100.f, "All synthesized sound"},
+        {"MASTER VOLUME", QString("%1%").arg(m_volume), m_volume / 100.f, "Adjust all sound effects and synthesizer volume"},
         {"CAMERA", m_tpp ? "THIRD PERSON" : "FIRST PERSON", -1.f, "V switches in game; X swaps shoulder"},
-        {"FREE AIM", m_freeAim ? "ON" : "OFF", -1.f, "Crosshair moves inside a dead zone before the view turns"},
+        {"FREE AIM", m_freeAim ? "ON (DEAD ZONE)" : "OFF (DIRECT AIM)", -1.f, m_freeAim ? "Crosshair moves inside dead zone before camera turns" : "Camera turns immediately with mouse (recommended)"},
         {"SQUAD BOTS", m_squadSize ? QString::number(m_squadSize) : QString("OFF"), m_squadSize / 3.f, "AI teammates that follow you and fight"},
         {"CROSSHAIR COLOUR", CROSS_NAMES[m_crossColor], -1.f, "Pick one that stands out for your eyes"},
         {"SHOW FPS", m_showFps ? "ON" : "OFF", -1.f, "Frame rate under the score"},
-        {"RESET TO DEFAULTS", "LEFT / RIGHT", -1.f, "Restore every option above"},
+        {"RESET TO DEFAULTS", "ENTER / CLICK", -1.f, "Restore default sensitivity, volume, and options"},
     };
     for (int i = 0; i < 9; i++) {
         int y = y0 + i * (rh + 6);
@@ -116,7 +131,7 @@ void MainWindow::renderSettings()
         text(vx + 156, y, 120, rh, Qt::AlignRight | Qt::AlignVCenter, rows[i].value, sel ? qc(UI_AMBER) : QColor(220, 220, 220), 13, 800, false);
         if (sel) { text(vx - 26, y, 20, rh, Qt::AlignCenter, "<", qc(UI_AMBER), 14, 900, false); text(x + w - 18, y, 16, rh, Qt::AlignCenter, ">", qc(UI_AMBER), 14, 900, false); }
     }
-    menuFooter("UP/DOWN choose   LEFT/RIGHT change   saved automatically   ESC back");
+    menuFooter("UP/DOWN choose   LEFT/RIGHT or CLICK change   saved automatically   [O] / ESC back");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

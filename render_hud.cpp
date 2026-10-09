@@ -75,7 +75,33 @@ void MainWindow::render()
     m_text.clear();
     if (m_screen != SCR_PLAYING) {
         m_menuRects.clear();
-        renderMenuBackdrop();
+        if (m_screen == SCR_SETTINGS && m_settingsReturnScreen == SCR_PLAYING) {
+            computeView();
+            renderTerrain();
+            renderSky();
+            renderActors3D();
+            renderSprites();
+            renderParticles();
+            renderWorldFX();
+            renderTracers();
+            renderLensFlare();
+            pixelate();
+            if (!thirdPerson()) {
+                renderViewModel();
+                renderCasings();
+                renderReflexSight();
+            }
+            renderLaser();
+            renderScope();
+            renderPostFX();
+            for (int i = 0; i < W * H; i++) {
+                uint32_t c = m_pixels[i];
+                int l = (R(c) * 77 + G(c) * 150 + B(c) * 29) >> 9;
+                m_pixels[i] = rgb(l, l + 2, l + 6);
+            }
+        } else {
+            renderMenuBackdrop();
+        }
         switch (m_screen) {
         case SCR_MENU:        renderMenu();       break;
         case SCR_MAP_SELECT:  renderMapSelect();  break;
@@ -1012,19 +1038,25 @@ void MainWindow::renderPauseMenu()
 {
     if (!m_paused) return;
     for (int i = 0; i < W * H; i++) { uint32_t c = m_pixels[i]; int l = (R(c) * 77 + G(c) * 150 + B(c) * 29) >> 9; m_pixels[i] = rgb(l, l, l + 4); }
-    const int w = 380, h = 300, x = W / 2 - w / 2, y = H / 2 - h / 2;
+    const int w = 380, h = 340, x = W / 2 - w / 2, y = H / 2 - h / 2;
     panel(x, y, w, h, true, AMBER);
-    text(x, y + 18, w, 44, Qt::AlignCenter, "PAUSED", QColor(255, 255, 255), 36, 900);
+    text(x, y + 16, w, 40, Qt::AlignCenter, "PAUSED", QColor(255, 255, 255), 34, 900);
     struct Opt { const char *key, *label; uint32_t c; };
-    const Opt opts[4] = { {"R", "RESUME", AMBER}, {"M", "MAIN MENU", 0xFFDDDDDD}, {"Q", "QUIT TO DESKTOP", 0xFFDDDDDD}, {"ESC", "FORCE QUIT", RED} };
-    for (int i = 0; i < 4; i++) {
-        int oy = y + 82 + i * 46;
-        m_cv.blendRect(x + 40, oy, w - 80, 38, withAlpha(0xFFFFFFFF, i == 0 ? 22 : 10));
-        m_cv.fillRect(x + 50, oy + 8, 44, 22, opts[i].c);
-        text(x + 50, oy + 8, 44, 22, Qt::AlignCenter, opts[i].key, QColor(15, 15, 15), 12, 900, false);
-        text(x + 108, oy, w - 150, 38, Qt::AlignLeft | Qt::AlignVCenter, opts[i].label, QColor(235, 235, 235), 16, 700);
+    const Opt opts[5] = {
+        {"R", "RESUME", AMBER},
+        {"O", "SETTINGS", AMBER},
+        {"M", "MAIN MENU", 0xFFDDDDDD},
+        {"Q", "QUIT TO DESKTOP", 0xFFDDDDDD},
+        {"ESC", "FORCE QUIT", RED}
+    };
+    for (int i = 0; i < 5; i++) {
+        int oy = y + 68 + i * 44;
+        m_cv.blendRect(x + 40, oy, w - 80, 36, withAlpha(0xFFFFFFFF, i == 0 ? 22 : 10));
+        m_cv.fillRect(x + 50, oy + 7, 44, 22, opts[i].c);
+        text(x + 50, oy + 7, 44, 22, Qt::AlignCenter, opts[i].key, QColor(15, 15, 15), 12, 900, false);
+        text(x + 108, oy, w - 150, 36, Qt::AlignLeft | Qt::AlignVCenter, opts[i].label, QColor(235, 235, 235), 15, 700);
     }
-    text(x, y + h - 30, w, 18, Qt::AlignCenter, "SCROLL raster zoom   [ ] pixel blocks   V free-aim toggle", QColor(150, 150, 150), 11, 500);
+    text(x, y + h - 28, w, 18, Qt::AlignCenter, "[O] Settings   [B] Free-aim   [V] Third-person", QColor(150, 150, 150), 11, 500);
 }
 
 void MainWindow::renderGameOver()
