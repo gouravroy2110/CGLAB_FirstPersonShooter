@@ -1180,8 +1180,11 @@ void MainWindow::menuFooter(const QString &hint)
 {
     m_cv.blendRect(0, H - 34, W, 34, withAlpha(0, 170));
     m_cv.blendRect(0, H - 34, W, 1, withAlpha(0xFFFFFFFF, 30));
-    m_cv.blendRect(16, H - 28, 88, 22, withAlpha(0xFFFFFFFF, 18));
-    text(16, H - 28, 88, 22, Qt::AlignCenter, "< BACK", QColor(220, 220, 220), 12, 700, false);
+    QPointF mf = widgetToFrame(m_mouseWidget);
+    bool hover = mf.x() >= 16 && mf.x() < 16 + 88 && mf.y() >= H - 28 && mf.y() < H - 28 + 22;
+    m_cv.blendRect(16, H - 28, 88, 22, withAlpha(0xFFFFFFFF, hover ? 45 : 18));
+    if (hover) m_cv.rectOutline(16, H - 28, 88, 22, withAlpha(0xFFFFFFFF, 80));
+    text(16, H - 28, 88, 22, Qt::AlignCenter, "< BACK", hover ? QColor(255, 255, 255) : QColor(220, 220, 220), 12, 700, false);
     m_menuRects.push_back({16, H - 28, 88, 22, 10});
     text(120, H - 30, W - 136, 26, Qt::AlignRight | Qt::AlignVCenter, hint, QColor(170, 170, 170), 12, 500, false);
 }

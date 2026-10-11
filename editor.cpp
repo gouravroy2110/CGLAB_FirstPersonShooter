@@ -184,7 +184,7 @@ void MainWindow::editorKey(QKeyEvent *e)
     int k = e->key();
     int mw = int(m_edRows[0].size()), mh = int(m_edRows.size());
     int vis = ED_W / m_edZoom;
-    if (k == Qt::Key_Escape) { m_screen = SCR_MENU; m_menuCursor = 4; sfx(SND_UI_BACK, 0.6f); return; }
+    if (k == Qt::Key_Escape) { menuBack(); return; }
     if (k == Qt::Key_F5) { editorPlaytest(); return; }
     if (k == Qt::Key_S && (e->modifiers() & Qt::ControlModifier)) { editorSave(); return; }
     if (k == Qt::Key_F) { m_edFill = !m_edFill; sfx(SND_UI_MOVE, 0.5f); return; }
@@ -216,6 +216,11 @@ void MainWindow::editorKey(QKeyEvent *e)
 
 void MainWindow::editorMouse(const QPointF &f, Qt::MouseButtons buttons)
 {
+    for (const HitRect &r : m_menuRects) {
+        if (f.x() >= r.x && f.y() >= r.y && f.x() < r.x + r.w && f.y() < r.y + r.h) {
+            if (r.id == 10 && (buttons & (Qt::LeftButton | Qt::RightButton))) { menuBack(); return; }
+        }
+    }
     int cx, cy;
     // palette clicks
     for (int i = 0; i < BRUSH_COUNT; i++) {
@@ -293,5 +298,6 @@ void MainWindow::renderEditor()
     text(596, 480, 190, 36, Qt::AlignLeft | Qt::TextWordWrap, v.isEmpty() ? "VALID: one start, every marker reachable" : v,
          v.isEmpty() ? QColor(120, 240, 150) : QColor(255, 130, 110), 9, 800, false);
     if (m_edDirty) text(590, 524, 200, 14, Qt::AlignLeft, "UNSAVED CHANGES", qcE(ED_AMBER), 10, 800, false);
-    if (m_edMsgT > 0.f) text(12, 570, 560, 16, Qt::AlignLeft, m_edMsg, QColor(220, 225, 230, int(255 * std::min(1.f, m_edMsgT))), 11, 800, false);
+    menuFooter("CTRL+S save   F5 play-test   ESC back");
+    if (m_edMsgT > 0.f) text(116, H - 28, 380, 22, Qt::AlignLeft | Qt::AlignVCenter, m_edMsg, QColor(220, 225, 230, int(255 * std::min(1.f, m_edMsgT))), 11, 800, false);
 }

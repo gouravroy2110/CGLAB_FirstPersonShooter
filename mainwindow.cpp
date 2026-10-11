@@ -2033,6 +2033,10 @@ void MainWindow::menuBack()
     sfx(SND_UI_BACK, 0.6f);
     switch (m_screen) {
     case SCR_MENU:        QApplication::quit(); break;
+    case SCR_CAMPAIGN:    m_screen = SCR_MENU; m_menuCursor = 0; break;
+    case SCR_BRIEFING:    m_screen = SCR_CAMPAIGN; break;
+    case SCR_DEBRIEF:     m_campaignRun = false; openCampaign(); break;
+    case SCR_EDITOR:      m_screen = SCR_MENU; m_menuCursor = 4; break;
     case SCR_MAP_SELECT:  m_gameMode = MODE_FREEPLAY; m_screen = SCR_MENU; m_menuCursor = 1; break;
     case SCR_SETTINGS:
         saveSettings();
@@ -2305,7 +2309,16 @@ void MainWindow::focusOutEvent(QFocusEvent *) { m_keys.clear(); m_lmb = false; }
 
 void MainWindow::mousePressEvent(QMouseEvent *e)
 {
-    if (m_screen == SCR_EDITOR) { editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
+    if (m_screen == SCR_EDITOR) {
+        QPointF f = widgetToFrame(e->position());
+        for (const HitRect &r : m_menuRects) {
+            if (f.x() >= r.x && f.y() >= r.y && f.x() < r.x + r.w && f.y() < r.y + r.h) {
+                if (r.id == 10) { menuBack(); return; }
+            }
+        }
+        editorMouse(f, e->buttons());
+        return;
+    }
     if (m_screen == SCR_PLAYING && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive() && m_net->matchState().matchOver) {
         m_screen = SCR_MULTIPLAYER_LOBBY;
         m_net->matchStateMutable().matchOver = false;
@@ -2457,7 +2470,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
     if (m_screen == SCR_EDITOR) { if (e->buttons() & (Qt::LeftButton | Qt::RightButton)) editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
     if (m_screen != SCR_PLAYING) {
         QPointF f = widgetToFrame(e->position());
-        int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000;
+        int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 + m_cSel * 100000;
         for (const HitRect &r : m_menuRects) {
             if (r.id == 10 || f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (m_screen == SCR_SETTINGS) m_settingsRow = r.id;
@@ -2465,8 +2478,10 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
             if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
             if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
+            if (m_screen == SCR_CAMPAIGN && r.id >= 0 && r.id < MISSION_COUNT) m_cSel = r.id;
         }
-        if (m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 != before) sfx(SND_UI_MOVE, 0.5f);
+        int after = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 + m_cSel * 100000;
+        if (after != before) sfx(SND_UI_MOVE, 0.5f);
         return;
     }
     if (m_gs.levelComplete || m_showArmory) { if (m_gs.levelComplete) updateIntermissionHover(e->position()); return; }
@@ -2987,6 +3002,14 @@ bool MainWindow::snapshot(const QString &dir)
         QString badMsg = validateRows(m_edRows);
         log(QString("editor: fill removed %1 hazard cells (left %2), valid='%3', without start='%4'").arg(before - after).arg(after).arg(okMsg).arg(badMsg));
         openEditor(4); run(2); save("97_editor");
+        editorMouse(QPointF(50, H - 20), Qt::LeftButton);
+        log(QString("editor back button: screen=%1 cursor=%2").arg(m_screen).arg(m_menuCursor));
+        if (m_screen != SCR_MENU || m_menuCursor != 4) log("ERROR: editor back button did not return to main menu");
+        openEditor(4);
+        QKeyEvent escKey(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        editorKey(&escKey);
+        log(QString("editor esc key: screen=%1 cursor=%2").arg(m_screen).arg(m_menuCursor));
+        if (m_screen != SCR_MENU || m_menuCursor != 4) log("ERROR: editor ESC key did not return to main menu");
         m_screen = SCR_MENU;
     }
     m_screen = SCR_MAP_SELECT; run(3); save("02_maps_biomes");

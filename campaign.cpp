@@ -231,11 +231,11 @@ void MainWindow::campaignKey(int k)
             }
             else sfx(SND_UI_BACK, 0.6f);
         }
-        if (k == Qt::Key_Escape) { m_screen = SCR_MENU; m_menuCursor = 0; sfx(SND_UI_BACK, 0.6f); }
+        if (k == Qt::Key_Escape) { menuBack(); return; }
         return;
     }
     if (m_screen == SCR_BRIEFING) {
-        if (k == Qt::Key_Escape) { m_screen = SCR_CAMPAIGN; sfx(SND_UI_BACK, 0.6f); return; }
+        if (k == Qt::Key_Escape) { menuBack(); return; }
         if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
             if (m_briefT < 6.f) m_briefT = 6.f;                 // finish the typing first
             else startMission(m_cSel);
@@ -253,6 +253,7 @@ void MainWindow::campaignKey(int k)
 void MainWindow::campaignClick(int id)
 {
     if (m_screen != SCR_CAMPAIGN) return;
+    if (id == 10) { menuBack(); return; }
     if (id >= 0 && id < MISSION_COUNT) { m_cSel = id; sfx(SND_UI_MOVE, 0.5f); }
     if (id == 50) campaignKey(Qt::Key_Return);
     if (id >= 60 && id < 64) buyCampaignUpgrade(id - 60);
