@@ -57,7 +57,7 @@ void MainWindow::renderViewModel()
     const float S = G3.scale;                                           // metres per gun unit
 
     // --- Animation state --------------------------------------------------------
-    bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
+    bool moving = isPlayerMoving();
     float bobAmp = moving ? (pl.sprinting ? 1.6f : 1.f) : 0.f;
     float bx = std::sin(pl.bobPhase) * 9.f * bobAmp, by = std::fabs(std::cos(pl.bobPhase)) * 7.f * bobAmp;
     float breathe = std::sin(m_time * 1.7f) * 2.2f;

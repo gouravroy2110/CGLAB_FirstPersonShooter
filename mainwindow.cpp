@@ -34,6 +34,7 @@ static inline float frandB2(float a, float b) { return frand(a, b); }
 MainWindow::MainWindow(QWidget *parent)
     : QWidget(parent), m_buf(W, H, QImage::Format_ARGB32)
 {
+    initDefaultKeyBinds();
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
@@ -99,6 +100,19 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_net, &NetworkManager::connectionError, this, [this](const QString &err) {
         pushFeed(err, 4.0f);
     });
+}
+
+bool MainWindow::isActionPressed(KeyAction act) const
+{
+    if (act < 0 || act >= ACT_COUNT) return false;
+    int k = m_keyBinds[act];
+    return k > 0 && m_keys.count(k) > 0;
+}
+
+bool MainWindow::isPlayerMoving() const
+{
+    return isActionPressed(ACT_MOVE_FWD) || isActionPressed(ACT_MOVE_BACK) ||
+           isActionPressed(ACT_MOVE_LEFT) || isActionPressed(ACT_MOVE_RIGHT);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -635,7 +649,7 @@ void MainWindow::advance(float dt)
     m_mouseDX = m_mouseDY = 0;
 
     // Scope breathing sway (figure-8). Hold SHIFT while scoped to steady.
-    bool movingKeys = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
+    bool movingKeys = isPlayerMoving();
     m_breath += dt * (m_holdBreath ? 0.35f : 1.25f);
     float amp = m_holdBreath ? 0.8f : (movingKeys ? 9.f : 4.5f);
     m_scopeSwayX += (std::sin(m_breath * 0.9f) * amp - m_scopeSwayX) * std::min(1.f, dt * 4.f);
@@ -946,8 +960,8 @@ void MainWindow::gameStep(float dt)
     if (m_keys.count(Qt::Key_Right)) turn(rotSpd);
 
     // Sprint, stamina, breath-holding
-    bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
-    bool shift = m_keys.count(Qt::Key_Shift) > 0;
+    bool moving = isPlayerMoving();
+    bool shift = isActionPressed(ACT_SPRINT);
     bool scoped = effectiveScope(pl.curWeapon) && m_adsT > 0.85f;
 
     // Player must release Shift to recover from stamina exhaustion
@@ -1006,8 +1020,8 @@ void MainWindow::gameStep(float dt)
         cmd.fire    = false;
         cmd.ads     = false;
     } else {
-        cmd.forward = float(m_keys.count(Qt::Key_W)) - float(m_keys.count(Qt::Key_S));
-        cmd.strafe  = float(m_keys.count(Qt::Key_D)) - float(m_keys.count(Qt::Key_A));
+        cmd.forward = float(isActionPressed(ACT_MOVE_FWD)) - float(isActionPressed(ACT_MOVE_BACK));
+        cmd.strafe  = float(isActionPressed(ACT_MOVE_RIGHT)) - float(isActionPressed(ACT_MOVE_LEFT));
         cmd.sprint  = wantSprint;
         cmd.jump    = m_jumpQueued;
         cmd.ads     = pl.adsMode;
@@ -1875,7 +1889,7 @@ void MainWindow::computeView()
 {
     const Player &pl = m_gs.player;
     m_K = float(H) / m_adsFOVMult;
-    bool moving = m_screen == SCR_PLAYING && (m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D));
+    bool moving = m_screen == SCR_PLAYING && isPlayerMoving();
     float bobZ = moving ? std::sin(pl.bobPhase * 2.f) * (pl.sprinting ? 0.018f : 0.01f) * (1.f - m_adsT * 0.8f) : 0.f;
     m_headZ = m_gs.player.footZ + 0.5f + bobZ;
     m_eye = m_headZ;
@@ -2180,20 +2194,82 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
             if (k == Qt::Key_Down) m_menuCursor = std::min(7, m_menuCursor + 1);
             if (k >= Qt::Key_1 && k <= Qt::Key_8) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
         } else if (m_screen == SCR_SETTINGS) {
+            if (m_rebindingAction >= 0) {
+                if (k == Qt::Key_Escape) {
+                    m_rebindingAction = -1;
+                    sfx(SND_UI_BACK, 0.5f);
+                    return;
+                }
+                m_keyBinds[m_rebindingAction] = k;
+                m_rebindingAction = -1;
+                saveSettings();
+                sfx(SND_UI_SELECT, 0.6f);
+                return;
+            }
 
-            if (k == Qt::Key_Up)    m_settingsRow = (m_settingsRow + settingsRows() - 1) % settingsRows();
-            if (k == Qt::Key_Down)  m_settingsRow = (m_settingsRow + 1) % settingsRows();
-            if (k == Qt::Key_Left)  changeSetting(m_settingsRow, -1);
-            if (k == Qt::Key_Right) changeSetting(m_settingsRow, 1);
-            if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
-                changeSetting(m_settingsRow, 1);
+            if (k == Qt::Key_Tab) {
+                m_settingsTab = 1 - m_settingsTab;
+                sfx(SND_UI_MOVE, 0.4f);
                 return;
             }
-            if (k == Qt::Key_Escape || k == Qt::Key_Backspace) {
-                menuBack();
+            if (k == Qt::Key_1 && m_settingsTab != 0) {
+                m_settingsTab = 0;
+                sfx(SND_UI_MOVE, 0.4f);
                 return;
             }
-            return;
+            if (k == Qt::Key_2 && m_settingsTab != 1) {
+                m_settingsTab = 1;
+                sfx(SND_UI_MOVE, 0.4f);
+                return;
+            }
+
+            if (m_settingsTab == 0) {
+                if (k == Qt::Key_Up)    m_settingsRow = (m_settingsRow + settingsRows() - 1) % settingsRows();
+                if (k == Qt::Key_Down)  m_settingsRow = (m_settingsRow + 1) % settingsRows();
+                if (k == Qt::Key_Left)  changeSetting(m_settingsRow, -1);
+                if (k == Qt::Key_Right) changeSetting(m_settingsRow, 1);
+                if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
+                    changeSetting(m_settingsRow, 1);
+                    return;
+                }
+                if (k == Qt::Key_Escape || k == Qt::Key_Backspace) {
+                    menuBack();
+                    return;
+                }
+                return;
+            } else {
+                if (k == Qt::Key_Up) {
+                    if (m_controlsRow == ACT_COUNT) m_controlsRow = 10;
+                    else if (m_controlsRow % 11 == 0) m_controlsRow = m_controlsRow + 10;
+                    else m_controlsRow--;
+                    sfx(SND_UI_MOVE, 0.4f);
+                } else if (k == Qt::Key_Down) {
+                    if (m_controlsRow == ACT_COUNT) m_controlsRow = 0;
+                    else if (m_controlsRow % 11 == 10) m_controlsRow = ACT_COUNT;
+                    else m_controlsRow++;
+                    sfx(SND_UI_MOVE, 0.4f);
+                } else if (k == Qt::Key_Left) {
+                    if (m_controlsRow >= 11 && m_controlsRow < ACT_COUNT) m_controlsRow -= 11;
+                    sfx(SND_UI_MOVE, 0.4f);
+                } else if (k == Qt::Key_Right) {
+                    if (m_controlsRow < 11) m_controlsRow += 11;
+                    sfx(SND_UI_MOVE, 0.4f);
+                } else if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
+                    if (m_controlsRow == ACT_COUNT) {
+                        initDefaultKeyBinds();
+                        saveSettings();
+                        sfx(SND_UPGRADE, 0.6f);
+                        return;
+                    }
+                    m_rebindingAction = m_controlsRow;
+                    sfx(SND_UI_SELECT, 0.5f);
+                    return;
+                } else if (k == Qt::Key_Escape || k == Qt::Key_Backspace) {
+                    menuBack();
+                    return;
+                }
+                return;
+            }
         } else if (m_screen == SCR_ARSENAL) {
             if (k == Qt::Key_Up)   m_arsenalSel = (m_arsenalSel + WPN_COUNT - 1) % WPN_COUNT;
             if (k == Qt::Key_Down) m_arsenalSel = (m_arsenalSel + 1) % WPN_COUNT;
@@ -2263,23 +2339,26 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     bool live = !m_paused && !m_gs.gameOver;
     if (live) {
         if (k == Qt::Key_O || k == Qt::Key_P) { openSettings(SCR_PLAYING); return; }
-        if (k == Qt::Key_Space && m_gs.player.onGround) m_jumpQueued = true;
+        if (k == m_keyBinds[ACT_JUMP] && m_gs.player.onGround) m_jumpQueued = true;
         if (k == Qt::Key_N && m_snd) { m_snd->setMuted(!m_snd->muted()); pushFeed(m_snd->muted() ? "SOUND: OFF" : "SOUND: ON", 2.f); }
-        if (k == Qt::Key_F) tryFire();
-        if (k == Qt::Key_E && !e->isAutoRepeat()) { if (!trySwapPickup()) tryOpenDoor(); }
-        if (k == Qt::Key_G && !e->isAutoRepeat()) startThrow();
-        if (k == Qt::Key_T) cycleThrowable();
-        if (k == Qt::Key_Z) useGadget();
-        if (k == Qt::Key_H && !isMelee(pl.curWeapon) && pl.reloadTimer <= 0 && pl.switchTimer <= 0) { m_inspectT = 2.2f; sfx(SND_INSPECT, 0.6f); }
+        if (k == m_keyBinds[ACT_FIRE]) tryFire();
+        if (k == m_keyBinds[ACT_INTERACT] && !e->isAutoRepeat()) { if (!trySwapPickup()) tryOpenDoor(); }
+        if (k == m_keyBinds[ACT_THROW] && !e->isAutoRepeat()) startThrow();
+        if (k == m_keyBinds[ACT_CYCLE_THROW]) cycleThrowable();
+        if (k == m_keyBinds[ACT_GADGET]) useGadget();
+        if (k == m_keyBinds[ACT_INSPECT] && !isMelee(pl.curWeapon) && pl.reloadTimer <= 0 && pl.switchTimer <= 0) { m_inspectT = 2.2f; sfx(SND_INSPECT, 0.6f); }
         if (k == Qt::Key_C) { m_pitch = 0.f; m_aimX = W / 2.f; m_aimY = H / 2.f; }
         if (k == Qt::Key_B) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
-        if (k == Qt::Key_V) { m_tpp = !m_tpp; pushFeed(m_tpp ? "THIRD PERSON" : "FIRST PERSON", 1.5f); sfx(SND_UI_MOVE, 0.4f); }
-        if (k == Qt::Key_X && m_tpp) m_shoulderLeft = !m_shoulderLeft;
-        if (k == Qt::Key_L) { m_flashlightOn = !m_flashlightOn; sfx(SND_ZOOM_TICK, 0.6f); pushFeed(m_flashlightOn ? "FLASHLIGHT ON" : "FLASHLIGHT OFF", 1.2f); }
-        if (k == Qt::Key_Tab) pl.adsMode = !pl.adsMode;
-        if (k >= Qt::Key_1 && k <= Qt::Key_4) selectSlot(k - Qt::Key_1);
-        if (k == Qt::Key_Q) quickMelee();
-        if (k == Qt::Key_R) startReload();
+        if (k == m_keyBinds[ACT_CAMERA]) { m_tpp = !m_tpp; pushFeed(m_tpp ? "THIRD PERSON" : "FIRST PERSON", 1.5f); sfx(SND_UI_MOVE, 0.4f); }
+        if (k == m_keyBinds[ACT_SHOULDER] && m_tpp) m_shoulderLeft = !m_shoulderLeft;
+        if (k == m_keyBinds[ACT_FLASHLIGHT]) { m_flashlightOn = !m_flashlightOn; sfx(SND_ZOOM_TICK, 0.6f); pushFeed(m_flashlightOn ? "FLASHLIGHT ON" : "FLASHLIGHT OFF", 1.2f); }
+        if (k == m_keyBinds[ACT_ADS]) pl.adsMode = !pl.adsMode;
+        if (k == m_keyBinds[ACT_SLOT1]) selectSlot(0);
+        if (k == m_keyBinds[ACT_SLOT2]) selectSlot(1);
+        if (k == m_keyBinds[ACT_SLOT3]) selectSlot(2);
+        if (k == m_keyBinds[ACT_SLOT4]) selectSlot(3);
+        if (k == m_keyBinds[ACT_MELEE]) quickMelee();
+        if (k == m_keyBinds[ACT_RELOAD]) startReload();
     }
     if (m_screen == SCR_PLAYING && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive() && m_net->matchState().matchOver) {
         if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Escape || k == Qt::Key_Space) {
@@ -2334,24 +2413,66 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
             if (r.id == 10) { menuBack(); return; }
             if (m_screen == SCR_CAMPAIGN) { campaignClick(r.id); return; }
             if (m_screen == SCR_SETTINGS) {
-                m_settingsRow = r.id;
-                int vx = 60 + (W - 120) - 300;
-                if (f.x() >= vx && f.x() <= vx + 170) {
-                    float frac = rs::clampf((f.x() - vx) / 170.f, 0.f, 1.f);
-                    if (r.id == 0) m_mouseSens = rs::clampf(std::round((0.2f + frac * 5.8f) * 10.f) / 10.f, 0.2f, 6.0f);
-                    else if (r.id == 1) m_fovDeg = rs::clampi(int(55 + frac * 45.f), 55, 100);
-                    else if (r.id == 2) m_volume = rs::clampi(int(frac * 100.f), 0, 100);
-                    else if (r.id == 5) m_squadSize = rs::clampi(int(std::round(frac * 3.f)), 0, 3);
-                    applySettings();
-                    saveSettings();
-                    if (r.id == 2) sfx(SND_UI_SELECT, 0.6f);
-                    else sfx(SND_UI_MOVE, 0.4f);
-                } else if (f.x() < vx) {
-                    changeSetting(r.id, -1);
-                } else {
-                    changeSetting(r.id, 1);
+                if (m_rebindingAction >= 0) {
+                    m_rebindingAction = -1;
+                    sfx(SND_UI_BACK, 0.5f);
+                    return;
                 }
-                return;
+                if (r.id == 50) {
+                    m_settingsTab = 0;
+                    sfx(SND_UI_MOVE, 0.4f);
+                    return;
+                }
+                if (r.id == 51) {
+                    m_settingsTab = 1;
+                    sfx(SND_UI_MOVE, 0.4f);
+                    return;
+                }
+                if (m_settingsTab == 0) {
+                    m_settingsRow = r.id;
+                    if (r.id == 8) {
+                        m_settingsTab = 1;
+                        m_controlsRow = 0;
+                        sfx(SND_UI_SELECT, 0.5f);
+                        return;
+                    }
+                    if (r.id == 9) {
+                        changeSetting(9, 1);
+                        return;
+                    }
+                    int vx = 60 + (W - 120) - 300;
+                    if (f.x() >= vx && f.x() <= vx + 170) {
+                        float frac = rs::clampf((f.x() - vx) / 170.f, 0.f, 1.f);
+                        if (r.id == 0) m_mouseSens = rs::clampf(std::round((0.2f + frac * 5.8f) * 10.f) / 10.f, 0.2f, 6.0f);
+                        else if (r.id == 1) m_fovDeg = rs::clampi(int(55 + frac * 45.f), 55, 100);
+                        else if (r.id == 2) m_volume = rs::clampi(int(frac * 100.f), 0, 100);
+                        else if (r.id == 5) m_squadSize = rs::clampi(int(std::round(frac * 3.f)), 0, 3);
+                        applySettings();
+                        saveSettings();
+                        if (r.id == 2) sfx(SND_UI_SELECT, 0.6f);
+                        else sfx(SND_UI_MOVE, 0.4f);
+                    } else if (f.x() < vx) {
+                        changeSetting(r.id, -1);
+                    } else {
+                        changeSetting(r.id, 1);
+                    }
+                    return;
+                } else {
+                    if (r.id >= 100 && r.id < 100 + ACT_COUNT) {
+                        int act = r.id - 100;
+                        m_controlsRow = act;
+                        m_rebindingAction = act;
+                        sfx(SND_UI_SELECT, 0.5f);
+                        return;
+                    }
+                    if (r.id == 200) {
+                        initDefaultKeyBinds();
+                        saveSettings();
+                        sfx(SND_UPGRADE, 0.6f);
+                        return;
+                    }
+                    return;
+                }
             }
             if (m_screen == SCR_MULTIPLAYER_LOBBY) {
                 if (r.id != 9) m_mpTypingAddr = false;
@@ -2470,17 +2591,21 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
     if (m_screen == SCR_EDITOR) { if (e->buttons() & (Qt::LeftButton | Qt::RightButton)) editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
     if (m_screen != SCR_PLAYING) {
         QPointF f = widgetToFrame(e->position());
-        int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 + m_cSel * 100000;
+        int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 + m_cSel * 100000 + m_controlsRow * 1000000;
         for (const HitRect &r : m_menuRects) {
             if (r.id == 10 || f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
-            if (m_screen == SCR_SETTINGS) m_settingsRow = r.id;
+            if (m_screen == SCR_SETTINGS) {
+                if (m_settingsTab == 0 && r.id >= 0 && r.id < settingsRows()) m_settingsRow = r.id;
+                else if (m_settingsTab == 1 && r.id >= 100 && r.id < 100 + ACT_COUNT) m_controlsRow = r.id - 100;
+                else if (m_settingsTab == 1 && r.id == 200) m_controlsRow = ACT_COUNT;
+            }
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
             if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
             if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
             if (m_screen == SCR_CAMPAIGN && r.id >= 0 && r.id < MISSION_COUNT) m_cSel = r.id;
         }
-        int after = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 + m_cSel * 100000;
+        int after = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 + m_cSel * 100000 + m_controlsRow * 1000000;
         if (after != before) sfx(SND_UI_MOVE, 0.5f);
         return;
     }
@@ -2649,6 +2774,8 @@ bool MainWindow::snapshot(const QString &dir)
     m_screen = SCR_ARSENAL; m_arsenalSel = WPN_SNIPER; run(10); save("03_arsenal_sniper");
     m_arsenalSel = WPN_PLASMA; run(30); save("03_arsenal_plasma");
     m_screen = SCR_SETTINGS; m_settingsRow = 1; run(5); save("04_settings");
+    m_settingsTab = 1; m_controlsRow = 0; run(5); save("04_settings_controls");
+    m_settingsTab = 0;
     { int fov0 = m_fovDeg; changeSetting(1, 1); log(QString("settings: fov %1 -> %2, plane %3").arg(fov0).arg(m_fovDeg).arg(m_planeLen, 0, 'f', 3)); changeSetting(1, -1); }
     m_screen = SCR_MAP_SELECT;
     m_screen = SCR_CHAR_SELECT; run(5); save("04_char");

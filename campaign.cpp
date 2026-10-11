@@ -521,7 +521,7 @@ void MainWindow::updateMission(float dt)
             if (m_objMask & (1 << k)) continue;
             if (nearMarker(O.markers[k], 0, O.type == OBJ_HOLD ? 2.6f : 1.6f, mx, my)) { inZone = k; break; }
         }
-        bool working = inZone >= 0 && (O.type == OBJ_HOLD || m_keys.count(Qt::Key_E));
+        bool working = inZone >= 0 && (O.type == OBJ_HOLD || m_keys.count(m_keyBinds[ACT_INTERACT]));
         if (inZone != m_objZone) { m_objTimer = 0.f; m_objZone = inZone; }
         if (working) {
             m_objTimer += dt;
@@ -663,7 +663,8 @@ void MainWindow::renderMissionHUD()
             float k = m_objTimer / O.time;
             m_cv.ring(W / 2, H / 2 + 60, 20.f, 23.f, withAlpha(0xFFFFFFFF, 50));
             m_cv.arc(W / 2, H / 2 + 60, 20.f, 23.f, -1.5708f, -1.5708f + 6.2832f * k, C_GREEN);
-            text(W / 2 - 100, H / 2 + 86, 200, 14, Qt::AlignCenter, O.type == OBJ_INTERACT ? (m_keys.count(Qt::Key_E) ? "WORKING..." : "HOLD [E]") : "CAPTURING...", QColor(140, 255, 160), 10, 800);
+            QString holdPrompt = QString("HOLD [%1]").arg(keyName(m_keyBinds[ACT_INTERACT]));
+            text(W / 2 - 100, H / 2 + 86, 200, 14, Qt::AlignCenter, O.type == OBJ_INTERACT ? (m_keys.count(m_keyBinds[ACT_INTERACT]) ? "WORKING..." : holdPrompt) : "CAPTURING...", QColor(140, 255, 160), 10, 800);
         }
         if (O.type == OBJ_SURVIVE) {
             float k = clampf(m_objTimer / O.time, 0.f, 1.f);

@@ -412,7 +412,7 @@ void MainWindow::fireOnce()
 
     computeView();
     float ax, ay; aimPoint(ax, ay);
-    bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
+    bool moving = isPlayerMoving();
     float baseSpread = effectiveSpread(w);
     float spread = baseSpread * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f) * (1.f + m_bloom * 0.5f);
     if (m_fanFire) spread *= 3.f;
@@ -1158,7 +1158,7 @@ void MainWindow::updateThrow(float dt)
     Player &pl = m_gs.player;
     if (!m_cooking) return;
     m_cookT += dt;
-    if (!m_keys.count(Qt::Key_G)) { releaseThrow(); return; }
+    if (!m_keys.count(m_keyBinds[ACT_THROW])) { releaseThrow(); return; }
     // a frag cooked past its fuse goes off in your hand
     if (pl.throwSel == TH_FRAG && m_cookT >= THROWS[TH_FRAG].fuse) {
         m_cooking = false; pl.throwCount[TH_FRAG]--;

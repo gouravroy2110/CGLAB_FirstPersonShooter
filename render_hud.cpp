@@ -255,10 +255,10 @@ void MainWindow::renderHUD()
     int maxMag = effectiveMagSize(cwp);
     if (pl.curWeapon >= 0 && usesAmmo(pl.curWeapon) && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !m_gs.gameOver) {
         if (mag == 0 && res == 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "NO AMMO", QColor(255, 70, 60), 14, 800);
-        else if (mag <= maxMag / 4 && res > 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "[R]  RELOAD", QColor(255, 190, 80, int(180 + 75 * std::sin(m_time * 8))), 13, 700);
-        else if (m_nearSecret) text(ax - 150, ay + 34, 300, 20, Qt::AlignCenter, "[E]  INSPECT WALL", QColor(255, 215, 100, int(210 + 45 * std::sin(m_time * 9))), 14, 800);
+        else if (mag <= maxMag / 4 && res > 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, QString("[%1]  RELOAD").arg(keyName(m_keyBinds[ACT_RELOAD])), QColor(255, 190, 80, int(180 + 75 * std::sin(m_time * 8))), 13, 700);
+        else if (m_nearSecret) text(ax - 150, ay + 34, 300, 20, Qt::AlignCenter, QString("[%1]  INSPECT WALL").arg(keyName(m_keyBinds[ACT_INTERACT])), QColor(255, 215, 100, int(210 + 45 * std::sin(m_time * 9))), 14, 800);
         else if (m_nearDoor) {
-            QString prompt = (m_gameMode == MODE_MULTIPLAYER) ? "[E]  OPEN BLAST DOOR" : "[E]  OPEN DOOR";
+            QString prompt = QString("[%1]  OPEN %2").arg(keyName(m_keyBinds[ACT_INTERACT])).arg((m_gameMode == MODE_MULTIPLAYER) ? "BLAST DOOR" : "DOOR");
             text(ax - 160, ay + 34, 320, 20, Qt::AlignCenter, prompt, (m_gameMode == MODE_MULTIPLAYER) ? QColor(255, 215, 60, int(200 + 55 * std::sin(m_time * 7))) : QColor(220, 220, 220, int(190 + 50 * std::sin(m_time * 6))), 13, 800);
         }
     }
@@ -654,7 +654,9 @@ void MainWindow::renderWeaponPanel()
         float left = pl.throwSel == TH_FRAG ? 1.f - m_cookT / THROWS[TH_FRAG].fuse : 1.f;
         float ax, ay; aimPoint(ax, ay);
         m_cv.arc(int(ax), int(ay), 22.f, 25.f, -1.5708f, -1.5708f + 6.2832f * left, left < 0.3f ? RED : AMBER);
-        text(ax - 60, ay + 28, 120, 12, Qt::AlignCenter, pl.throwSel == TH_FRAG ? "COOKING - RELEASE G" : "RELEASE G TO THROW", QColor(255, 210, 120), 9, 800, false);
+        QString throwPrompt = pl.throwSel == TH_FRAG ? QString("COOKING - RELEASE %1").arg(keyName(m_keyBinds[ACT_THROW]))
+                                                     : QString("RELEASE %1 TO THROW").arg(keyName(m_keyBinds[ACT_THROW]));
+        text(ax - 60, ay + 28, 120, 12, Qt::AlignCenter, throwPrompt, QColor(255, 210, 120), 9, 800, false);
     }
     // a better / different gun underfoot
     if (m_nearPickup >= 0 && m_nearPickup < int(m_gs.weaponPickups.size())) {
@@ -662,8 +664,9 @@ void MainWindow::renderWeaponPanel()
         if (wp.active && wp.weapon >= 0) {
             int s = targetSlotFor(wp.weapon);
             int old = pl.owned[wp.weapon] ? wp.weapon : pl.slot[s];
-            QString msg = old == wp.weapon ? QString("[E]  UPGRADE TO %1 %2").arg(RARITY_NAMES[wp.load.rarity]).arg(WEAPONS[wp.weapon].name)
-                                           : QString("[E]  SWAP %1 FOR %2 %3").arg(old >= 0 ? WEAPONS[old].shortName : "").arg(RARITY_NAMES[wp.load.rarity]).arg(WEAPONS[wp.weapon].name);
+            QString keyStr = keyName(m_keyBinds[ACT_INTERACT]);
+            QString msg = old == wp.weapon ? QString("[%1]  UPGRADE TO %2 %3").arg(keyStr).arg(RARITY_NAMES[wp.load.rarity]).arg(WEAPONS[wp.weapon].name)
+                                           : QString("[%1]  SWAP %2 FOR %3 %4").arg(keyStr).arg(old >= 0 ? WEAPONS[old].shortName : "").arg(RARITY_NAMES[wp.load.rarity]).arg(WEAPONS[wp.weapon].name);
             int mw = 420, mx = W / 2 - mw / 2, my = H - 150;
             plate(m_cv, mx, my, mw, 26, 6, withAlpha(UI_BG, 200));
             m_cv.fillRect(mx, my + 24, mw, 2, RARITY_COLORS[wp.load.rarity]);
@@ -700,7 +703,7 @@ void MainWindow::renderCrosshair()
         return;
     }
 
-    bool moving = m_keys.count(Qt::Key_W) || m_keys.count(Qt::Key_S) || m_keys.count(Qt::Key_A) || m_keys.count(Qt::Key_D);
+    bool moving = isPlayerMoving();
     float spread = effectiveSpread(pl.curWeapon) * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f) * (1.f + m_bloom * 0.5f) * W;
     int gap = int(5 + spread * 0.9f + m_kick * 10 + (pl.sprinting ? 10 : 0));
     const int len = 9;

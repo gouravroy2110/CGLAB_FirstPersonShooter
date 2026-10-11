@@ -248,6 +248,39 @@ private:
     float m_planeLen = 0.66f;           // camera plane length = tan(FOV / 2)
     int   m_settingsRow = 0;
     int   m_arsenalSel = WPN_RIFLE;
+    enum KeyAction {
+        ACT_MOVE_FWD = 0,
+        ACT_MOVE_BACK,
+        ACT_MOVE_LEFT,
+        ACT_MOVE_RIGHT,
+        ACT_JUMP,
+        ACT_SPRINT,
+        ACT_FIRE,
+        ACT_ADS,
+        ACT_RELOAD,
+        ACT_MELEE,
+        ACT_INSPECT,
+        ACT_INTERACT,
+        ACT_THROW,
+        ACT_CYCLE_THROW,
+        ACT_GADGET,
+        ACT_FLASHLIGHT,
+        ACT_CAMERA,
+        ACT_SHOULDER,
+        ACT_SLOT1,
+        ACT_SLOT2,
+        ACT_SLOT3,
+        ACT_SLOT4,
+        ACT_COUNT
+    };
+    int   m_keyBinds[ACT_COUNT];
+    int   m_settingsTab = 0;          // 0 = General, 1 = Controls
+    int   m_controlsRow = 0;          // 0..ACT_COUNT (ACT_COUNT is reset button)
+    int   m_rebindingAction = -1;     // -1 if none, or 0..ACT_COUNT-1
+    void  initDefaultKeyBinds();
+    bool  isActionPressed(KeyAction act) const;
+    bool  isPlayerMoving() const;
+    static QString keyName(int k);
     void  openSettings(GameScreen fromScreen);
     void  saveSettings() const;
     void  applySettings();
