@@ -113,8 +113,10 @@ void MainWindow::render()
         case SCR_CAMPAIGN:    renderCampaign();   break;
         case SCR_BRIEFING:    renderBriefing();   break;
         case SCR_DEBRIEF:     m_debriefT += m_dt; renderDebrief(); break;
+        case SCR_MULTIPLAYER_LOBBY: renderMultiplayerLobby(); break;
         default: break;
         }
+
         flushText();
         return;
     }
@@ -241,6 +243,11 @@ void MainWindow::renderHUD()
     renderSquadTags();
     renderCrosshair();
     renderHitMarkers();
+    if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+        renderMultiplayerHUD();
+        if (m_showScoreboard) renderScoreboard();
+    }
+
 
     float ax, ay; aimPoint(ax, ay);
     int cwp = std::max(0, pl.curWeapon);
@@ -250,7 +257,10 @@ void MainWindow::renderHUD()
         if (mag == 0 && res == 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "NO AMMO", QColor(255, 70, 60), 14, 800);
         else if (mag <= maxMag / 4 && res > 0) text(ax - 100, ay + 34, 200, 20, Qt::AlignCenter, "[R]  RELOAD", QColor(255, 190, 80, int(180 + 75 * std::sin(m_time * 8))), 13, 700);
         else if (m_nearSecret) text(ax - 150, ay + 34, 300, 20, Qt::AlignCenter, "[E]  INSPECT WALL", QColor(255, 215, 100, int(210 + 45 * std::sin(m_time * 9))), 14, 800);
-        else if (m_nearDoor) text(ax - 150, ay + 34, 300, 20, Qt::AlignCenter, "[E]  OPEN DOOR", QColor(220, 220, 220, int(190 + 50 * std::sin(m_time * 6))), 13, 700);
+        else if (m_nearDoor) {
+            QString prompt = (m_gameMode == MODE_MULTIPLAYER) ? "[E]  OPEN BLAST DOOR" : "[E]  OPEN DOOR";
+            text(ax - 160, ay + 34, 320, 20, Qt::AlignCenter, prompt, (m_gameMode == MODE_MULTIPLAYER) ? QColor(255, 215, 60, int(200 + 55 * std::sin(m_time * 7))) : QColor(220, 220, 220, int(190 + 50 * std::sin(m_time * 6))), 13, 800);
+        }
     }
     if (m_headshotBanner > 0) {
         float t = m_headshotBanner / 1.3f;
@@ -392,17 +402,19 @@ void MainWindow::renderCompass()
 
     m_cv.tri(cx - 6, y0 - 1, cx + 6, y0 - 1, cx, y0 + 6, AMBER);
     text(cx - 40, y0 + hgt + 4, 80, 14, Qt::AlignCenter, QString::number(int(head)) + QChar(0x00B0), QColor(230, 230, 230), 11, 600);
-    text(cx - 160, y0 + hgt + 20, 320, 16, Qt::AlignCenter,
-         QString("HOSTILES REMAINING   %1      SECRETS   %2 / %3").arg(aliveEnemies())
-             .arg(m_gs.secretsFound).arg(m_gs.secretsTotal), QColor(255, 210, 140), 12, 700);
-    // Every remaining enemy hidden behind an unopened secret wall: tell the player where to look
-    int alive = 0, hidden = 0;
-    for (const Enemy &e : m_gs.enemies) if (e.alive) { alive++; if (!reachable(int(e.x), int(e.y))) hidden++; }
-    if (alive > 0 && hidden == alive)
-        text(cx - 220, y0 + hgt + 36, 440, 14, Qt::AlignCenter, "LAST HOSTILES ARE IN A HIDDEN AREA  -  SEARCH WALLS WITH [E]",
-             QColor(255, 120, 90, int(190 + 60 * std::sin(m_time * 5))), 11, 800);
-    else if (alive > 0 && alive <= 3)
-        text(cx - 220, y0 + hgt + 36, 440, 14, Qt::AlignCenter, "LAST HOSTILES MARKED ON RADAR", QColor(255, 160, 120), 11, 700);
+    if (m_gameMode != MODE_MULTIPLAYER) {
+        text(cx - 160, y0 + hgt + 20, 320, 16, Qt::AlignCenter,
+             QString("HOSTILES REMAINING   %1      SECRETS   %2 / %3").arg(aliveEnemies())
+                 .arg(m_gs.secretsFound).arg(m_gs.secretsTotal), QColor(255, 210, 140), 12, 700);
+        // Every remaining enemy hidden behind an unopened secret wall: tell the player where to look
+        int alive = 0, hidden = 0;
+        for (const Enemy &e : m_gs.enemies) if (e.alive) { alive++; if (!reachable(int(e.x), int(e.y))) hidden++; }
+        if (alive > 0 && hidden == alive)
+            text(cx - 220, y0 + hgt + 36, 440, 14, Qt::AlignCenter, "LAST HOSTILES ARE IN A HIDDEN AREA  -  SEARCH WALLS WITH [E]",
+                 QColor(255, 120, 90, int(190 + 60 * std::sin(m_time * 5))), 11, 800);
+        else if (alive > 0 && alive <= 3)
+            text(cx - 220, y0 + hgt + 36, 440, 14, Qt::AlignCenter, "LAST HOSTILES MARKED ON RADAR", QColor(255, 160, 120), 11, 700);
+    }
 }
 
 void MainWindow::renderMinimap()
@@ -462,9 +474,24 @@ void MainWindow::renderMinimap()
         bool alert = e.state == ES_ALERT || aliveEnemies() <= 3;   // stragglers are revealed
         if (toMap(e.x, e.y, sx, sy, alert)) m_cv.fillCircle(int(sx), int(sy), alert && blink ? 4 : 3, alert ? RED : rgb(220, 120, 110));
     }
+    int myTeam = 0;
+    bool isMp = (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive());
+    if (isMp) {
+        for (const auto &s : m_net->playerSlots()) if (s.id == m_net->localPlayerId()) myTeam = s.team;
+    }
     for (const Actor &a : m_gs.actors) {
         if (!a.alive) continue;
-        if (toMap(a.posX, a.posY, sx, sy, true)) { m_cv.fillCircle(int(sx), int(sy), 3, rgb(80, 170, 255)); m_cv.ring(int(sx), int(sy), 3.5f, 4.5f, withAlpha(0xFFFFFFFF, 160)); }
+        if (toMap(a.posX, a.posY, sx, sy, true)) {
+            if (isMp) {
+                bool isEnemy = (a.team != myTeam);
+                uint32_t dotCol = isEnemy ? RED : rgb(80, 170, 255);
+                m_cv.fillCircle(int(sx), int(sy), isEnemy ? 4 : 3, dotCol);
+                m_cv.ring(int(sx), int(sy), isEnemy ? 4.5f : 3.5f, isEnemy ? 6.0f : 4.5f, isEnemy ? withAlpha(RED, 220) : withAlpha(0xFFFFFFFF, 160));
+            } else {
+                m_cv.fillCircle(int(sx), int(sy), 3, rgb(80, 170, 255));
+                m_cv.ring(int(sx), int(sy), 3.5f, 4.5f, withAlpha(0xFFFFFFFF, 160));
+            }
+        }
     }
     for (const Turret &t : m_gs.turrets) if (toMap(t.x, t.y, sx, sy, true)) m_cv.fillRect(int(sx) - 2, int(sy) - 2, 5, 5, rgb(96, 192, 255));
     // player arrow
@@ -719,16 +746,35 @@ void MainWindow::renderHitMarkers()
 // Squad name tags + health over their heads (depth-tested against the world)
 void MainWindow::renderSquadTags()
 {
+    bool isMp = (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive());
+    int myTeam = 0;
+    if (isMp) {
+        for (const auto &s : m_net->playerSlots()) if (s.id == m_net->localPlayerId()) myTeam = s.team;
+    }
+
     for (const Actor &a : m_gs.actors) {
         if (!a.alive) continue;
         float sx, sy, d;
         if (!project(a.posX, a.posY, a.footZ + 1.05f, sx, sy, d) || d < 0.5f || d > 40.f) continue;
         bool visible = d < m_depth[size_t(clampi(int(sy), 0, H - 1)) * W + clampi(int(sx), 0, W - 1)] + 0.5f;
         int alpha = visible ? 230 : 110;
-        text(sx - 40, sy - 16, 80, 12, Qt::AlignCenter, a.name, QColor(110, 190, 255, alpha), 9, 800);
-        float frac = a.hp / 120.f;
-        m_cv.blendRect(int(sx) - 16, int(sy) - 3, 32, 4, withAlpha(0, alpha / 2));
-        m_cv.blendRect(int(sx) - 16, int(sy) - 3, int(32 * clampf(frac, 0.f, 1.f)), 4, withAlpha(rgb(90, 180, 255), alpha));
+
+        if (isMp) {
+            bool isEnemy = (a.team != myTeam);
+            QColor tagCol = isEnemy ? QColor(255, 75, 75, alpha) : QColor(110, 190, 255, alpha);
+            QString label = isEnemy ? QString("%1 [ENEMY]").arg(a.name) : QString("%1 [ALLY]").arg(a.name);
+            text(sx - 50, sy - 16, 100, 12, Qt::AlignCenter, label, tagCol, 9, 800);
+
+            float frac = a.hp / 120.f;
+            m_cv.blendRect(int(sx) - 16, int(sy) - 3, 32, 4, withAlpha(0, alpha / 2));
+            uint32_t barCol = isEnemy ? RED : rgb(90, 180, 255);
+            m_cv.blendRect(int(sx) - 16, int(sy) - 3, int(32 * clampf(frac, 0.f, 1.f)), 4, withAlpha(barCol, alpha));
+        } else {
+            text(sx - 40, sy - 14, 80, 12, Qt::AlignCenter, a.name, QColor(110, 190, 255, alpha), 9, 800);
+            float frac = a.hp / 120.f;
+            m_cv.blendRect(int(sx) - 16, int(sy) - 3, 32, 4, withAlpha(0, alpha / 2));
+            m_cv.blendRect(int(sx) - 16, int(sy) - 3, int(32 * clampf(frac, 0.f, 1.f)), 4, withAlpha(rgb(90, 180, 255), alpha));
+        }
     }
 }
 
@@ -1148,18 +1194,19 @@ void MainWindow::renderMenu()
     text(70, 182, 520, 30, Qt::AlignLeft | Qt::AlignVCenter, "T A C T I C A L   S H O O T E R", qc(AMBER), 18, 700);
     text(70, 212, 520, 18, Qt::AlignLeft, "Every pixel is computed on the CPU  -  pure software rasterization", QColor(170, 175, 180), 12, 500);
 
-    const char *opts[7] = { "CAMPAIGN", "FREE PLAY", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "EXIT" };
-    for (int i = 0; i < 7; i++) {
+    const char *opts[8] = { "CAMPAIGN", "FREE PLAY", "MULTIPLAYER", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "EXIT" };
+    for (int i = 0; i < 8; i++) {
         bool sel = m_menuCursor == i;
-        int x = 48, y = 236 + i * 46, w = 300, h = 40;
+        int x = 48, y = 230 + i * 40, w = 300, h = 36;
         m_menuRects.push_back({x, y, w, h, i});
         if (sel) {
             m_cv.hGrad(x, y, w, h, withAlpha(AMBER, 70), withAlpha(AMBER, 0));
             m_cv.fillRect(x, y, 4, h, AMBER);
         } else m_cv.hGrad(x, y, w, h, withAlpha(0xFFFFFFFF, 14), withAlpha(0xFFFFFFFF, 0));
-        text(x + 22, y, w, h, Qt::AlignLeft | Qt::AlignVCenter, opts[i], sel ? QColor(255, 255, 255) : QColor(175, 175, 175), 20, sel ? 800 : 600);
-        if (sel) text(x + w - 60, y, 50, h, Qt::AlignRight | Qt::AlignVCenter, ">", qc(AMBER), 20, 800, false);
+        text(x + 22, y, w, h, Qt::AlignLeft | Qt::AlignVCenter, opts[i], sel ? QColor(255, 255, 255) : QColor(175, 175, 175), 18, sel ? 800 : 600);
+        if (sel) text(x + w - 60, y, 50, h, Qt::AlignRight | Qt::AlignVCenter, ">", qc(AMBER), 18, 800, false);
     }
+
 
     // Controls card
     const int cx = W - 300, cy = 244, cw = 270, ch = 270;
@@ -1185,7 +1232,7 @@ void MainWindow::renderMenu()
 void MainWindow::renderMapSelect()
 {
     menuHeader("STEP 1 / 3", "SELECT DEPLOYMENT ZONE");
-    static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  DUNES", "SWAMP  |  BOG + TREES", "SNOW  |  64x64", "CITY RUINS  |  64x64", "FACILITY  |  56x56" };
+    static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  DUNES", "SWAMP  |  BOG + TREES", "SNOW  |  64x64", "CITY RUINS  |  64x64", "FACILITY  |  56x56", "CITADEL  |  48x48" };
     for (int i = 0; i < MAP_COUNT; i++) {
         bool sel = m_mapChoice == i;
         int w = 244, h = 228, col = i % 3, row = i / 3;
@@ -1288,3 +1335,329 @@ void MainWindow::renderCharSelect()
     }
     menuFooter("LEFT/RIGHT browse   ENTER or 1-3 deploy   ESC back");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Multiplayer Lobby (Sector War)
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::renderMultiplayerLobby()
+{
+    menuHeader("TACTICAL MULTIPLAYER", "SECTOR WAR  |  LOBBY");
+
+    // Network Status Banner
+    const int bx = 32, by = 64, bw = W - 64, bh = 40;
+    panel(bx, by, bw, bh, false, AMBER);
+
+    QString statusText = m_net->isHost() ? QString("HOSTING ON PORT %1").arg(MP_DEFAULT_PORT)
+                                         : (m_net->isConnected() ? "CLIENT CONNECTED" : "OFFLINE / DISCONNECTED");
+    text(bx + 12, by + 4, 155, 16, Qt::AlignLeft, statusText, m_net->isConnected() ? QColor(90, 230, 140) : QColor(255, 120, 90), 10, 800, false);
+    text(bx + 12, by + 20, 155, 14, Qt::AlignLeft, QString("ROOM: %1").arg(m_net->settings().roomCode), QColor(200, 200, 200), 10, 600, false);
+
+    // Callsign (Username) entry box (id 8)
+    int nameX = bx + 172, nameY = by + 6, nameW = 180, nameH = 28;
+    m_cv.blendRect(nameX, nameY, nameW, nameH, withAlpha(UI_BG, 240));
+    m_cv.rectOutline(nameX, nameY, nameW, nameH, m_mpTypingName ? AMBER : withAlpha(0xFFFFFFFF, 60), m_mpTypingName ? 2 : 1);
+    m_menuRects.push_back({nameX, nameY, nameW, nameH, 8}); // id 8 = edit callsign
+    QString nameDisplay = m_mpTypingName ? QString("NAME: %1_").arg(m_mpPlayerName)
+                                         : QString("NAME: %1").arg(m_mpPlayerName);
+    text(nameX + 8, nameY + 2, nameW - 16, nameH - 4, Qt::AlignLeft | Qt::AlignVCenter, nameDisplay,
+         m_mpTypingName ? QColor(255, 230, 100) : QColor(220, 220, 220), 10, 700, false);
+
+    // IP / Tunnel entry box (id 9)
+    int ipX = nameX + nameW + 8, ipY = by + 6, ipW = bw - (ipX - bx) - 180, ipH = 28;
+    m_cv.blendRect(ipX, ipY, ipW, ipH, withAlpha(UI_BG, 240));
+    m_cv.rectOutline(ipX, ipY, ipW, ipH, m_mpTypingAddr ? AMBER : withAlpha(0xFFFFFFFF, 60), m_mpTypingAddr ? 2 : 1);
+    m_menuRects.push_back({ipX, ipY, ipW, ipH, 9}); // id 9 = edit IP
+    QString addrDisplay = m_mpTypingAddr ? QString("TARGET: %1_").arg(m_mpInputAddr)
+                                         : QString("TARGET: %1").arg(m_mpInputAddr);
+    text(ipX + 8, ipY + 2, ipW - 16, ipH - 4, Qt::AlignLeft | Qt::AlignVCenter, addrDisplay,
+         m_mpTypingAddr ? QColor(255, 230, 100) : QColor(220, 220, 220), 10, 700, false);
+
+    // Host & Join Buttons
+    int btnW = 82, btnH = 28, btnY = by + 6;
+    int hX = bx + bw - 174, jX = bx + bw - 88;
+    m_cv.blendRect(hX, btnY, btnW, btnH, withAlpha(m_net->isHost() ? AMBER : UI_BG, 200));
+    m_cv.rectOutline(hX, btnY, btnW, btnH, m_net->isHost() ? 0xFFFFFFFF : withAlpha(AMBER, 180), 1);
+    m_menuRects.push_back({hX, btnY, btnW, btnH, 6}); // id 6 = host
+    text(hX, btnY, btnW, btnH, Qt::AlignCenter, "[H] HOST", m_net->isHost() ? QColor(20, 20, 20) : QColor(255, 255, 255), 11, 800, false);
+
+    m_cv.blendRect(jX, btnY, btnW, btnH, withAlpha(!m_net->isHost() && m_net->isConnected() ? GREEN : UI_BG, 200));
+    m_cv.rectOutline(jX, btnY, btnW, btnH, withAlpha(0xFFFFFFFF, 160), 1);
+    m_menuRects.push_back({jX, btnY, btnW, btnH, 7}); // id 7 = join
+    text(jX, btnY, btnW, btnH, Qt::AlignCenter, "[J] JOIN", QColor(255, 255, 255), 11, 800, false);
+
+    // Host Match Settings Bar (Team Size, Bot Toggle, Round Time, Series Length, Map)
+    const int sy = by + bh + 6, sh = 30;
+    const MpRoomSettings &st = m_net->settings();
+    bool isHost = m_net->isHost();
+
+    // 1. Team Size Button (id 20)
+    int s1X = bx, s1W = 120;
+    m_cv.blendRect(s1X, sy, s1W, sh, withAlpha(UI_BG, 230));
+    m_cv.rectOutline(s1X, sy, s1W, sh, isHost ? AMBER : withAlpha(0xFFFFFFFF, 40), 1);
+    if (isHost) m_menuRects.push_back({s1X, sy, s1W, sh, 20});
+    text(s1X, sy, s1W, sh, Qt::AlignCenter, QString("MODE: %1v%1").arg(st.teamSize), isHost ? QColor(255, 215, 60) : QColor(200, 200, 200), 10, 800, false);
+
+    // 2. Bot Toggle Button (id 21)
+    int s2X = s1X + s1W + 8, s2W = 120;
+    m_cv.blendRect(s2X, sy, s2W, sh, withAlpha(UI_BG, 230));
+    m_cv.rectOutline(s2X, sy, s2W, sh, isHost ? (st.botFill ? GREEN : RED) : withAlpha(0xFFFFFFFF, 40), 1);
+    if (isHost) m_menuRects.push_back({s2X, sy, s2W, sh, 21});
+    text(s2X, sy, s2W, sh, Qt::AlignCenter, st.botFill ? "BOTS: ON" : "BOTS: OFF (PvP)", st.botFill ? QColor(90, 240, 140) : QColor(255, 90, 80), 10, 800, false);
+
+    // 3. Round Duration Button (id 22)
+    int s3X = s2X + s2W + 8, s3W = 130;
+    m_cv.blendRect(s3X, sy, s3W, sh, withAlpha(UI_BG, 230));
+    m_cv.rectOutline(s3X, sy, s3W, sh, isHost ? AMBER : withAlpha(0xFFFFFFFF, 40), 1);
+    if (isHost) m_menuRects.push_back({s3X, sy, s3W, sh, 22});
+    text(s3X, sy, s3W, sh, Qt::AlignCenter, QString("TIME: %1 MIN").arg(st.roundDuration / 60), isHost ? QColor(255, 215, 60) : QColor(200, 200, 200), 10, 800, false);
+
+    // 4. Series Length Button (id 23)
+    int s4X = s3X + s3W + 8, s4W = 150;
+    m_cv.blendRect(s4X, sy, s4W, sh, withAlpha(UI_BG, 230));
+    m_cv.rectOutline(s4X, sy, s4W, sh, isHost ? AMBER : withAlpha(0xFFFFFFFF, 40), 1);
+    if (isHost) m_menuRects.push_back({s4X, sy, s4W, sh, 23});
+    QString seriesName = (st.roundsToWin == 1) ? "BEST OF 1" : (st.roundsToWin == 2) ? "BEST OF 3" : "BEST OF 5";
+    text(s4X, sy, s4W, sh, Qt::AlignCenter, seriesName, isHost ? QColor(255, 215, 60) : QColor(200, 200, 200), 10, 800, false);
+
+    // 5. Map Choice Button (id 24)
+    int s5X = s4X + s4W + 8, s5W = bw - (s5X - bx);
+    m_cv.blendRect(s5X, sy, s5W, sh, withAlpha(UI_BG, 230));
+    m_cv.rectOutline(s5X, sy, s5W, sh, isHost ? AMBER : withAlpha(0xFFFFFFFF, 40), 1);
+    if (isHost) m_menuRects.push_back({s5X, sy, s5W, sh, 24});
+    QString mapName = (st.mapChoice == 6) ? "CITADEL & BUNKER" : (st.mapChoice == 5) ? "HELIX FACILITY" : (st.mapChoice == 4) ? "ASHEN CITY" : "DUNE OUTPOST";
+    text(s5X, sy, s5W, sh, Qt::AlignCenter, QString("MAP: %1").arg(mapName), isHost ? QColor(90, 210, 255) : QColor(200, 200, 200), 10, 800, false);
+
+    // Two Team Columns: Team Alpha (Red) & Team Bravo (Blue)
+    const int colW = (W - 80) / 2, colH = 295, colY = sy + sh + 8;
+    int aX = 32, bX = 48 + colW;
+
+    // Team Alpha Box
+    panel(aX, colY, colW, colH, false, RED);
+    m_cv.fillRect(aX, colY, colW, 26, withAlpha(RED, 220));
+    text(aX + 16, colY + 3, colW - 32, 20, Qt::AlignLeft | Qt::AlignVCenter, "TEAM ALPHA  (RED)", QColor(255, 255, 255), 13, 900, false);
+
+    // Team Bravo Box
+    panel(bX, colY, colW, colH, false, 0xFF3AB4E8);
+    m_cv.fillRect(bX, colY, colW, 26, withAlpha(0xFF2878D0, 220));
+    text(bX + 16, colY + 3, colW - 32, 20, Qt::AlignLeft | Qt::AlignVCenter, "TEAM BRAVO  (BLUE)", QColor(255, 255, 255), 13, 900, false);
+
+    // Populate player slots in Alpha and Bravo
+    int alphaRow = 0, bravoRow = 0;
+    for (const auto &slot : m_net->playerSlots()) {
+        bool isAlpha = (slot.team == 0);
+        int curRow = isAlpha ? alphaRow++ : bravoRow++;
+        if (curRow >= st.teamSize && curRow >= 4) continue;
+
+        int sx = isAlpha ? aX + 8 : bX + 8;
+        int sySlot = colY + 32 + curRow * 48;
+        int sw = colW - 16, shSlot = 42;
+
+        bool isMe = (slot.id == m_net->localPlayerId());
+        m_cv.blendRect(sx, sySlot, sw, shSlot, withAlpha(UI_BG, 220));
+        m_cv.rectOutline(sx, sySlot, sw, shSlot, isMe ? AMBER : withAlpha(0xFFFFFFFF, 40), isMe ? 2 : 1);
+
+        // Operative Name
+        QString dispName = slot.name;
+        if (slot.isHost) dispName += " [HOST]";
+        if (slot.isBot) dispName += " [BOT]";
+        if (isMe) dispName += " (YOU)";
+        text(sx + 8, sySlot + 3, 165, 18, Qt::AlignLeft, dispName, isMe ? QColor(255, 230, 100) : QColor(240, 240, 240), 11, 800, false);
+
+        // Class badge
+        const char *clsNames[3] = { "ASSAULT", "SCOUT", "TANK" };
+        uint32_t clsCols[3] = { 0xFFE89A3A, 0xFF5AE68C, 0xFF4AE0FF };
+        int ci = clampi(int(slot.cls), 0, 2);
+        m_cv.blendRect(sx + 8, sySlot + 23, 70, 14, withAlpha(clsCols[ci], 180));
+        text(sx + 8, sySlot + 23, 70, 14, Qt::AlignCenter, clsNames[ci], QColor(15, 15, 15), 9, 900, false);
+
+        // Ready badge
+        int readyW = 60, readyX = sx + sw - (isHost && !slot.isHost ? 90 : 66);
+        if (slot.ready) {
+            m_cv.blendRect(readyX, sySlot + 11, readyW, 20, withAlpha(GREEN, 200));
+            text(readyX, sySlot + 11, readyW, 20, Qt::AlignCenter, "READY", QColor(10, 10, 10), 9, 900, false);
+        } else {
+            m_cv.blendRect(readyX, sySlot + 11, readyW, 20, withAlpha(0xFF4A5058, 160));
+            text(readyX, sySlot + 11, readyW, 20, Qt::AlignCenter, "WAITING", QColor(200, 200, 200), 9, 700, false);
+        }
+
+        // Host Kick Button [X]
+        if (isHost && !slot.isHost) {
+            int kX = sx + sw - 24, kY = sySlot + 11, kW = 20, kH = 20;
+            m_cv.blendRect(kX, kY, kW, kH, withAlpha(RED, 210));
+            m_cv.rectOutline(kX, kY, kW, kH, 0xFFFFFFFF, 1);
+            m_menuRects.push_back({kX, kY, kW, kH, 100 + slot.id}); // id 100+slot.id = Kick
+            text(kX, kY, kW, kH, Qt::AlignCenter, "X", QColor(255, 255, 255), 10, 900, false);
+        }
+    }
+
+    // Bottom Action Buttons:
+    int byRow = H - 54;
+    int b1W = 115, b1H = 34;
+
+    m_cv.blendRect(32, byRow, b1W, b1H, withAlpha(RED, 160));
+    m_cv.rectOutline(32, byRow, b1W, b1H, withAlpha(RED, 240), 1);
+    m_menuRects.push_back({32, byRow, b1W, b1H, 1}); // id 1 = Alpha
+    text(32, byRow, b1W, b1H, Qt::AlignCenter, "[1] TEAM ALPHA", QColor(255, 255, 255), 10, 800, false);
+
+    m_cv.blendRect(155, byRow, b1W, b1H, withAlpha(0xFF2878D0, 160));
+    m_cv.rectOutline(155, byRow, b1W, b1H, withAlpha(0xFF2878D0, 240), 1);
+    m_menuRects.push_back({155, byRow, b1W, b1H, 2}); // id 2 = Bravo
+    text(155, byRow, b1W, b1H, Qt::AlignCenter, "[2] TEAM BRAVO", QColor(255, 255, 255), 10, 800, false);
+
+    m_cv.blendRect(278, byRow, 125, b1H, withAlpha(AMBER, 160));
+    m_cv.rectOutline(278, byRow, 125, b1H, withAlpha(AMBER, 240), 1);
+    m_menuRects.push_back({278, byRow, 125, b1H, 3}); // id 3 = Class
+    text(278, byRow, 125, b1H, Qt::AlignCenter, "[C] CYCLE CLASS", QColor(255, 255, 255), 10, 800, false);
+
+    m_cv.blendRect(411, byRow, 110, b1H, withAlpha(GREEN, 160));
+    m_cv.rectOutline(411, byRow, 110, b1H, withAlpha(GREEN, 240), 1);
+    m_menuRects.push_back({411, byRow, 110, b1H, 4}); // id 4 = Ready
+    text(411, byRow, 110, b1H, Qt::AlignCenter, "[R] TOGGLE READY", QColor(255, 255, 255), 10, 800, false);
+
+    if (m_net->isHost()) {
+        m_cv.blendRect(529, byRow, W - 32 - 529, b1H, withAlpha(GREEN, 230));
+        m_cv.rectOutline(529, byRow, W - 32 - 529, b1H, 0xFFFFFFFF, 2);
+        m_menuRects.push_back({529, byRow, W - 32 - 529, b1H, 5}); // id 5 = Start
+        text(529, byRow, W - 32 - 529, b1H, Qt::AlignCenter, "[ENTER] START MATCH", QColor(10, 10, 10), 12, 900, false);
+    } else {
+        m_cv.blendRect(529, byRow, W - 32 - 529, b1H, withAlpha(UI_BG, 200));
+        m_cv.rectOutline(529, byRow, W - 32 - 529, b1H, withAlpha(0xFFFFFFFF, 40), 1);
+        QString waitText = m_net->isConnected() ? "WAITING FOR HOST TO START" : "OFFLINE - CLICK [H] OR [J]";
+        text(529, byRow, W - 32 - 529, b1H, Qt::AlignCenter, waitText, m_net->isConnected() ? QColor(90, 230, 140) : QColor(255, 120, 90), 10, 800, false);
+    }
+
+    menuFooter("[ESC] Menu   [H] Host   [J] Join   [N] Callsign   [1]/[2] Team   [C] Class   [R] Ready   [Click to edit/select]");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  In-Game Multiplayer HUD
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::renderMultiplayerHUD()
+{
+    const MpMatchState &ms = m_net->matchState();
+
+    // Top Match Scoreboard Banner
+    const int bw = 460, bh = 34, bx = W / 2 - bw / 2, by = 10;
+    m_cv.blendRect(bx, by, bw, bh, withAlpha(UI_BG, 220));
+    m_cv.rectOutline(bx, by, bw, bh, withAlpha(0xFFFFFFFF, 50), 1);
+
+    // Alpha Score
+    m_cv.fillRect(bx, by, 140, bh, withAlpha(RED, 210));
+    text(bx + 10, by, 120, bh, Qt::AlignCenter, QString("ALPHA: %1").arg(ms.teamScore[0]), QColor(255, 255, 255), 14, 900);
+
+    // Center Round & Time
+    int mins = int(ms.roundTimer) / 60, secs = int(ms.roundTimer) % 60;
+    QString timeStr = QString("R%1  %2:%3").arg(ms.currentRound).arg(mins, 2, 10, QChar('0')).arg(secs, 2, 10, QChar('0'));
+    text(bx + 140, by, bw - 280, bh, Qt::AlignCenter, timeStr, QColor(255, 220, 80), 13, 800);
+
+    // Bravo Score
+    m_cv.fillRect(bx + bw - 140, by, 140, bh, withAlpha(0xFF2878D0, 210));
+    text(bx + bw - 130, by, 120, bh, Qt::AlignCenter, QString("BRAVO: %1").arg(ms.teamScore[1]), QColor(255, 255, 255), 14, 900);
+
+    // Objective Banner
+    int obW = 420, obH = 22, obX = W / 2 - obW / 2, obY = by + bh + 4;
+    m_cv.blendRect(obX, obY, obW, obH, withAlpha(UI_BG, 200));
+
+    if (!ms.keyActive && !ms.vaultUnlocked) {
+        int left = std::max(0, int(ms.roundTimer - (float(m_net->settings().roundDuration) - 120.f)));
+        text(obX, obY, obW, obH, Qt::AlignCenter, QString("VAULT KEY ARRIVING IN %1s").arg(left), QColor(190, 190, 190), 10, 700, false);
+    } else if (ms.keyActive && ms.keyCarrier < 0) {
+        m_cv.rectOutline(obX, obY, obW, obH, 0xFFFFD700, 1);
+        text(obX, obY, obW, obH, Qt::AlignCenter, "[!] ENCRYPTION KEY IS IN SUB-LEVEL VAULT (Z: -1.8)!", QColor(255, 225, 60), 10, 800, false);
+    } else if (ms.keyActive && ms.keyCarrier >= 0) {
+        m_cv.rectOutline(obX, obY, obW, obH, 0xFFFFD700, 1);
+        text(obX, obY, obW, obH, Qt::AlignCenter, "[!] KEY CARRIED -> DELIVER TO NORTH CATWALK TERMINAL!", QColor(255, 215, 40), 10, 800, false);
+    } else if (ms.vaultUnlocked) {
+        m_cv.rectOutline(obX, obY, obW, obH, GREEN, 1);
+        text(obX, obY, obW, obH, Qt::AlignCenter, "[VAULT UNLOCKED] POWER WEAPONS ACCESSIBLE IN BASEMENT", qc(GREEN), 10, 800, false);
+    }
+
+    // Dead / Respawning Screen Overlay
+    if (m_gs.player.hp <= 0 && ms.inRound) {
+        m_cv.blendRect(0, 0, W, H, withAlpha(RED, 60));
+        int dy = H / 2 - 40;
+        text(0, dy, W, 36, Qt::AlignCenter, "ELIMINATED IN ACTION", QColor(255, 80, 70), 28, 900);
+        text(0, dy + 40, W, 22, Qt::AlignCenter, "HOLDING WEAPON DROPPED AS WORLD LOOT", QColor(240, 240, 240), 13, 700);
+        int secLeft = std::max(1, int(m_mpRespawnCountdown + 0.99f));
+        text(0, dy + 68, W, 22, Qt::AlignCenter, QString("RESPAWNING WITH STANDARD CLASS LOADOUT IN %1s...").arg(secLeft), QColor(255, 220, 90), 13, 700);
+    }
+
+    // Round Intermission Overlay (Displays after every round)
+    if (ms.roundOver && !ms.matchOver) {
+        int rw = 540, rh = 180, rx = W / 2 - rw / 2, ry = H / 2 - rh / 2;
+        m_cv.blendRect(rx, ry, rw, rh, withAlpha(UI_BG, 245));
+        m_cv.rectOutline(rx, ry, rw, rh, AMBER, 2);
+
+        text(rx, ry + 12, rw, 28, Qt::AlignCenter, QString("ROUND %1 FINISHED").arg(ms.currentRound), QColor(255, 215, 60), 20, 900);
+
+        QString winStr = (ms.roundWinner == 0) ? "★ TEAM ALPHA WINS THE ROUND ★" :
+                         (ms.roundWinner == 1) ? "★ TEAM BRAVO WINS THE ROUND ★" : "ROUND TIED — NO WINNER";
+        uint32_t winCol = (ms.roundWinner == 0) ? RED : (ms.roundWinner == 1) ? 0xFF2878D0 : AMBER;
+        text(rx, ry + 48, rw, 32, Qt::AlignCenter, winStr, qc(winCol), 20, 900);
+
+        QString seriesStr = QString("SERIES STANDINGS:  ALPHA [ %1 ]  —  [ %2 ] BRAVO    (FIRST TO %3)")
+                                .arg(ms.roundsWon[0]).arg(ms.roundsWon[1]).arg(m_net->settings().roundsToWin);
+        text(rx, ry + 88, rw, 22, Qt::AlignCenter, seriesStr, QColor(230, 230, 230), 13, 800);
+
+        int nextSec = std::max(1, int(ms.intermissionTimer + 0.99f));
+        text(rx, ry + 128, rw, 24, Qt::AlignCenter, QString("NEXT ROUND BEGINS IN %1s...").arg(nextSec), QColor(90, 230, 140), 14, 800);
+    }
+
+    // Match Over / Victory / Defeat Overlay
+    if (ms.matchOver) {
+        int mw = 600, mh = 220, mx = W / 2 - mw / 2, my = H / 2 - mh / 2;
+        m_cv.blendRect(mx, my, mw, mh, withAlpha(UI_BG, 250));
+        uint32_t champCol = (ms.winningTeam == 0) ? RED : 0xFF2878D0;
+        m_cv.rectOutline(mx, my, mw, mh, champCol, 3);
+
+        int myTeam = 0;
+        for (const auto &s : m_net->playerSlots()) if (s.id == m_net->localPlayerId()) myTeam = s.team;
+        bool victory = (ms.winningTeam == myTeam);
+
+        text(mx, my + 14, mw, 36, Qt::AlignCenter, victory ? "★ TOURNAMENT VICTORY ★" : "MATCH DEFEAT",
+             victory ? QColor(90, 240, 140) : QColor(255, 70, 60), 28, 900);
+
+        QString champStr = (ms.winningTeam == 0) ? "TEAM ALPHA HAS SECURED THE SECTOR" : "TEAM BRAVO HAS SECURED THE SECTOR";
+        text(mx, my + 58, mw, 24, Qt::AlignCenter, champStr, qc(champCol), 15, 800);
+
+        QString finalStr = QString("FINAL SERIES:  ALPHA %1  —  %2 BRAVO").arg(ms.roundsWon[0]).arg(ms.roundsWon[1]);
+        text(mx, my + 94, mw, 24, Qt::AlignCenter, finalStr, QColor(240, 240, 240), 14, 800);
+
+        text(mx, my + 148, mw, 28, Qt::AlignCenter, "[ENTER] OR [ESC] RETURN TO LOBBY", QColor(255, 215, 60), 14, 900);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Multiplayer Scoreboard (Tab / F1)
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::renderScoreboard()
+{
+    const int sw = 620, sh = 360, sx = W / 2 - sw / 2, sy = H / 2 - sh / 2;
+    panel(sx, sy, sw, sh, true, AMBER);
+
+    text(sx, sy + 10, sw, 24, Qt::AlignCenter, "SECTOR WAR  -  TACTICAL SCOREBOARD", qc(AMBER), 16, 900);
+
+    auto renderTeamTable = [this](int team, int tx, int ty, int tw, const QString &tName, uint32_t tCol) {
+        m_cv.fillRect(tx, ty, tw, 22, withAlpha(tCol, 220));
+        text(tx + 8, ty + 2, 160, 18, Qt::AlignLeft, tName, QColor(255, 255, 255), 12, 900, false);
+        text(tx + tw - 80, ty + 2, 70, 18, Qt::AlignRight, "SCORE", QColor(255, 255, 255), 10, 800, false);
+
+        int rowY = ty + 24;
+        for (const auto &slot : m_net->playerSlots()) {
+            if (slot.team != team) continue;
+            m_cv.blendRect(tx, rowY, tw, 20, withAlpha(0xFFFFFFFF, (slot.id == m_net->localPlayerId()) ? 30 : 10));
+            text(tx + 8, rowY + 2, 160, 16, Qt::AlignLeft, slot.name + (slot.isBot ? " [BOT]" : ""),
+                 (slot.id == m_net->localPlayerId()) ? QColor(255, 220, 80) : QColor(220, 220, 220), 10, 700, false);
+            const char *cName = (slot.cls == CLS_SCOUT) ? "SCOUT" : (slot.cls == CLS_TANK) ? "TANK" : "ASSAULT";
+            text(tx + 180, rowY + 2, 70, 16, Qt::AlignCenter, cName, QColor(170, 175, 180), 9, 600, false);
+            text(tx + tw - 70, rowY + 2, 60, 16, Qt::AlignRight, QString("%1 PTS").arg(slot.score), QColor(255, 255, 255), 10, 800, false);
+            rowY += 22;
+        }
+    };
+
+    renderTeamTable(0, sx + 20, sy + 44, sw - 40, "TEAM ALPHA (RED SQUAD)", RED);
+    renderTeamTable(1, sx + 20, sy + 184, sw - 40, "TEAM BRAVO (BLUE SQUAD)", 0xFF2878D0);
+
+    text(sx, sy + sh - 26, sw, 18, Qt::AlignCenter, "[TAB] or [F1] to close scoreboard", QColor(160, 160, 160), 10, 600);
+}
+

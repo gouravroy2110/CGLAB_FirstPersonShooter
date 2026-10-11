@@ -88,13 +88,159 @@ MainWindow::MainWindow(QWidget *parent)
     connect(&m_timer, &QTimer::timeout, this, &MainWindow::tick);
     m_timer.start(16);
     m_clock.start();
+
+    m_net = new NetworkManager(this);
+    connect(m_net, &NetworkManager::matchStarted, this, [this]() {
+        startMultiplayerMatch();
+    });
+    connect(m_net, &NetworkManager::lobbyUpdated, this, [this]() {
+        QWidget::update();
+    });
+    connect(m_net, &NetworkManager::connectionError, this, [this](const QString &err) {
+        pushFeed(err, 4.0f);
+    });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Multiplayer (Sector War) Session Management
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::openMultiplayerLobby()
+{
+    m_gameMode = MODE_MULTIPLAYER;
+    m_campaignRun = false;
+    m_screen = SCR_MULTIPLAYER_LOBBY;
+    m_paused = false;
+    m_mpTypingAddr = false;
+    m_mpTypingName = false;
+    sfx(SND_UI_SELECT, 0.6f);
+    if (!m_net->isConnected()) {
+        QTcpSocket probe;
+        probe.connectToHost(QHostAddress::LocalHost, 7777);
+        if (probe.waitForConnected(80)) {
+            probe.disconnectFromHost();
+            m_mpInputAddr = "127.0.0.1:7777";
+            pushFeed("LOCAL HOST FOUND ON 7777 - CLICK [J] JOIN", 4.0f);
+        } else {
+            m_net->startHost(7777, m_mpPlayerName);
+        }
+    }
+}
+
+void MainWindow::hostMultiplayer()
+{
+    m_net->startHost(7777, m_mpPlayerName);
+    pushFeed("HOSTING SECTOR WAR ON PORT 7777", 3.5f);
+    sfx(SND_UI_SELECT, 0.6f);
+}
+
+void MainWindow::joinMultiplayer()
+{
+    QString target = m_mpInputAddr.trimmed();
+    QString host = target;
+    quint16 port = 7777;
+    int col = target.indexOf(':');
+    if (col >= 0) {
+        host = target.left(col);
+        port = quint16(target.mid(col + 1).toUShort());
+        if (port == 0) port = 7777;
+    }
+    m_net->connectToHost(host, port, m_mpPlayerName);
+    pushFeed("CONNECTING TO " + target, 3.5f);
+    sfx(SND_UI_SELECT, 0.6f);
+}
+
+void MainWindow::startMultiplayerMatch()
+{
+    if (m_screen == SCR_PLAYING) return;
+
+    m_mapChoice = m_net ? m_net->settings().mapChoice : 6;
+    loadMapGeometry(m_mapChoice);
+    m_screen = SCR_PLAYING;
+    m_paused = false;
+    m_campaignRun = false;
+    m_gameMode = MODE_MULTIPLAYER;
+    m_gs = GameState{};
+    m_gs.mapChoice = m_mapChoice;
+    m_gs.level = 1;
+    m_gs.enemies.clear();
+    m_gs.actors.clear();
+    m_loadedMap = m_mapChoice;
+
+    if (m_net->isHost()) {
+        m_net->startMatch();
+    }
+    m_net->resetRound(m_gs, *this, m_parsed[m_mapChoice]);
+
+    Player &pl = m_gs.player;
+    pl.footZ = floorH(pl.posX, pl.posY);
+    pl.velZ = 0.f; pl.velX = 0.f; pl.velY = 0.f;
+    pl.onGround = true;
+    pl.planeX = -pl.dirY * m_planeLen;
+    pl.planeY = pl.dirX * m_planeLen;
+    computeReachable(pl.posX, pl.posY);
+
+    for (auto &a : m_gs.actors) {
+        a.footZ = floorH(a.posX, a.posY);
+        a.velZ = 0.f; a.velX = 0.f; a.velY = 0.f;
+        a.onGround = true;
+        a.planeX = -a.dirY * m_planeLen;
+        a.planeY = a.dirX * m_planeLen;
+    }
+
+    CharClass myCls = CLS_ASSAULT;
+    for (const auto &s : m_net->playerSlots()) {
+        if (s.id == m_net->localPlayerId()) {
+            myCls = s.cls;
+            break;
+        }
+    }
+    m_gs.charClass = myCls;
+    initClassLoadout(m_gs.player, myCls);
+
+    m_keys.clear();
+    m_lmb = false;
+    m_jumpQueued = false;
+    m_tpp = false;
+    m_boomT = 0.f;
+    m_boomCur = 0.f;
+    m_shoulderT = 1.f;
+    m_scopeMag = 4.f;
+    m_adsT = 0.f;
+    m_adsFOVMult = 1.f;
+    m_prevAdsT = 0.f;
+    m_pitch = 0.f;
+    m_recoilPitch = 0.f;
+    m_aimX = W / 2.f;
+    m_aimY = H / 2.f;
+    pl.reloadTimer = 0.f;
+    pl.switchTimer = 0.f;
+    pl.attackCooldown = 0.f;
+    pl.adsMode = false;
+    pl.sprinting = false;
+
+    m_combo = 0; m_comboTimer = 0; m_comboDisplay = 0;
+    m_hitMarker = m_headMarker = m_killMarker = m_headshotBanner = 0; m_damageDirTimer = 0; m_damageMarks.clear();
+    m_killerIdx = -1; m_kcCount = 0; m_kcHead = 0; m_killcamActive = false;
+    m_killFeed.clear(); m_casings.clear();
+    m_emergencyAmmoCooldown = 0.f; m_emergencyHealthCooldown = 0.f;
+
+    setFocus();
+    QCursor::setPos(mapToGlobal(QPoint(width() / 2, height() / 2)));
+    setCursor(Qt::BlankCursor);
+
+    updateAmbience();
+    pushFeed("SECTOR WAR INITIATED - ELIMINATE ENEMY OPERATIVES!", 4.5f, true);
+    sfx(SND_DEPLOY, 0.9f);
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  initGame / loadLevel
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::initGame()
 {
+    m_gameMode = m_campaignRun ? MODE_CAMPAIGN : MODE_FREEPLAY;
+    if (m_net) m_net->disconnectSession();
     m_gs = GameState{};
     m_gs.mapChoice  = m_mapChoice;
     m_gs.charClass  = CharClass(m_charChoice);
@@ -424,7 +570,16 @@ void MainWindow::advance(float dt)
         return;
     }
     if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
+    if (playing && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+        if (m_net->isHost()) {
+            m_net->tickServer(dt, m_gs, *this, m_parsed[m_gs.mapChoice]);
+        } else {
+            m_net->tickClient(dt, m_gs, *this);
+        }
+        m_net->checkObjectiveInteractions(m_gs);
+    }
     if (playing && m_campaignRun && m_gs.gameOver) updateRadio(dt);
+
 
     // ADS blend + FOV
     bool canAim = playing && pl.adsMode && !isMelee(pl.curWeapon) && pl.curWeapon >= 0 && pl.reloadTimer <= 0 && pl.switchTimer <= 0 && !pl.sprinting && !m_gs.gameOver && !m_gs.levelComplete;
@@ -439,7 +594,14 @@ void MainWindow::advance(float dt)
     m_adsFOVMult = 1.f + (adsFov - 1.f) * m_adsT;
     if (m_prevAdsT < 0.5f && m_adsT >= 0.5f) sfx(SND_SCOPE_IN, effectiveScope(pl.curWeapon) ? 0.5f : 0.25f);
     m_prevAdsT = m_adsT;
-    if (playing) updateCamera(dt);
+    if (playing) {
+        float dirLen = std::sqrt(pl.dirX * pl.dirX + pl.dirY * pl.dirY);
+        if (dirLen > 1e-4f) { pl.dirX /= dirLen; pl.dirY /= dirLen; }
+        else { pl.dirX = 1.f; pl.dirY = 0.f; }
+        pl.planeX = -pl.dirY * m_planeLen;
+        pl.planeY = pl.dirX * m_planeLen;
+        updateCamera(dt);
+    }
     updateEnvironment(dt);
     m_edMsgT = std::max(0.f, m_edMsgT - dt);
 
@@ -521,10 +683,16 @@ void MainWindow::advance(float dt)
         m_probeDepth = h.sky ? 1e9f : std::sqrt((h.x - pl.posX) * (h.x - pl.posX) + (h.y - pl.posY) * (h.y - pl.posY));
 
         // Proximity detection for secret walls and doors in front of the player
-        int cand[3][2] = {
+        int cand[12][2] = {
             {int(pl.posX + pl.dirX * 0.7f), int(pl.posY + pl.dirY * 0.7f)},
-            {int(pl.posX + pl.dirX * 1.2f), int(pl.posY + pl.dirY * 1.2f)},
-            {int(pl.posX + pl.dirX * 1.6f), int(pl.posY + pl.dirY * 1.6f)}
+            {int(pl.posX + pl.dirX * 1.3f), int(pl.posY + pl.dirY * 1.3f)},
+            {int(pl.posX + pl.dirX * 1.9f), int(pl.posY + pl.dirY * 1.9f)},
+            {int(pl.posX + pl.dirX * 2.5f), int(pl.posY + pl.dirY * 2.5f)},
+            {int(pl.posX + pl.dirX * 3.1f), int(pl.posY + pl.dirY * 3.1f)},
+            {int(pl.posX) + 1, int(pl.posY)}, {int(pl.posX) - 1, int(pl.posY)},
+            {int(pl.posX), int(pl.posY) + 1}, {int(pl.posX), int(pl.posY) - 1},
+            {int(pl.posX) + 2, int(pl.posY)}, {int(pl.posX) - 2, int(pl.posY)},
+            {int(pl.posX), int(pl.posY) + 2}
         };
         for (auto &c : cand) {
             int nx = c[0], ny = c[1];
@@ -811,13 +979,39 @@ void MainWindow::gameStep(float dt)
     pl.stamina = std::max(0.f, std::min(maxStamina(), pl.stamina));
     pl.sprinting = wantSprint;
 
+    bool mpActive = (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive());
+    if (mpActive && pl.hp <= 0) {
+        if (m_mpRespawnCountdown < 0.f) {
+            m_mpRespawnCountdown = 5.0f;
+        }
+        m_mpRespawnCountdown -= dt;
+        pl.velX = pl.velY = pl.velZ = 0.f;
+        pl.adsMode = false;
+        if (m_mpRespawnCountdown <= 0.f) {
+            m_mpRespawnCountdown = -1.f;
+            m_net->handleRespawn(m_net->localPlayerId(), m_gs, *this, m_parsed[m_gs.mapChoice]);
+            pushFeed("DEPLOYED TO BATTLEFIELD", 2.0f);
+            QVariantMap rev; rev["id"] = m_net->localPlayerId();
+            m_net->broadcastEvent(EV_RESPAWN, rev);
+        }
+    }
+
     // Movement: the keyboard becomes an InputCmd, moved by the same code as every actor
     InputCmd cmd;
-    cmd.forward = float(m_keys.count(Qt::Key_W)) - float(m_keys.count(Qt::Key_S));
-    cmd.strafe  = float(m_keys.count(Qt::Key_D)) - float(m_keys.count(Qt::Key_A));
-    cmd.sprint  = wantSprint;
-    cmd.jump    = m_jumpQueued;
-    cmd.ads     = pl.adsMode;
+    if (mpActive && pl.hp <= 0) {
+        cmd.forward = 0.f;
+        cmd.strafe  = 0.f;
+        cmd.sprint  = false;
+        cmd.jump    = false;
+        cmd.fire    = false;
+        cmd.ads     = false;
+    } else {
+        cmd.forward = float(m_keys.count(Qt::Key_W)) - float(m_keys.count(Qt::Key_S));
+        cmd.strafe  = float(m_keys.count(Qt::Key_D)) - float(m_keys.count(Qt::Key_A));
+        cmd.sprint  = wantSprint;
+        cmd.jump    = m_jumpQueued;
+        cmd.ads     = pl.adsMode;
+    }
     cmd.yaw     = std::atan2(pl.dirY, pl.dirX);
     cmd.seq     = m_gs.frameNum;
     m_jumpQueued = false;
@@ -838,7 +1032,14 @@ void MainWindow::gameStep(float dt)
         if (m_acidSndT <= 0) { sfx(SND_ACID, 0.6f, frand(0.9f, 1.1f)); m_acidSndT = 0.35f; }
         if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.45f, frand(0.95f, 1.05f)); m_hurtSndT = 1.0f; }
         if (m_acidAcc >= 1.f) { int d = int(m_acidAcc); m_acidAcc -= d; pl.hp -= d; m_gs.zoneDamage += d; pl.damageFlash = std::max(pl.damageFlash, 0.2f); }
-        if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
+        if (pl.hp <= 0) {
+            pl.hp = 0; pl.adsMode = false;
+            if (mpActive) {
+                m_net->handleDeathDrop(m_net->localPlayerId(), -1, false, m_gs);
+            } else {
+                m_gs.gameOver = true;
+            }
+        }
     }
     if (moving) pl.bobPhase += dt * (pl.sprinting ? 9.f : 5.5f); else pl.bobPhase *= 0.9f;
     // Footsteps: one per half bob cycle while walking on the ground
@@ -902,8 +1103,14 @@ void MainWindow::gameStep(float dt)
             sfx(SND_HIT_FLESH, 0.6f, frand(0.9f, 1.1f));
             if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.85f, frand(0.93f, 1.07f)); m_hurtSndT = 0.35f; }
             m_damageAngle = std::atan2(-b.dy, -b.dx); m_damageDirTimer = 2.0f;
-            { float bl = std::sqrt(b.dx * b.dx + b.dy * b.dy) + 1e-4f; addDamageMark(b.x - b.dx / bl * 6.f, b.y - b.dy / bl * 6.f, std::min(1.f, dmg / 25.f)); }
-            if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; m_killerIdx = b.shooter; }
+            if (pl.hp <= 0) {
+                pl.hp = 0; pl.adsMode = false; m_killerIdx = b.shooter;
+                if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+                    m_net->handleDeathDrop(m_net->localPlayerId(), b.shooter, false, m_gs);
+                } else {
+                    m_gs.gameOver = true;
+                }
+            }
         }
     }
     m_gs.bullets.erase(std::remove_if(m_gs.bullets.begin(), m_gs.bullets.end(), [](const Bullet &b) { return !b.alive; }), m_gs.bullets.end());
@@ -1579,6 +1786,7 @@ bool MainWindow::findHotZoneDropPos(float &outX, float &outY) const
 void MainWindow::checkEmergencyDrops(float dt)
 {
     if (m_gs.gameOver || m_screen != SCR_PLAYING) return;
+    if (m_net && m_net->isMultiplayerActive()) return;
     Player &pl = m_gs.player;
     if (pl.hp <= 0) return;
 
@@ -1800,12 +2008,13 @@ void MainWindow::menuConfirm()
     sfx(SND_UI_SELECT, 0.6f);
     switch (m_screen) {
     case SCR_MENU:
-        if (m_menuCursor == 0) openCampaign();
-        else if (m_menuCursor == 1) { m_campaignRun = false; m_screen = SCR_MAP_SELECT; }
-        else if (m_menuCursor == 2) m_screen = SCR_ARSENAL;
-        else if (m_menuCursor == 3) openEditor(m_mapChoice);
-        else if (m_menuCursor == 4) { openSettings(SCR_MENU); }
-        else if (m_menuCursor == 5) startDebugMode();
+        if (m_menuCursor == 0) { m_gameMode = MODE_CAMPAIGN; openCampaign(); }
+        else if (m_menuCursor == 1) { m_gameMode = MODE_FREEPLAY; m_campaignRun = false; if (m_net) m_net->disconnectSession(); m_screen = SCR_MAP_SELECT; }
+        else if (m_menuCursor == 2) { m_gameMode = MODE_MULTIPLAYER; openMultiplayerLobby(); }
+        else if (m_menuCursor == 3) m_screen = SCR_ARSENAL;
+        else if (m_menuCursor == 4) openEditor(m_mapChoice);
+        else if (m_menuCursor == 5) openSettings(SCR_MENU);
+        else if (m_menuCursor == 6) startDebugMode();
         else QApplication::quit();
         break;
     case SCR_SETTINGS: changeSetting(m_settingsRow, 1); break;
@@ -1813,6 +2022,9 @@ void MainWindow::menuConfirm()
     case SCR_MAP_SELECT:  m_screen = SCR_DIFF_SELECT; break;
     case SCR_DIFF_SELECT: m_screen = SCR_CHAR_SELECT; break;
     case SCR_CHAR_SELECT: initGame(); m_screen = SCR_PLAYING; break;
+    case SCR_MULTIPLAYER_LOBBY:
+        if (m_net && m_net->isHost()) startMultiplayerMatch();
+        break;
     default: break;
     }
 }
@@ -1821,7 +2033,7 @@ void MainWindow::menuBack()
     sfx(SND_UI_BACK, 0.6f);
     switch (m_screen) {
     case SCR_MENU:        QApplication::quit(); break;
-    case SCR_MAP_SELECT:  m_screen = SCR_MENU; m_menuCursor = 0; break;
+    case SCR_MAP_SELECT:  m_gameMode = MODE_FREEPLAY; m_screen = SCR_MENU; m_menuCursor = 1; break;
     case SCR_SETTINGS:
         saveSettings();
         if (m_settingsReturnScreen == SCR_PLAYING) {
@@ -1829,15 +2041,22 @@ void MainWindow::menuBack()
             m_paused = m_settingsWasPaused;
         } else {
             m_screen = SCR_MENU;
-            m_menuCursor = 2;
+            m_menuCursor = 5;
         }
         break;
-    case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 2; break;
+    case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 3; break;
     case SCR_DIFF_SELECT: m_screen = SCR_MAP_SELECT; break;
     case SCR_CHAR_SELECT: m_screen = SCR_DIFF_SELECT; break;
+    case SCR_MULTIPLAYER_LOBBY:
+        m_gameMode = MODE_FREEPLAY;
+        if (m_net) m_net->disconnectSession();
+        m_screen = SCR_MENU;
+        m_menuCursor = 2;
+        break;
     default: break;
     }
 }
+
 
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
@@ -1862,15 +2081,102 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         }
     }
 
+    if (m_screen == SCR_MULTIPLAYER_LOBBY) {
+        if (m_mpTypingName) {
+            if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Escape) {
+                m_mpTypingName = false;
+                if (m_mpPlayerName.trimmed().isEmpty()) m_mpPlayerName = "Operative";
+                if (m_net) m_net->setPlayerName(m_mpPlayerName);
+                sfx(SND_UI_SELECT, 0.5f);
+                return;
+            }
+            if (k == Qt::Key_Backspace) {
+                if (!m_mpPlayerName.isEmpty()) m_mpPlayerName.chop(1);
+                return;
+            }
+            QString txt = e->text();
+            for (QChar c : txt) {
+                if ((c.isLetterOrNumber() || c == ' ' || c == '_' || c == '-') && m_mpPlayerName.length() < 16) {
+                    m_mpPlayerName.append(c);
+                }
+            }
+            return;
+        }
+
+        if (m_mpTypingAddr) {
+            if (k == Qt::Key_Return || k == Qt::Key_Enter) {
+                m_mpTypingAddr = false;
+                joinMultiplayer();
+                return;
+            }
+            if (k == Qt::Key_Escape) {
+                m_mpTypingAddr = false;
+                return;
+            }
+            if (k == Qt::Key_Backspace) {
+                if (!m_mpInputAddr.isEmpty()) m_mpInputAddr.chop(1);
+                return;
+            }
+            QString txt = e->text();
+            for (QChar c : txt) {
+                if (c.isLetterOrNumber() || c == '.' || c == ':' || c == '-' || c == '_') {
+                    m_mpInputAddr.append(c);
+                }
+            }
+            return;
+        }
+
+        if (k == Qt::Key_N) {
+            m_mpTypingName = true;
+            m_mpTypingAddr = false;
+            sfx(SND_UI_SELECT, 0.5f);
+            return;
+        }
+        if (k == Qt::Key_1) { m_net->setTeam(0); sfx(SND_UI_MOVE, 0.4f); return; }
+        if (k == Qt::Key_2) { m_net->setTeam(1); sfx(SND_UI_MOVE, 0.4f); return; }
+        if (k == Qt::Key_C) {
+            CharClass nextCls = CLS_ASSAULT;
+            for (const auto &s : m_net->playerSlots()) {
+                if (s.id == m_net->localPlayerId()) nextCls = CharClass((s.cls + 1) % 3);
+            }
+            m_net->setClass(nextCls);
+            sfx(SND_UI_MOVE, 0.4f);
+            return;
+        }
+        if (k == Qt::Key_R) {
+            bool rdy = false;
+            for (const auto &s : m_net->playerSlots()) {
+                if (s.id == m_net->localPlayerId()) rdy = s.ready;
+            }
+            m_net->setReady(!rdy);
+            sfx(SND_UI_SELECT, 0.5f);
+            return;
+        }
+        if (k == Qt::Key_H) { hostMultiplayer(); return; }
+        if (k == Qt::Key_J) { joinMultiplayer(); return; }
+        if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
+            if (m_net->isHost()) {
+                startMultiplayerMatch();
+            }
+            return;
+        }
+        if (k == Qt::Key_Escape || k == Qt::Key_Backspace) {
+            menuBack();
+            return;
+        }
+        return;
+    }
+
     if (m_screen != SCR_PLAYING) {
         int *sel = m_screen == SCR_MAP_SELECT ? &m_mapChoice : m_screen == SCR_DIFF_SELECT ? &m_difficulty :
                    m_screen == SCR_CHAR_SELECT ? &m_charChoice : nullptr;
         if (k == Qt::Key_Up || k == Qt::Key_Down || k == Qt::Key_Left || k == Qt::Key_Right) sfx(SND_UI_MOVE, 0.5f);
         if (m_screen == SCR_MENU) {
             if (k == Qt::Key_Up)   m_menuCursor = std::max(0, m_menuCursor - 1);
-            if (k == Qt::Key_Down) m_menuCursor = std::min(6, m_menuCursor + 1);
-            if (k >= Qt::Key_1 && k <= Qt::Key_7) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
+            if (k == Qt::Key_Down) m_menuCursor = std::min(7, m_menuCursor + 1);
+            if (k >= Qt::Key_1 && k <= Qt::Key_8) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
         } else if (m_screen == SCR_SETTINGS) {
+
             if (k == Qt::Key_Up)    m_settingsRow = (m_settingsRow + settingsRows() - 1) % settingsRows();
             if (k == Qt::Key_Down)  m_settingsRow = (m_settingsRow + 1) % settingsRows();
             if (k == Qt::Key_Left)  changeSetting(m_settingsRow, -1);
@@ -1971,17 +2277,26 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_Q) quickMelee();
         if (k == Qt::Key_R) startReload();
     }
+    if (m_screen == SCR_PLAYING && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive() && m_net->matchState().matchOver) {
+        if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Escape || k == Qt::Key_Space) {
+            m_screen = SCR_MULTIPLAYER_LOBBY;
+            m_net->matchStateMutable().matchOver = false;
+            m_net->matchStateMutable().roundOver = false;
+            m_net->matchStateMutable().inRound = false;
+            return;
+        }
+    }
     if (m_paused) {
         if (k == Qt::Key_R) { m_paused = false; return; }
         if (k == Qt::Key_O || k == Qt::Key_P) { openSettings(SCR_PLAYING); return; }
-        if (k == Qt::Key_M) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; m_campaignRun = false; m_envLocked = false; return; }
+        if (k == Qt::Key_M) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; m_campaignRun = false; m_envLocked = false; m_gameMode = MODE_FREEPLAY; if (m_net) m_net->disconnectSession(); return; }
         if (k == Qt::Key_Q || k == Qt::Key_Escape) { QApplication::quit(); return; }
     }
     if (k == Qt::Key_Escape && !m_gs.gameOver) { m_paused = true; pl.adsMode = false; m_lmb = false; }
     if (k == Qt::Key_R && m_gs.gameOver) { m_paused = false; if (m_campaignRun) startMission(m_mission); else initGame(); }
     if (k == Qt::Key_Escape && m_gs.gameOver && m_campaignRun) { finishMission(false); return; }
     if (k == Qt::Key_Q && m_gs.gameOver) QApplication::quit();
-    if (k == Qt::Key_M && m_gs.gameOver) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; m_campaignRun = false; m_envLocked = false; }
+    if (k == Qt::Key_M && m_gs.gameOver) { m_screen = SCR_MENU; m_paused = false; m_menuCursor = 0; m_campaignRun = false; m_envLocked = false; m_gameMode = MODE_FREEPLAY; if (m_net) m_net->disconnectSession(); }
     if (k == Qt::Key_BracketLeft)  m_pixelScale = std::min(m_pixelScale * 2, 8);
     if (k == Qt::Key_BracketRight) m_pixelScale = std::max(m_pixelScale / 2, 1);
 }
@@ -1991,6 +2306,13 @@ void MainWindow::focusOutEvent(QFocusEvent *) { m_keys.clear(); m_lmb = false; }
 void MainWindow::mousePressEvent(QMouseEvent *e)
 {
     if (m_screen == SCR_EDITOR) { editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
+    if (m_screen == SCR_PLAYING && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive() && m_net->matchState().matchOver) {
+        m_screen = SCR_MULTIPLAYER_LOBBY;
+        m_net->matchStateMutable().matchOver = false;
+        m_net->matchStateMutable().roundOver = false;
+        m_net->matchStateMutable().inRound = false;
+        return;
+    }
     if (m_screen != SCR_PLAYING) {
         if (e->button() == Qt::RightButton) { menuBack(); return; }
         QPointF f = widgetToFrame(e->position());
@@ -2018,7 +2340,50 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
                 }
                 return;
             }
+            if (m_screen == SCR_MULTIPLAYER_LOBBY) {
+                if (r.id != 9) m_mpTypingAddr = false;
+                if (r.id != 8) {
+                    if (m_mpTypingName) {
+                        if (m_mpPlayerName.trimmed().isEmpty()) m_mpPlayerName = "Operative";
+                        if (m_net) m_net->setPlayerName(m_mpPlayerName);
+                    }
+                    m_mpTypingName = false;
+                }
+                if (r.id == 1) { m_net->setTeam(0); sfx(SND_UI_MOVE, 0.4f); }
+                else if (r.id == 2) { m_net->setTeam(1); sfx(SND_UI_MOVE, 0.4f); }
+                else if (r.id == 3) {
+                    CharClass nextCls = CLS_ASSAULT;
+                    for (const auto &s : m_net->playerSlots()) {
+                        if (s.id == m_net->localPlayerId()) nextCls = CharClass((s.cls + 1) % 3);
+                    }
+                    m_net->setClass(nextCls);
+                    sfx(SND_UI_MOVE, 0.4f);
+                }
+                else if (r.id == 4) {
+                    bool rdy = false;
+                    for (const auto &s : m_net->playerSlots()) {
+                        if (s.id == m_net->localPlayerId()) rdy = s.ready;
+                    }
+                    m_net->setReady(!rdy);
+                    sfx(SND_UI_SELECT, 0.5f);
+                }
+                else if (r.id == 5) {
+                    if (m_net->isHost()) startMultiplayerMatch();
+                }
+                else if (r.id == 6) { hostMultiplayer(); }
+                else if (r.id == 7) { joinMultiplayer(); }
+                else if (r.id == 8) { m_mpTypingName = true; m_mpTypingAddr = false; sfx(SND_UI_SELECT, 0.5f); }
+                else if (r.id == 9) { m_mpTypingAddr = true; m_mpTypingName = false; sfx(SND_UI_SELECT, 0.5f); }
+                else if (r.id == 20) { m_net->cycleTeamSize(); sfx(SND_UI_SELECT, 0.5f); }
+                else if (r.id == 21) { m_net->toggleBotFill(); sfx(SND_UI_SELECT, 0.5f); }
+                else if (r.id == 22) { m_net->cycleDuration(); sfx(SND_UI_SELECT, 0.5f); }
+                else if (r.id == 23) { m_net->cycleRoundsToWin(); sfx(SND_UI_SELECT, 0.5f); }
+                else if (r.id == 24) { m_net->cycleMap(); sfx(SND_UI_SELECT, 0.5f); }
+                else if (r.id >= 100) { m_net->kickSlot(r.id - 100); sfx(SND_UI_BACK, 0.6f); }
+                return;
+            }
             if (m_screen == SCR_ARSENAL) { m_arsenalSel = r.id; sfx(SND_UI_MOVE, 0.5f); return; }
+
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
             if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
@@ -2122,16 +2487,31 @@ void MainWindow::wheelEvent(QWheelEvent *e)
         return;
     }
     bool live = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver;
-    if (live && effectiveScope(m_gs.player.curWeapon) && m_adsT > 0.5f) {
-        m_scopeMag = rs::clampf(m_scopeMag + steps, 2.f, 8.f);
-        sfx(SND_ZOOM_TICK, 0.5f);
+    if (live) {
+        if (effectiveScope(m_gs.player.curWeapon) && m_adsT > 0.5f) {
+            m_scopeMag = rs::clampf(m_scopeMag + steps, 2.f, 8.f);
+            sfx(SND_ZOOM_TICK, 0.5f);
+            return;
+        }
+        // Scroll wheel cycles weapons instead of zooming into the canvas
+        const Player &pl = m_gs.player;
+        int activeW = m_pendingWeapon >= 0 ? m_pendingWeapon : pl.curWeapon;
+        int curS = slotOf(activeW);
+        if (curS < 0) curS = 0;
+        int dir = steps > 0 ? 1 : -1;
+        for (int i = 1; i <= SLOT_COUNT; i++) {
+            int targetS = (curS + dir * i % SLOT_COUNT + SLOT_COUNT) % SLOT_COUNT;
+            int w = pl.slot[targetS];
+            if (w >= 0 && pl.owned[w] && w != activeW) {
+                selectSlot(targetS);
+                return;
+            }
+        }
         return;
     }
-    // Raster magnifier: keep the framebuffer pixel under the anchor fixed on screen.
-    // Anchor = mouse cursor in menus, crosshair while playing.
-    float ax, ay;
-    if (live) aimPoint(ax, ay);
-    else { ax = float(m_mouseWidget.x()) * W / std::max(1, width()); ay = float(m_mouseWidget.y()) * H / std::max(1, height()); }
+    // Raster magnifier: only outside live gameplay
+    float ax = float(m_mouseWidget.x()) * W / std::max(1, width());
+    float ay = float(m_mouseWidget.y()) * H / std::max(1, height());
     float x0, y0; zoomOrigin(x0, y0);
     float srcX = x0 + ax / m_rasterZoom, srcY = y0 + ay / m_rasterZoom;
     m_rasterZoom = steps > 0 ? std::min(32, m_rasterZoom * 2) : std::max(1, m_rasterZoom / 2);

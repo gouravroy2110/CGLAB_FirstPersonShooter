@@ -24,9 +24,9 @@ struct Grid {
 // --- Map types & parsing -------------------------------------------------------
 enum CellType { CELL_FLOOR=0, CELL_STONE=1, CELL_BRICK=2, CELL_PILLAR=3, CELL_DOOR=4, CELL_SECRET=5 };
 
-static const int MAP_COUNT = 6;
+static const int MAP_COUNT = 7;
 // Each map has its own biome (textures, sky, hazard, weather), terrain shape and layout
-static const char* const MAP_NAMES[MAP_COUNT] = { "EMBERFORGE", "DUNE OUTPOST", "MIRE HOLLOW", "FROSTLINE", "ASHEN CITY", "HELIX FACILITY" };
+static const char* const MAP_NAMES[MAP_COUNT] = { "EMBERFORGE", "DUNE OUTPOST", "MIRE HOLLOW", "FROSTLINE", "ASHEN CITY", "HELIX FACILITY", "THE CITADEL" };
 static const char* const MAP_DESCS[MAP_COUNT] = {
     "Volcanic tunnels: lava pools, sealed forges and two hidden chambers.",
     "Desert dunes, a fortified mesa and a buried bunker.",
@@ -34,13 +34,15 @@ static const char* const MAP_DESCS[MAP_COUNT] = {
     "64x64 snowfield: village, frozen canyon, pine forest, central fort.",
     "64x64 ruined city: gutted blocks, a walled plaza and its main gate.",
     "56x56 research complex: labs, vaults and the reactor hall.",
+    "48x48 multi-tier fortress: sub-level vaults, courtyard, and catwalks.",
 };
-static const char* const* const ALL_LAYOUTS[MAP_COUNT] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT, FRONTIER_LAYOUT, RUINS_LAYOUT, FACILITY_LAYOUT };
+static const char* const* const ALL_LAYOUTS[MAP_COUNT] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT, FRONTIER_LAYOUT, RUINS_LAYOUT, FACILITY_LAYOUT, CITADEL_LAYOUT };
 #define LAYOUT_N(L) int(sizeof(L) / sizeof(L[0]))
 static const int LAYOUT_ROWS[MAP_COUNT] = { LAYOUT_N(DUNGEON_LAYOUT), LAYOUT_N(ARENA_LAYOUT), LAYOUT_N(CRYPT_LAYOUT),
-                                            LAYOUT_N(FRONTIER_LAYOUT), LAYOUT_N(RUINS_LAYOUT), LAYOUT_N(FACILITY_LAYOUT) };
-static const float TERRAIN_AMP[MAP_COUNT] = { 0.3f, 0.85f, 0.3f, 0.9f, 0.1f, 0.02f };   // rolling-hill amplitude
-static const int   MAP_THEME[MAP_COUNT]   = { 0, 1, 2, 3, 4, 5 };                       // biome per map (assets.h Biome)
+                                            LAYOUT_N(FRONTIER_LAYOUT), LAYOUT_N(RUINS_LAYOUT), LAYOUT_N(FACILITY_LAYOUT), LAYOUT_N(CITADEL_LAYOUT) };
+static const float TERRAIN_AMP[MAP_COUNT] = { 0.3f, 0.85f, 0.3f, 0.9f, 0.1f, 0.02f, 0.05f };   // rolling-hill amplitude
+static const int   MAP_THEME[MAP_COUNT]   = { 0, 1, 2, 3, 4, 5, 4 };                             // biome per map (assets.h Biome)
+
 
 // World height of each wall type above its base
 static const float WALL_HEIGHT[6] = { 0.f, 1.15f, 1.0f, 1.5f, 1.0f, 1.15f };
@@ -55,9 +57,20 @@ struct ParsedMap {
     float spawnX = 1.5f, spawnY = 1.5f, camX = 2.5f, camY = 2.5f;
 };
 
-inline bool  isGroundChar(char c) { return c == '.' || c == '-' || c == '^' || c == '=' || c == 'v' || c == '~'; }
+inline bool  isGroundChar(char c) { return c == '.' || c == '-' || c == '^' || c == '=' || c == '+' || c == '*' || c == 'v' || c == 'u' || c == 'U' || c == '~'; }
 inline float platForChar(char c) {
-    switch (c) { case '-': return 0.25f; case '^': return 0.5f; case '=': return 1.0f; case 'v': return -0.6f; case '~': return -0.5f; default: return 0.f; }
+    switch (c) {
+        case '-': return 0.25f;
+        case '^': return 0.50f;
+        case '=': return 1.00f;
+        case '+': return 1.50f;
+        case '*': return 2.00f;
+        case 'v': return -0.60f;
+        case 'u': return -1.20f;
+        case 'U': return -1.80f;
+        case '~': return -0.50f;
+        default: return 0.f;
+    }
 }
 
 inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
@@ -78,7 +91,7 @@ inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
         if (t == CELL_FLOOR && !isGroundChar(c)) {
             // Marker: sit at the most common ground height among the 8 neighbours
             char best = '.'; int bestN = -1;
-            const char kinds[6] = { '.', '-', '^', '=', 'v', '~' };
+            const char kinds[10] = { '.', '-', '^', '=', '+', '*', 'v', 'u', 'U', '~' };
             for (char k : kinds) {
                 int n = 0;
                 for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++)
@@ -96,7 +109,8 @@ inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
 
 // --- Enums -------------------------------------------------------------------
 enum BulletOwner  { PLAYER_SHOT, ENEMY_SHOT };
-enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING, SCR_SETTINGS, SCR_ARSENAL, SCR_EDITOR, SCR_CAMPAIGN, SCR_BRIEFING, SCR_DEBRIEF };
+enum GameMode     { MODE_FREEPLAY = 0, MODE_CAMPAIGN = 1, MODE_MULTIPLAYER = 2 };
+enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING, SCR_SETTINGS, SCR_ARSENAL, SCR_EDITOR, SCR_CAMPAIGN, SCR_BRIEFING, SCR_DEBRIEF, SCR_MULTIPLAYER_LOBBY };
 enum CharClass    { CLS_ASSAULT=0, CLS_SCOUT=1, CLS_TANK=2 };
 enum Difficulty   { DIFF_EASY=0, DIFF_MEDIUM=1, DIFF_HARD=2 };
 enum HitPart      { PART_NONE=0, PART_BODY=1, PART_HEAD=2, PART_LIMB=3, PART_SHIELD=4 };

@@ -184,7 +184,7 @@ void MainWindow::editorKey(QKeyEvent *e)
     int k = e->key();
     int mw = int(m_edRows[0].size()), mh = int(m_edRows.size());
     int vis = ED_W / m_edZoom;
-    if (k == Qt::Key_Escape) { m_screen = SCR_MENU; m_menuCursor = 3; sfx(SND_UI_BACK, 0.6f); return; }
+    if (k == Qt::Key_Escape) { m_screen = SCR_MENU; m_menuCursor = 4; sfx(SND_UI_BACK, 0.6f); return; }
     if (k == Qt::Key_F5) { editorPlaytest(); return; }
     if (k == Qt::Key_S && (e->modifiers() & Qt::ControlModifier)) { editorSave(); return; }
     if (k == Qt::Key_F) { m_edFill = !m_edFill; sfx(SND_UI_MOVE, 0.5f); return; }

@@ -1,4 +1,4 @@
-QT       += core gui multimedia concurrent
+QT       += core gui multimedia concurrent network
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -31,7 +31,8 @@ SOURCES += \
     campaign.cpp \
     enemies.cpp \
     bosses.cpp \
-    audio.cpp
+    audio.cpp \
+    multiplayer.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -48,7 +49,8 @@ HEADERS += \
     gunbuild.h \
     maps.h \
     pixelfont.h \
-    audio.h
+    audio.h \
+    multiplayer.h
 
 FORMS +=
 

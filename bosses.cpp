@@ -140,9 +140,21 @@ void MainWindow::hurtPlayer(int dmg, float fromX, float fromY, int killer)
     dmg = std::max(1, int(dmg * (1.f - pl.damageReduction) * DIFF_CFG[m_difficulty].dmgReceivedMult));
     pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = 0.5f; pl.shakeY -= 6.f;
     addDamageMark(fromX, fromY, std::min(1.f, dmg / 25.f));
-    if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.85f); m_hurtSndT = 0.3f; }
-    if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; m_killerIdx = killer; }
+    if (pl.hp <= 0) {
+        pl.hp = 0; pl.adsMode = false; m_killerIdx = killer;
+        if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+            m_net->handleDeathDrop(m_net->localPlayerId(), killer, false, m_gs);
+            QTimer::singleShot(5000, [this]() {
+                if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+                    m_net->handleRespawn(m_net->localPlayerId(), m_gs, *this, m_parsed[m_gs.mapChoice]);
+                }
+            });
+        } else {
+            m_gs.gameOver = true;
+        }
+    }
 }
+
 
 static bool onGroundNear(float footZ, float ground) { return footZ < ground + 0.25f; }
 

@@ -521,6 +521,30 @@ void MainWindow::fireHitscan(int w, float ax, float ay, float spreadPx, float sX
                 if (L.att[AT_AMMO] == 2) igniteEnemy(h.enemy, 2.5f);
                 break;
             }
+            if (h.actor >= 0 && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+                anyHit = true;
+                const Actor &act = m_gs.actors[h.actor];
+                int myTeam = 0;
+                for (const auto &s : m_net->playerSlots()) if (s.id == m_net->localPlayerId()) myTeam = s.team;
+                bool isHostile = (act.team != myTeam);
+                if (isHostile) {
+                    float mult = h.part == PART_HEAD ? d.headMult : 1.f;
+                    if (L.att[AT_AMMO] == 3) mult *= h.part == PART_HEAD ? 0.9f : 1.25f;
+                    float dist = std::sqrt((h.x - pl.posX) * (h.x - pl.posX) + (h.y - pl.posY) * (h.y - pl.posY));
+                    int dmg = std::max(1, int(effectiveDamage(w) * mult * falloffFor(d, dist) * dmgScale * frandC(0.9f, 1.1f) + 0.5f));
+                    damageActor(h.actor, dmg, pl.posX, pl.posY);
+                    if (h.part == PART_HEAD) { m_headMarker = 0.22f; m_headshotBanner = 1.4f; sfx(SND_HEADSHOT, 0.9f); }
+                    else { m_hitMarker = 0.18f; sfx(SND_HITMARK, 0.7f); }
+                    QVariantMap dev;
+                    dev["target"] = act.id;
+                    dev["dmg"] = dmg;
+                    dev["head"] = (h.part == PART_HEAD);
+                    dev["shooter"] = m_net->localPlayerId();
+                    m_net->broadcastEvent(EV_DAMAGE, dev);
+                }
+                break;
+            }
+
             if (h.sky) break;
             float bx = h.x - (h.x - m_camX) / std::max(0.1f, h.depth) * 0.04f;
             float by = h.y - (h.y - m_camY) / std::max(0.1f, h.depth) * 0.04f;
@@ -991,9 +1015,14 @@ void MainWindow::explode(float x, float y, float z, float radius, float damage, 
         pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = 0.5f;
         m_damageAngle = std::atan2(y - pl.posY, x - pl.posX); m_damageDirTimer = 2.f;
         addDamageMark(x, y, 1.f);
-        sfx(SND_PLAYER_HURT, 0.8f);
-        if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; m_killerX = x; m_killerY = y; m_killerZ = z + 0.5f; m_killerIdx = owner == PO_PLAYER ? -2 : -1; }
-        if (owner == PO_ENEMY) sfx(SND_PLAYER_HURT, 0.9f);
+        if (pl.hp <= 0) {
+            pl.hp = 0; pl.adsMode = false; m_killerX = x; m_killerY = y; m_killerZ = z + 0.5f; m_killerIdx = owner == PO_PLAYER ? -2 : -1;
+            if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+                m_net->handleDeathDrop(m_net->localPlayerId(), -1, false, m_gs);
+            } else {
+                m_gs.gameOver = true;
+            }
+        }
     }
     pl.shakeY += 14.f * std::max(0.f, 1.f - pd / (radius * 4.f));
 
@@ -1268,7 +1297,14 @@ void MainWindow::updateAreaEffects(float dt)
             int dmg = int(4 * (1.f - pl.damageReduction * 0.5f));
             pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = std::max(pl.damageFlash, 0.25f);
             if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.5f); m_hurtSndT = 0.8f; }
-            if (pl.hp <= 0) { pl.hp = 0; m_gs.gameOver = true; pl.adsMode = false; }
+            if (pl.hp <= 0) {
+                pl.hp = 0; pl.adsMode = false;
+                if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+                    m_net->handleDeathDrop(m_net->localPlayerId(), -1, false, m_gs);
+                } else {
+                    m_gs.gameOver = true;
+                }
+            }
         }
     }
     m_gs.fires.erase(std::remove_if(m_gs.fires.begin(), m_gs.fires.end(), [](const FireZone &f) { return f.life <= 0; }), m_gs.fires.end());

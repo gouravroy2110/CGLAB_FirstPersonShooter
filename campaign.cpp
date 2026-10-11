@@ -129,6 +129,8 @@ void MainWindow::openCampaign()
 {
     loadCampaign();
     m_campaignRun = false;
+    m_gameMode = MODE_CAMPAIGN;
+    if (m_net) m_net->disconnectSession();
     m_cSel = std::min(m_cUnlocked - 1, MISSION_COUNT - 1);
     m_screen = SCR_CAMPAIGN;
 }

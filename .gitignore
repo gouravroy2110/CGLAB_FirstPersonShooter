@@ -46,3 +46,7 @@ CMakeLists.txt.user
 
 # Logs
 *.log
+
+# Archives & Scratch
+*.zip
+scratch_map.txt

@@ -384,11 +384,18 @@ bool World::hasLOS(float x0, float y0, float z0, float x1, float y1, float z1) c
 void MainWindow::tryOpenDoor()
 {
     Player &pl = m_gs.player;
-    int cand[7][2] = {{int(pl.posX + pl.dirX * 0.7f), int(pl.posY + pl.dirY * 0.7f)},
-                      {int(pl.posX + pl.dirX * 1.2f), int(pl.posY + pl.dirY * 1.2f)},
-                      {int(pl.posX + pl.dirX * 1.6f), int(pl.posY + pl.dirY * 1.6f)},
-                      {int(pl.posX) + 1, int(pl.posY)}, {int(pl.posX) - 1, int(pl.posY)},
-                      {int(pl.posX), int(pl.posY) + 1}, {int(pl.posX), int(pl.posY) - 1}};
+    int cand[15][2] = {
+        {int(pl.posX + pl.dirX * 0.7f), int(pl.posY + pl.dirY * 0.7f)},
+        {int(pl.posX + pl.dirX * 1.3f), int(pl.posY + pl.dirY * 1.3f)},
+        {int(pl.posX + pl.dirX * 1.9f), int(pl.posY + pl.dirY * 1.9f)},
+        {int(pl.posX + pl.dirX * 2.5f), int(pl.posY + pl.dirY * 2.5f)},
+        {int(pl.posX + pl.dirX * 3.1f), int(pl.posY + pl.dirY * 3.1f)},
+        {int(pl.posX) + 1, int(pl.posY)}, {int(pl.posX) - 1, int(pl.posY)},
+        {int(pl.posX), int(pl.posY) + 1}, {int(pl.posX), int(pl.posY) - 1},
+        {int(pl.posX) + 2, int(pl.posY)}, {int(pl.posX) - 2, int(pl.posY)},
+        {int(pl.posX), int(pl.posY) + 2}, {int(pl.posX), int(pl.posY) - 2},
+        {int(pl.posX) + 1, int(pl.posY) + 1}, {int(pl.posX) - 1, int(pl.posY) - 1}
+    };
     for (auto &c : cand) {
         int nx = c[0], ny = c[1];
         if (nx <= 0 || ny <= 0 || nx >= m_mapW - 1 || ny >= m_mapH - 1) continue;
@@ -524,8 +531,30 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay, float startDist) c
         res.x = m_camX + rdX * txY; res.y = m_camY + rdY * txY; res.z = m_eye + slope * txY;
         res.wall = res.floor = res.sky = false;
     }
+
+    // Actors (multiplayer operatives only)
+    if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+        for (int i = 0; i < int(m_gs.actors.size()); i++) {
+            const Actor &a = m_gs.actors[i];
+            if (!a.alive) continue;
+            float spX = a.posX - m_camX, spY = a.posY - m_camY;
+            float txX = invDet * (pl.dirY * spX - pl.dirX * spY), txY = invDet * (-eplY * spX + eplX * spY);
+            if (txY < 0.1f + m_boomCur * 0.85f || txY < startDist || txY >= res.depth) continue;
+            float base = a.footZ;
+            float scrX = W / 2.f * (1.f + txX / txY);
+            float sz = m_K * 1.0f / txY;
+            float top = m_hor + (m_eye - base - 1.0f) * m_K / txY;
+            float u = (ax - (scrX - sz / 2)) / sz, v = (ay - top) / sz;
+            if (u < 0.18f || u > 0.82f || v < 0.f || v > 1.0f) continue;
+            HitPart part = v < 0.26f ? PART_HEAD : PART_BODY;
+            res.actor = i; res.enemy = -1; res.part = part; res.depth = txY;
+            res.x = m_camX + rdX * txY; res.y = m_camY + rdY * txY; res.z = m_eye + slope * txY;
+            res.wall = res.floor = res.sky = false;
+        }
+    }
     return res;
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Secret walls give themselves away a little: a draft blows dust out of the

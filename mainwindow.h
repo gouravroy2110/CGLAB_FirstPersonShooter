@@ -20,6 +20,7 @@
 #include "audio.h"
 #include "world.h"
 #include "sim.h"
+#include "multiplayer.h"
 
 struct Raster3D;
 struct WorldCam;
@@ -34,6 +35,14 @@ public:
     void enableAudio();
     // Player options (QSettings); not loaded in snapshot mode so tests use defaults
     void loadSettings();
+
+    // Multiplayer public access
+    QString m_mpInputAddr = "127.0.0.1:7777";
+    QString m_mpPlayerName = "Operative";
+    void openMultiplayerLobby();
+    void hostMultiplayer();
+    void joinMultiplayer();
+    void startMultiplayerMatch();
 
 protected:
     void paintEvent(QPaintEvent *)      override;
@@ -266,6 +275,7 @@ private:
     void  editorMouse(const QPointF &f, Qt::MouseButtons buttons);
     void  renderEditor();
     // -- Campaign (campaign.cpp) ---------------------------------------------------------
+    GameMode m_gameMode = MODE_FREEPLAY;   // current game mode: Free Play, Campaign, or Multiplayer
     bool  m_campaignRun = false;        // playing a story mission (not free play)
     void  openCampaign();
     int   maxHP() const;
@@ -530,7 +540,7 @@ private:
     void renderArmoryOverlay();
 
     struct HitResult {
-        int enemy = -1; HitPart part = PART_NONE;
+        int enemy = -1; int actor = -1; HitPart part = PART_NONE;
         float x = 0, y = 0, z = 0, depth = 1e9f;
         bool wall = false, floor = false, sky = false;
         int cx = 0, cy = 0, face = 0; float u = 0, v = 0;   // wall-face hit coordinates
@@ -587,4 +597,14 @@ private:
 
     // -- Colour helpers ------------------------------------------------------------------
     uint32_t fog(uint32_t c, float dist) const;
+
+    // -- Multiplayer (Sector War) --------------------------------------------------------
+    NetworkManager *m_net = nullptr;
+    bool    m_mpTypingAddr = false;
+    bool    m_mpTypingName = false;
+    bool    m_showScoreboard = false;
+    float   m_mpRespawnCountdown = -1.f;
+    void renderMultiplayerLobby();
+    void renderMultiplayerHUD();
+    void renderScoreboard();
 };
