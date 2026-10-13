@@ -41,6 +41,13 @@ int main(int argc, char *argv[])
         }
     }
 
+    // Migrate settings helper
+    if (args.contains("--migrate-settings")) {
+        MainWindow win;
+        win.loadSettings();
+        return 0;
+    }
+
     MainWindow win;
 
     // Developer aid: "fps_game --snapshot <dir>" renders scripted scenes to PNGs

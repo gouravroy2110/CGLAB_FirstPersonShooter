@@ -40,6 +40,7 @@ void MainWindow::initDefaultKeyBinds()
     m_keyBinds[ACT_RELOAD]      = Qt::Key_R;
     m_keyBinds[ACT_MELEE]       = Qt::Key_Q;
     m_keyBinds[ACT_INSPECT]     = Qt::Key_H;
+    m_keyBinds[ACT_WEAPON_STATS]= Qt::Key_I;
     m_keyBinds[ACT_INTERACT]    = Qt::Key_E;
     m_keyBinds[ACT_THROW]       = Qt::Key_G;
     m_keyBinds[ACT_CYCLE_THROW] = Qt::Key_T;
@@ -47,6 +48,7 @@ void MainWindow::initDefaultKeyBinds()
     m_keyBinds[ACT_FLASHLIGHT]  = Qt::Key_L;
     m_keyBinds[ACT_CAMERA]      = Qt::Key_V;
     m_keyBinds[ACT_SHOULDER]    = Qt::Key_X;
+    m_keyBinds[ACT_ARMORY]      = Qt::Key_U;
     m_keyBinds[ACT_SLOT1]       = Qt::Key_1;
     m_keyBinds[ACT_SLOT2]       = Qt::Key_2;
     m_keyBinds[ACT_SLOT3]       = Qt::Key_3;
@@ -114,9 +116,39 @@ void MainWindow::loadSettings()
     m_squadSize  = clampi(s.value("squad", 0).toInt(), 0, 3);
     m_crossColor = clampi(s.value("crosshair", 0).toInt(), 0, 3);
     m_showFps    = s.value("showFps", true).toBool();
-    for (int i = 0; i < ACT_COUNT; i++) {
-        QVariant v = s.value(QString("keybind_%1").arg(i));
-        if (v.isValid()) m_keyBinds[i] = v.toInt();
+
+    static const char *const ACTION_SLUGS[ACT_COUNT] = {
+        "move_fwd", "move_back", "move_left", "move_right", "jump", "sprint",
+        "fire", "ads", "reload", "melee", "inspect", "weapon_stats", "interact",
+        "throw", "cycle_throw", "gadget", "flashlight", "camera", "shoulder",
+        "armory", "slot1", "slot2", "slot3", "slot4"
+    };
+
+    if (s.contains("keybind_v2")) {
+        for (int i = 0; i < ACT_COUNT; i++) {
+            QVariant v = s.value(QString("keybind_%1").arg(ACTION_SLUGS[i]));
+            if (v.isValid()) m_keyBinds[i] = v.toInt();
+        }
+    } else {
+        // Migrate legacy numeric bindings from 22-action layout (pre-stats/armory)
+        for (int i = 0; i <= ACT_INSPECT; i++) {
+            QVariant v = s.value(QString("keybind_%1").arg(i));
+            if (v.isValid()) m_keyBinds[i] = v.toInt();
+        }
+        m_keyBinds[ACT_WEAPON_STATS] = Qt::Key_I;
+        m_keyBinds[ACT_ARMORY]       = Qt::Key_U;
+        // Old indices 11..17 were interact, throw, cycle_throw, gadget, flashlight, camera, shoulder
+        int oldIndices[7] = { ACT_INTERACT, ACT_THROW, ACT_CYCLE_THROW, ACT_GADGET, ACT_FLASHLIGHT, ACT_CAMERA, ACT_SHOULDER };
+        for (int j = 0; j < 7; j++) {
+            QVariant v = s.value(QString("keybind_%1").arg(11 + j));
+            if (v.isValid()) m_keyBinds[oldIndices[j]] = v.toInt();
+        }
+        // Old indices 18..21 were slots 1..4
+        for (int j = 0; j < 4; j++) {
+            QVariant v = s.value(QString("keybind_%1").arg(18 + j));
+            if (v.isValid()) m_keyBinds[ACT_SLOT1 + j] = v.toInt();
+        }
+        saveSettings();
     }
     applySettings();
 }
@@ -133,8 +165,18 @@ void MainWindow::saveSettings() const
     s.setValue("squad", m_squadSize);
     s.setValue("crosshair", m_crossColor);
     s.setValue("showFps", m_showFps);
+    s.setValue("keybind_v2", true);
+
+    static const char *const ACTION_SLUGS[ACT_COUNT] = {
+        "move_fwd", "move_back", "move_left", "move_right", "jump", "sprint",
+        "fire", "ads", "reload", "melee", "inspect", "weapon_stats", "interact",
+        "throw", "cycle_throw", "gadget", "flashlight", "camera", "shoulder",
+        "armory", "slot1", "slot2", "slot3", "slot4"
+    };
+
     for (int i = 0; i < ACT_COUNT; i++) {
-        s.setValue(QString("keybind_%1").arg(i), m_keyBinds[i]);
+        s.setValue(QString("keybind_%1").arg(ACTION_SLUGS[i]), m_keyBinds[i]);
+        s.remove(QString("keybind_%1").arg(i));
     }
 }
 
@@ -254,6 +296,7 @@ void MainWindow::renderSettings()
             "RELOAD",
             "QUICK MELEE",
             "INSPECT WEAPON",
+            "WEAPON STATS",
             "INTERACT / USE",
             "THROW GRENADE",
             "CYCLE GRENADE",
@@ -261,17 +304,18 @@ void MainWindow::renderSettings()
             "FLASHLIGHT",
             "CAMERA 1ST/3RD",
             "SWAP SHOULDER",
+            "ARMORY / UPGRADES",
             "PRIMARY WEAPON",
             "SIDEARM",
             "HEAVY / MELEE",
             "SPECIAL WEAPON"
         };
 
-        const int col1X = 40, col2X = 415, colW = 345, y0 = 98, rh = 34, sp = 38;
+        const int col1X = 40, col2X = 415, colW = 345, y0 = 96, rh = 30, sp = 34;
 
         for (int i = 0; i < ACT_COUNT; i++) {
-            int cx = (i < 11) ? col1X : col2X;
-            int cy = y0 + (i % 11) * sp;
+            int cx = (i < 12) ? col1X : col2X;
+            int cy = y0 + (i % 12) * sp;
             bool sel = (m_controlsRow == i);
             bool rebinding = (m_rebindingAction == i);
 
@@ -286,7 +330,7 @@ void MainWindow::renderSettings()
             text(cx + 12, cy, colW - 110, rh, Qt::AlignLeft | Qt::AlignVCenter, ACTION_NAMES[i],
                  sel ? QColor(255, 255, 255) : QColor(200, 205, 210), 10, 700, false);
 
-            int bx = cx + colW - 95, by = cy + 5, bw = 85, bh = 24;
+            int bx = cx + colW - 95, by = cy + 4, bw = 85, bh = 22;
             if (rebinding) {
                 m_cv.fillRect(bx, by, bw, bh, UI_AMBER);
                 text(bx, by, bw, bh, Qt::AlignCenter, "PRESS KEY...", QColor(10, 10, 10), 9, 900, false);
@@ -299,7 +343,7 @@ void MainWindow::renderSettings()
         }
 
         // Reset Defaults Button
-        int rbx = 240, rby = y0 + 11 * sp + 4, rbw = 320, rbh = 30;
+        int rbx = 240, rby = y0 + 12 * sp + 4, rbw = 320, rbh = 28;
         bool resetSel = (m_controlsRow == ACT_COUNT);
         m_menuRects.push_back({rbx, rby, rbw, rbh, 200});
         m_cv.blendRect(rbx, rby, rbw, rbh, withAlpha(UI_BG, resetSel ? 230 : 170));

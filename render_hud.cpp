@@ -243,6 +243,7 @@ void MainWindow::renderHUD()
     if (!scoped) { renderCompass(); renderMinimap(); renderKillFeed(); }
     renderHealthPanel();
     renderWeaponPanel();
+    if (!scoped) renderWeaponStatsBox();
     if (!scoped) renderTargetInfo();
     renderBossBar();
     renderDamageDirection();
@@ -693,6 +694,153 @@ void MainWindow::renderWeaponPanel()
                      .arg(int(60.f / std::max(0.01f, wd.fireDelay))).arg(usesAmmo(cw) ? QString::number(effectiveMagSize(cw)) : QString("ENERGY"));
         text(mx, my + 16, mw, 14, Qt::AlignCenter, st, QColor(200, 205, 210), 10, 700, false);
     }
+}
+
+void MainWindow::renderWeaponStatsBox()
+{
+    if (!m_showWeaponStats) return;
+    const Player &pl = m_gs.player;
+    if (pl.curWeapon < 0) return;
+    const int cw = pl.curWeapon;
+    const WeaponDef &wd = WEAPONS[cw];
+    const Loadout &L = pl.load[cw];
+
+    const int bw = 262, bh = 172;
+    const int bx = W - bw - 16;
+    const int by = H - 74 - 28 - bh; // directly above inventory slot pills (sy = 502)
+
+    uint32_t rc = L.rarity ? RARITY_COLORS[L.rarity] : AMBER;
+
+    // Tactical card backing with rarity accent
+    m_cv.blendRect(bx, by, bw, bh, withAlpha(UI_BG, 225));
+    m_cv.rectOutline(bx, by, bw, bh, withAlpha(0xFFFFFFFF, 35));
+    m_cv.fillRect(bx, by, bw, 2, rc);
+    m_cv.fillRect(bx, by, 3, bh, rc);
+
+    // Header: Rarity + Weapon Name, and key toggle prompt
+    int ty = by + 6;
+    QString title = QString("%1 %2").arg(L.rarity ? RARITY_NAMES[L.rarity] : "STANDARD").arg(wd.name).toUpper();
+    text(bx + 8, ty, bw - 66, 14, Qt::AlignLeft | Qt::AlignVCenter, title, qc(rc), 11, 800, false);
+    text(bx + bw - 58, ty, 50, 14, Qt::AlignRight | Qt::AlignVCenter, QString("[%1]").arg(keyName(m_keyBinds[ACT_WEAPON_STATS])), QColor(160, 175, 190), 9, 700, false);
+
+    // Subheader: Class & Fire Mode
+    static const char *CLS_NAMES[] = { "MELEE", "PISTOL", "SMG", "RIFLE", "SHOTGUN", "LMG", "SNIPER", "LAUNCHER", "ENERGY" };
+    static const char *FMODE_NAMES[] = { "SEMI", "AUTO", "BURST", "BOLT", "CHARGE", "BEAM", "MELEE" };
+    const char *clsName = (wd.cls >= 0 && wd.cls < 9) ? CLS_NAMES[wd.cls] : "WEAPON";
+    const char *modeName = m_bipod ? "BIPOD" : (wd.mode >= 0 && wd.mode < 7) ? FMODE_NAMES[wd.mode] : "STANDARD";
+    QString sub = QString("%1  |  %2").arg(clsName).arg(modeName);
+    if (wd.slot == SLOT_SIDEARM) sub += "  |  SIDEARM";
+    else if (wd.slot == SLOT_MELEE) sub += "  |  MELEE";
+    text(bx + 8, by + 21, bw - 16, 12, Qt::AlignLeft, sub, QColor(135, 145, 155), 8, 600, false);
+
+    // Separator line
+    m_cv.blendRect(bx + 6, by + 34, bw - 12, 1, withAlpha(0xFFFFFFFF, 25));
+
+    // Stat bars
+    auto drawStatRow = [&](int ry, const char *label, float fraction, const QString &valStr, uint32_t col) {
+        text(bx + 8, ry, 40, 12, Qt::AlignLeft | Qt::AlignVCenter, label, QColor(170, 180, 190), 8, 700, false);
+        const int barX = bx + 52, barW = 110;
+        m_cv.blendRect(barX, ry + 3, barW, 6, withAlpha(0xFFFFFFFF, 25));
+        m_cv.fillRect(barX, ry + 3, std::max(2, int(barW * std::clamp(fraction, 0.f, 1.f))), 6, col);
+        text(bx + 166, ry, 88, 12, Qt::AlignRight | Qt::AlignVCenter, valStr, QColor(230, 235, 240), 8, 800, false);
+    };
+
+    // 1. DAMAGE
+    int dmg = effectiveDamage(cw);
+    QString dmgStr;
+    float dmgFrac = 0.f;
+    if (wd.pellets > 1) {
+        dmgStr = QString("%1x%2 (%3)").arg(dmg).arg(wd.pellets).arg(dmg * wd.pellets);
+        dmgFrac = std::clamp(float(dmg * wd.pellets) / 160.f, 0.05f, 1.f);
+    } else {
+        dmgStr = QString::number(dmg);
+        dmgFrac = std::clamp(float(dmg) / 120.f, 0.05f, 1.f);
+    }
+    drawStatRow(by + 38, "DMG", dmgFrac, dmgStr, rgb(255, 85, 75));
+
+    // 2. FIRE RATE
+    QString rofStr;
+    float rofFrac = 0.f;
+    if (isMelee(cw)) {
+        float swings = 1.f / std::max(0.01f, effectiveFireDelay(cw));
+        rofStr = QString("%1/s").arg(swings, 0, 'f', 1);
+        rofFrac = std::clamp(swings / 3.5f, 0.05f, 1.f);
+    } else {
+        int rpm = int(60.f / std::max(0.01f, effectiveFireDelay(cw)));
+        rofStr = QString("%1 RPM").arg(rpm);
+        rofFrac = std::clamp(float(rpm) / 950.f, 0.05f, 1.f);
+    }
+    drawStatRow(by + 51, "RATE", rofFrac, rofStr, rgb(255, 180, 50));
+
+    // 3. ACCURACY
+    float sp = effectiveSpread(cw);
+    int acc = std::clamp(int((1.0f - sp / 0.075f) * 100.f), 10, 100);
+    drawStatRow(by + 64, "ACC", float(acc) / 100.f, QString("%1%").arg(acc), rgb(75, 215, 125));
+
+    // 4. RECOIL
+    float rec = effectiveRecoil(cw);
+    int ctrl = std::clamp(int((1.0f - rec / 10.f) * 100.f), 10, 100);
+    drawStatRow(by + 77, "RECL", float(ctrl) / 100.f, QString("%1%").arg(ctrl), rgb(65, 180, 245));
+
+    // 5. CAPACITY
+    QString capStr;
+    float capFrac = 0.f;
+    if (usesAmmo(cw)) {
+        int mag = effectiveMagSize(cw);
+        capStr = QString("%1 RDS").arg(mag);
+        capFrac = std::clamp(float(mag) / 80.f, 0.05f, 1.f);
+    } else if (isMelee(cw)) {
+        capStr = "MELEE";
+        capFrac = 1.f;
+    } else {
+        capStr = QString("%1% HEAT").arg(int(wd.heatPerShot * 100.f));
+        capFrac = std::clamp(1.f - wd.heatPerShot, 0.05f, 1.f);
+    }
+    drawStatRow(by + 90, "CAP", capFrac, capStr, rgb(175, 135, 245));
+
+    // Separator line
+    m_cv.blendRect(bx + 6, by + 105, bw - 12, 1, withAlpha(0xFFFFFFFF, 25));
+
+    // Combat Perks / Details
+    float pen = effectivePenetration(cw);
+    QString perks = QString("CRIT x%1").arg(wd.headMult, 0, 'f', 1);
+    if (usesAmmo(cw)) perks += QString("  |  RLD %1s").arg(wd.reloadTime, 0, 'f', 1);
+    if (pen > 0.05f) perks += QString("  |  PEN %1%").arg(int(pen * 100.f));
+    if (effectiveScope(cw)) perks += "  |  SCOPED";
+    if (wd.status == ST_BURN) perks += "  |  INCENDIARY";
+    else if (wd.status == ST_SHOCK) perks += "  |  SHOCK";
+    else if (wd.status == ST_STUN) perks += "  |  STUN";
+    if (isMelee(cw)) perks += QString("  |  REACH %1m").arg(wd.reach, 0, 'f', 1);
+    text(bx + 8, by + 109, bw - 16, 12, Qt::AlignLeft, perks, QColor(255, 210, 110), 8, 700, false);
+
+    // Attachments
+    QString mods;
+    for (int a = 0; a < AT_COUNT; a++) {
+        int o = L.att[a];
+        if (o > 0 && o < ATT_OPTIONS[a]) {
+            if (!mods.isEmpty()) mods += ", ";
+            mods += ATT_NAMES[a][o];
+        }
+    }
+    if (mods.isEmpty()) mods = "NONE (ARMORY [U])";
+    text(bx + 8, by + 123, bw - 16, 12, Qt::AlignLeft, QString("MODS: %1").arg(mods), QColor(120, 205, 245), 7, 700, false);
+
+    // Ammo / Reserve
+    QString ammoInfo;
+    if (usesAmmo(cw)) {
+        ammoInfo = QString("RESERVE: %1 / %2 MAX").arg(pl.reserve[cw]).arg(wd.maxReserve);
+    } else if (!isMelee(cw)) {
+        ammoInfo = QString("HEAT: %1% (RATE %2/SHOT)").arg(int(pl.heat * 100.f)).arg(int(wd.heatPerShot * 100.f));
+    } else {
+        ammoInfo = "STRIKE WEAPON - NO AMMO REQUIRED";
+    }
+    text(bx + 8, by + 137, bw - 16, 12, Qt::AlignLeft, ammoInfo, QColor(165, 175, 185), 7, 600, false);
+
+    // Footer
+    m_cv.blendRect(bx + 6, by + 151, bw - 12, 1, withAlpha(0xFFFFFFFF, 25));
+    text(bx + 8, by + 154, bw - 16, 12, Qt::AlignCenter,
+         QString("[%1] TOGGLE STATS DISPLAY").arg(keyName(m_keyBinds[ACT_WEAPON_STATS])),
+         QColor(150, 160, 170), 8, 700, false);
 }
 
 void MainWindow::renderCrosshair()
@@ -1227,18 +1375,21 @@ void MainWindow::renderMenu()
 
 
     // Controls card
-    const int cx = W - 300, cy = 244, cw = 270, ch = 270;
+    const int cx = W - 300, cy = 236, cw = 270, ch = 280;
     panel(cx, cy, cw, ch, false, AMBER);
-    text(cx + 16, cy + 10, cw, 18, Qt::AlignLeft, "FIELD MANUAL", qc(AMBER), 13, 800, false);
+    text(cx + 16, cy + 8, cw, 18, Qt::AlignLeft, "FIELD MANUAL", qc(AMBER), 13, 800, false);
+    QString statKey = keyName(m_keyBinds[ACT_WEAPON_STATS]);
+    QByteArray statKeyBa = statKey.toLatin1();
+    const char *statKeyC = statKeyBa.constData();
     const char *rows[][2] = { {"WASD", "Move"}, {"LMB / F", "Fire (hold: charge)"}, {"RMB / TAB", "Aim / scope"},
                               {"1 2 3 4", "Melee / sidearm / primaries"}, {"R", "Reload"}, {"Q", "Quick melee"}, {"G  /  T", "Throw (hold to cook) / cycle"},
                               {"Z", "Use gadget"}, {"E", "Door / pick up / swap gun"}, {"V  /  X", "1st-3rd person / shoulder"},
-                              {"H", "Inspect weapon"}, {"SHIFT", "Sprint / hold breath"} };
-    for (int i = 0; i < 12; i++) {
-        int ry = cy + 30 + i * 19;
-        m_cv.blendRect(cx + 16, ry + 2, 80, 16, withAlpha(0xFFFFFFFF, 20));
-        text(cx + 16, ry + 2, 80, 16, Qt::AlignCenter, rows[i][0], QColor(235, 235, 235), 10, 800, false);
-        text(cx + 106, ry, cw - 116, 20, Qt::AlignLeft | Qt::AlignVCenter, rows[i][1], QColor(190, 190, 190), 10, 500, false);
+                              {"H", "Inspect weapon"}, {statKeyC, "Weapon stats (toggle)"}, {"SHIFT", "Sprint / hold breath"} };
+    for (int i = 0; i < 13; i++) {
+        int ry = cy + 28 + i * 18;
+        m_cv.blendRect(cx + 16, ry + 1, 80, 16, withAlpha(0xFFFFFFFF, 20));
+        text(cx + 16, ry + 1, 80, 16, Qt::AlignCenter, rows[i][0], QColor(235, 235, 235), 10, 800, false);
+        text(cx + 106, ry, cw - 116, 18, Qt::AlignLeft | Qt::AlignVCenter, rows[i][1], QColor(190, 190, 190), 10, 500, false);
     }
     text(cx, cy + ch + 6, cw, 16, Qt::AlignCenter, "Headshots deal 2-3x damage", qc(AMBER), 12, 700);
 

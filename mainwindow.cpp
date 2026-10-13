@@ -296,6 +296,7 @@ void MainWindow::initGame()
     m_selectedUpgradeCard = -1;
     m_upgradePicked = false;
     m_showArmory = false;
+    m_showWeaponStats = false;
     pl.owned[WPN_KNIFE] = true;
     pl.owned[WPN_PISTOL] = true;
     pl.curWeapon = WPN_PISTOL;
@@ -2264,20 +2265,20 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
                 return;
             } else {
                 if (k == Qt::Key_Up) {
-                    if (m_controlsRow == ACT_COUNT) m_controlsRow = 10;
-                    else if (m_controlsRow % 11 == 0) m_controlsRow = m_controlsRow + 10;
+                    if (m_controlsRow == ACT_COUNT) m_controlsRow = 11;
+                    else if (m_controlsRow % 12 == 0) m_controlsRow = m_controlsRow + 11;
                     else m_controlsRow--;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Down) {
                     if (m_controlsRow == ACT_COUNT) m_controlsRow = 0;
-                    else if (m_controlsRow % 11 == 10) m_controlsRow = ACT_COUNT;
+                    else if (m_controlsRow % 12 == 11) m_controlsRow = ACT_COUNT;
                     else m_controlsRow++;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Left) {
-                    if (m_controlsRow >= 11 && m_controlsRow < ACT_COUNT) m_controlsRow -= 11;
+                    if (m_controlsRow >= 12 && m_controlsRow < ACT_COUNT) m_controlsRow -= 12;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Right) {
-                    if (m_controlsRow < 11) m_controlsRow += 11;
+                    if (m_controlsRow < 12) m_controlsRow += 12;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
                     if (m_controlsRow == ACT_COUNT) {
@@ -2350,7 +2351,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     }
 
     // Toggle armory modal
-    if (k == Qt::Key_U) {
+    if (k == m_keyBinds[ACT_ARMORY] || k == Qt::Key_U) {
         m_showArmory = !m_showArmory;
         return;
     }
@@ -2372,6 +2373,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == m_keyBinds[ACT_CYCLE_THROW]) cycleThrowable();
         if (k == m_keyBinds[ACT_GADGET]) useGadget();
         if (k == m_keyBinds[ACT_INSPECT] && !isMelee(pl.curWeapon) && pl.reloadTimer <= 0 && pl.switchTimer <= 0) { m_inspectT = 2.2f; sfx(SND_INSPECT, 0.6f); }
+        if ((k == m_keyBinds[ACT_WEAPON_STATS] || k == Qt::Key_I) && !e->isAutoRepeat()) { m_showWeaponStats = !m_showWeaponStats; sfx(SND_UI_SELECT, 0.45f); return; }
         if (k == Qt::Key_C) { m_pitch = 0.f; m_aimX = W / 2.f; m_aimY = H / 2.f; }
         if (k == Qt::Key_B) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
         if (k == m_keyBinds[ACT_CAMERA]) { m_tpp = !m_tpp; pushFeed(m_tpp ? "THIRD PERSON" : "FIRST PERSON", 1.5f); sfx(SND_UI_MOVE, 0.4f); }
@@ -2871,6 +2873,7 @@ bool MainWindow::snapshot(const QString &dir)
     tryOpenDoor(); run(80);
     place(20.5f, 18.4f, 1.5708f); m_pitch = -0.15f; run(10); save("23_dungeon_acid_vault");
     place(25.5f, 16.5f, 0.f); run(10); save("24_emberforge_lava_hazard");
+    m_showWeaponStats = true; run(5); save("25_weapon_stats_box"); m_showWeaponStats = false;
 
     // --- Crypt: altar ledge and dusk shadows -----------------------------------------
     start(2);

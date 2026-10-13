@@ -72,6 +72,7 @@
 | **Z** | Use gadget (turret, medkit station, radar, grapple, jetpack) |
 | **E** | Open door · search walls · **pick up / swap** the gun under you |
 | **H** | **Inspect** the weapon (rarity and stats) |
+| **I** | **Weapon stats** — toggle tactical stat box above weapon panel |
 | **V / X** | First ↔ third person · swap shoulder |
 | **U** | **Field Armory** — your 4 slots, rarity, attachments, throwables, gadget |
 | **B** | Free-aim ↔ classic centred crosshair |

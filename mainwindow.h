@@ -260,6 +260,7 @@ private:
         ACT_RELOAD,
         ACT_MELEE,
         ACT_INSPECT,
+        ACT_WEAPON_STATS,
         ACT_INTERACT,
         ACT_THROW,
         ACT_CYCLE_THROW,
@@ -267,6 +268,7 @@ private:
         ACT_FLASHLIGHT,
         ACT_CAMERA,
         ACT_SHOULDER,
+        ACT_ARMORY,
         ACT_SLOT1,
         ACT_SLOT2,
         ACT_SLOT3,
@@ -277,6 +279,7 @@ private:
     int   m_settingsTab = 0;          // 0 = General, 1 = Controls
     int   m_controlsRow = 0;          // 0..ACT_COUNT (ACT_COUNT is reset button)
     int   m_rebindingAction = -1;     // -1 if none, or 0..ACT_COUNT-1
+    bool  m_showWeaponStats = false;
     void  initDefaultKeyBinds();
     bool  isActionPressed(KeyAction act) const;
     bool  isPlayerMoving() const;
@@ -622,6 +625,7 @@ private:
     void renderMinimap();
     void renderHealthPanel();
     void renderWeaponPanel();
+    void renderWeaponStatsBox();
     void renderCrosshair();
     void renderHitMarkers();
     void renderDamageDirection();
