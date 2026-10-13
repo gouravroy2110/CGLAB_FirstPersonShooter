@@ -1402,9 +1402,12 @@ void MainWindow::renderMapSelect()
 {
     menuHeader("STEP 1 / 3", "SELECT DEPLOYMENT ZONE");
     static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  TAR PITS", "SWAMP  |  BOG + TREES", "SNOW  |  ICE + PINES", "CITY RUINS  |  ACID", "FACILITY  |  COOLANT", "CITADEL  |  ACID VAULTS" };
+    int scrollRow = (m_mapChoice >= 6 ? 1 : 0);
     for (int i = 0; i < MAP_COUNT; i++) {
+        int row = i / 3 - scrollRow;
+        if (row < 0 || row > 1) continue;
         bool sel = m_mapChoice == i;
-        int w = 244, h = 228, col = i % 3, row = i / 3;
+        int w = 244, h = 228, col = i % 3;
         int x = 22 + col * (w + 12), y = 78 + row * (h + 12) - (sel ? 4 : 0);
         m_menuRects.push_back({x, y, w, h, i});
         panel(x, y, w, h, sel, AMBER);
@@ -1431,7 +1434,7 @@ void MainWindow::renderMapSelect()
         text(x + 12, y + 182, w - 24, 40, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, MAP_DESCS[i], QColor(180, 180, 180), 10, 500, false);
         text(x + w - 30, y + 6, 24, 14, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(130, 130, 130), 10, 700, false);
     }
-    menuFooter("ARROWS browse   ENTER or 1-6 select   ESC back");
+    menuFooter("ARROWS browse   ENTER or 1-7 select   ESC back");
 }
 
 void MainWindow::renderDiffSelect()

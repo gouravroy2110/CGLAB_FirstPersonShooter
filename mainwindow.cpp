@@ -2435,6 +2435,13 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
     if (m_screen != SCR_PLAYING) {
         if (e->button() == Qt::RightButton) { menuBack(); return; }
         QPointF f = widgetToFrame(e->position());
+        // Prioritize Back button (r.id == 10) navigation
+        for (const HitRect &r : m_menuRects) {
+            if (r.id == 10 && f.x() >= r.x && f.y() >= r.y && f.x() < r.x + r.w && f.y() < r.y + r.h) {
+                menuBack();
+                return;
+            }
+        }
         for (const HitRect &r : m_menuRects) {
             if (f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (r.id == 10) { menuBack(); return; }
@@ -2618,6 +2625,9 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
     if (m_screen == SCR_EDITOR) { if (e->buttons() & (Qt::LeftButton | Qt::RightButton)) editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
     if (m_screen != SCR_PLAYING) {
         QPointF f = widgetToFrame(e->position());
+        for (const HitRect &r : m_menuRects) {
+            if (r.id == 10 && f.x() >= r.x && f.y() >= r.y && f.x() < r.x + r.w && f.y() < r.y + r.h) return;
+        }
         int before = m_menuCursor * 100 + m_mapChoice * 10 + m_difficulty + m_charChoice * 1000 + m_settingsRow * 10000 + m_cSel * 100000 + m_controlsRow * 1000000;
         for (const HitRect &r : m_menuRects) {
             if (r.id == 10 || f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
