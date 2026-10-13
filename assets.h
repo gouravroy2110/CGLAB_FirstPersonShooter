@@ -22,6 +22,7 @@ struct Theme {
     float hazSlow;       // 0..1 movement slow while wading
     int   weather;       // default Weather
     const char *name;
+    const char *hazName;   // "LAVA", "TAR", "BOG", "ICE", "ACID", "COOLANT"
 };
 extern const Theme THEMES[THEME_COUNT];
 static const float SUN_AZIMUTH = -0.6f;   // world-space angle of the sun

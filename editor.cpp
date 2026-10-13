@@ -288,7 +288,9 @@ void MainWindow::renderEditor()
         if (sel) m_cv.rectOutline(px, py, 98, 20, ED_AMBER);
         char shown = BRUSHES[i].c == '1' ? m_edDigit : BRUSHES[i].c;
         text(px + 4, py, 16, 20, Qt::AlignLeft | Qt::AlignVCenter, QString(QChar(shown)), QColor(255, 255, 255), 10, 900, false);
-        text(px + 18, py, 80, 20, Qt::AlignLeft | Qt::AlignVCenter, BRUSHES[i].name, sel ? QColor(255, 255, 255) : QColor(170, 175, 180), 7, 700, false);
+        QString bname = BRUSHES[i].name;
+        if (BRUSHES[i].c == '~') bname = QString("%1 POOL").arg(THEMES[th].hazName);
+        text(px + 18, py, 80, 20, Qt::AlignLeft | Qt::AlignVCenter, bname, sel ? QColor(255, 255, 255) : QColor(170, 175, 180), 7, 700, false);
     }
     const char *help[] = { "LMB paint   RMB erase", "type a cell char to pick it", "+ / - zoom   ARROWS pan", "PGUP / PGDN other map",
                            "CTRL+S save   CTRL+R revert", "F5 play-test   ESC back" };

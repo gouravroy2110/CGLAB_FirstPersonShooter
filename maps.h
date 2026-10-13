@@ -4,7 +4,7 @@
 //  #  stone wall    B  brick wall    P  concrete pillar    D  door (E opens)
 //  S  secret wall: looks like stone; E opens it onto a hidden vault
 //  .  ground        -  step +0.25    ^  ledge +0.5 (jump)  =  high ledge +1.0
-//  v  sunken pit -0.6               ~  acid pool -0.5 (burns)
+//  v  sunken pit -0.6               ~  hazard pool (lava, tar, bog, ice, acid, coolant) -0.5 (burns)
 //  @  player   e  enemy   x  elite guard   k  medkit   a  ammo   r  rifle
 //  s  shotgun  t  intel case   m  menu-backdrop camera
 //  1-9 mission points   b c f g y  boss / enemy spots   n  escort NPC   z  extraction

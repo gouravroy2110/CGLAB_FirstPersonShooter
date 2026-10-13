@@ -16,27 +16,27 @@ const Theme THEMES[THEME_COUNT] = {
     // VOLCANIC: ember sky, basalt, lava pools
     { rgb(44,14,12),  rgb(196,74,34),  rgb(112,52,38),  rgb(255,150,80),  rgb(170,80,56),  rgb(44,22,22),
       0.62f, 0.44f, 0.060f, 0.42f, 0.86f,
-      rgb(170,30,0), rgb(255,196,70), true, 45.f, 0.f, 4, "VOLCANIC" },
+      rgb(170,30,0), rgb(255,196,70), true, 45.f, 0.f, 4, "VOLCANIC", "LAVA" },
     // DESERT: bright sun, sandstone, tar pits
     { rgb(52,118,204), rgb(244,218,172), rgb(228,206,164), rgb(255,242,206), rgb(255,255,255), rgb(206,196,184),
       1.15f, 0.46f, 0.026f, 0.95f, 0.14f,
-      rgb(26,22,18), rgb(96,84,62), false, 10.f, 0.55f, 0, "DESERT" },
+      rgb(26,22,18), rgb(96,84,62), false, 10.f, 0.55f, 0, "DESERT", "TAR" },
     // SWAMP FOREST: green overcast, mud, bog water, trees
     { rgb(62,82,74),  rgb(156,174,146), rgb(112,132,106), rgb(232,242,204), rgb(196,206,186), rgb(92,102,92),
       0.55f, 0.50f, 0.085f, 0.80f, 0.72f,
-      rgb(36,54,18), rgb(112,140,52), false, 18.f, 0.45f, 1, "SWAMP" },
+      rgb(36,54,18), rgb(112,140,52), false, 18.f, 0.45f, 1, "SWAMP", "BOG" },
     // SNOW: pale overcast, snow, frozen water, pines
     { rgb(112,142,184), rgb(222,232,242), rgb(214,222,232), rgb(255,250,240), rgb(255,255,255), rgb(172,182,198),
       0.80f, 0.64f, 0.050f, 0.50f, 0.62f,
-      rgb(24,56,90), rgb(150,206,236), false, 14.f, 0.5f, 2, "SNOW" },
+      rgb(24,56,90), rgb(150,206,236), false, 14.f, 0.5f, 2, "SNOW", "ICE" },
     // CITY RUINS: smoggy dusk, asphalt, chemical spills
     { rgb(66,58,60),  rgb(206,152,110), rgb(142,120,104), rgb(255,182,122), rgb(222,172,142), rgb(72,62,66),
       0.75f, 0.40f, 0.060f, 0.33f, 0.56f,
-      rgb(40,70,20), rgb(150,210,60), true, 28.f, 0.f, 0, "CITY RUINS" },
+      rgb(40,70,20), rgb(150,210,60), true, 28.f, 0.f, 0, "CITY RUINS", "ACID" },
     // FACILITY: night, floodlit steel, coolant
     { rgb(8,12,28),   rgb(46,66,98),   rgb(38,50,68),   rgb(206,222,255), rgb(96,116,148), rgb(18,22,34),
       0.50f, 0.52f, 0.050f, 1.05f, 0.42f,
-      rgb(6,50,84), rgb(90,226,255), true, 30.f, 0.f, 0, "FACILITY" },
+      rgb(6,50,84), rgb(90,226,255), true, 30.f, 0.f, 0, "FACILITY", "COOLANT" },
 };
 
 static inline float smooth(float e0, float e1, float x) {

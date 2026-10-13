@@ -100,6 +100,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_net, &NetworkManager::connectionError, this, [this](const QString &err) {
         pushFeed(err, 4.0f);
     });
+    m_curHazardName = THEMES[0].hazName;
+    m_curHazardColor = THEMES[0].hazLight;
 }
 
 bool MainWindow::isActionPressed(KeyAction act) const
@@ -113,6 +115,24 @@ bool MainWindow::isPlayerMoving() const
 {
     return isActionPressed(ACT_MOVE_FWD) || isActionPressed(ACT_MOVE_BACK) ||
            isActionPressed(ACT_MOVE_LEFT) || isActionPressed(ACT_MOVE_RIGHT);
+}
+
+const char* MainWindow::hazardNameAt(int cx, int cy) const
+{
+    if (cx >= 0 && cy >= 0 && cx < m_mapW && cy < m_mapH) {
+        bool isQueenAcid = (!m_baseAcid.empty() && size_t(cy * m_mapW + cx) < m_baseAcid.size() && !m_baseAcid[cy * m_mapW + cx]);
+        if (isQueenAcid) return "ACID";
+    }
+    return (m_theme >= 0 && m_theme < THEME_COUNT && THEMES[m_theme].hazName) ? THEMES[m_theme].hazName : "HAZARD";
+}
+
+uint32_t MainWindow::hazardColorAt(int cx, int cy) const
+{
+    if (cx >= 0 && cy >= 0 && cx < m_mapW && cy < m_mapH) {
+        bool isQueenAcid = (!m_baseAcid.empty() && size_t(cy * m_mapW + cx) < m_baseAcid.size() && !m_baseAcid[cy * m_mapW + cx]);
+        if (isQueenAcid) return rs::rgb(150, 210, 60);
+    }
+    return (m_theme >= 0 && m_theme < THEME_COUNT) ? THEMES[m_theme].hazLight : 0xFF96E63C;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -515,6 +535,8 @@ void MainWindow::loadLevel(int lv)
     }
     m_seeds.clear(); m_overloadCells.clear(); m_overloadPhase = 9.f;
     m_baseAcid = m_acid.v;
+    m_curHazardName = hazardNameAt(-1, -1);
+    m_curHazardColor = hazardColorAt(-1, -1);
     // The zone is cleared only when every enemy is dead (vault guards and the commander included)
     m_gs.killsNeeded = int(m_gs.enemies.size());
     m_reinforceTimer = frand(14.f, 22.f);
@@ -1037,9 +1059,11 @@ void MainWindow::gameStep(float dt)
     }
     float g = floorH(pl.posX, pl.posY);
 
-    // Acid burns while standing in it
+    // Hazard burns/damages while standing in it
     int pcx = int(pl.posX), pcy = int(pl.posY);
-    if (m_acid[pcy][pcx] && m_gs.player.footZ <= g + 0.05f) {
+    if (pcx >= 0 && pcx < m_mapW && pcy >= 0 && pcy < m_mapH && m_acid[pcy][pcx] && m_gs.player.footZ <= g + 0.05f) {
+        m_curHazardName = hazardNameAt(pcx, pcy);
+        m_curHazardColor = hazardColorAt(pcx, pcy);
         m_acidAcc += THEMES[m_theme].hazDps * dt * (1.f - pl.damageReduction * 0.5f);
         m_acidFlash = 1.f;
         m_acidSndT -= dt;
@@ -1048,6 +1072,7 @@ void MainWindow::gameStep(float dt)
         if (m_acidAcc >= 1.f) { int d = int(m_acidAcc); m_acidAcc -= d; pl.hp -= d; m_gs.zoneDamage += d; pl.damageFlash = std::max(pl.damageFlash, 0.2f); }
         if (pl.hp <= 0) {
             pl.hp = 0; pl.adsMode = false;
+            m_killerIdx = -3;
             if (mpActive) {
                 m_net->handleDeathDrop(m_net->localPlayerId(), -1, false, m_gs);
             } else {
@@ -2845,11 +2870,20 @@ bool MainWindow::snapshot(const QString &dir)
     place(20.5f, 17.3f, 1.5708f); run(3); save("22_dungeon_door");
     tryOpenDoor(); run(80);
     place(20.5f, 18.4f, 1.5708f); m_pitch = -0.15f; run(10); save("23_dungeon_acid_vault");
+    place(25.5f, 16.5f, 0.f); run(10); save("24_emberforge_lava_hazard");
 
     // --- Crypt: altar ledge and dusk shadows -----------------------------------------
     start(2);
     place(m_parsed[2].camX, m_parsed[2].camY, 1.2f); run(10); save("30_crypt");
     place(7.5f, 26.5f, -0.6f); run(10); save("31_crypt_altar");
+
+    // --- Frostline: ice hazard test --------------------------------------------------
+    start(3);
+    place(10.5f, 50.5f, 0.f); run(10); save("35_frostline_ice_hazard");
+
+    // --- Ashen City: acid hazard test ------------------------------------------------
+    start(4);
+    place(16.5f, 29.5f, 0.f); run(10); save("36_ashen_city_acid_hazard");
 
     // --- Combat frame on hills + perf ------------------------------------------------
     start(1);

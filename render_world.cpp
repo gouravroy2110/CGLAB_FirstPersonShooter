@@ -113,14 +113,18 @@ void MainWindow::renderTerrain()
                 if (acid) {
                     // hazard pool in the biome's colours: crossing ripple bands + bubbles;
                     // lava / coolant are self-lit and slowly flow, others take the light map
-                    float flow = T.hazGlow ? m_time * 0.25f : 0.f;
+                    bool isQueenAcid = (!m_baseAcid.empty() && size_t(cy * m_mapW + cx) < m_baseAcid.size() && !m_baseAcid[cy * m_mapW + cx]);
+                    uint32_t deepCol = isQueenAcid ? rgb(40, 70, 20) : T.hazDeep;
+                    uint32_t lightCol = isQueenAcid ? rgb(150, 210, 60) : T.hazLight;
+                    bool glow = isQueenAcid ? true : T.hazGlow;
+                    float flow = glow ? m_time * 0.25f : 0.f;
                     float w1 = std::sin(m_time * 2.1f + (wx + flow) * 5.f + wy * 3.f), w2 = std::sin(m_time * 1.3f - wx * 3.f + (wy + flow) * 6.f);
                     float w = 0.5f + 0.25f * (w1 + w2);
                     float hl = w > 0.85f ? (w - 0.85f) * 6.f : 0.f;
                     float bub = hash2(int(wx * 20.f), int(wy * 20.f), int(m_time * 3.f)) > 0.975f ? 1.f : 0.f;
-                    uint32_t hc = lerpCol(T.hazDeep, T.hazLight, clampf(w * 0.8f + hl * 0.5f + bub * 0.6f, 0.f, 1.f));
-                    int L = T.hazGlow ? 256 : lightLut[m_light[size_t(clampi(int(wy * LM), 0, m_mapH * LM - 1)) * LW + clampi(int(wx * LM), 0, LW - 1)]];
-                    out = shadeFog((R(hc) * L) >> 8, (G(hc) * L) >> 8, (B(hc) * L) >> 8, T.hazGlow ? std::min(256, fogI(d) + 60) : fogI(d));
+                    uint32_t hc = lerpCol(deepCol, lightCol, clampf(w * 0.8f + hl * 0.5f + bub * 0.6f, 0.f, 1.f));
+                    int L = glow ? 256 : lightLut[m_light[size_t(clampi(int(wy * LM), 0, m_mapH * LM - 1)) * LW + clampi(int(wx * LM), 0, LW - 1)]];
+                    out = shadeFog((R(hc) * L) >> 8, (G(hc) * L) >> 8, (B(hc) * L) >> 8, glow ? std::min(256, fogI(d) + 60) : fogI(d));
                 } else if (kind == 1) {
                     int lvl = mipFor(d, wallFoot);
                     int sz = WALL_TS >> lvl, msk = sz - 1;

@@ -203,6 +203,11 @@ void MainWindow::renderPostFX()
         }
         return;
     }
+    uint32_t hc = m_curHazardColor ? m_curHazardColor : THEMES[m_theme].hazLight;
+    int tr = R(hc), tg = G(hc), tb = B(hc);
+    if (m_theme == BIO_DESERT && m_curHazardName && strcmp(m_curHazardName, "TAR") == 0) {
+        tr = 180; tg = 120; tb = 40;
+    }
     for (int i = 0; i < W * H; i++) {
         uint32_t c = m_pixels[i];
         int r = R(c), g = G(c), b = B(c);
@@ -214,8 +219,9 @@ void MainWindow::renderPostFX()
         if (acid) {
             int e = 256 - ((1024 - v) >> 2);              // stronger toward the edges
             int k = (acid * std::max(64, e)) >> 9;
-            r -= (r * k) >> 9; g += ((200 - g) * k) >> 9; b -= (b * k) >> 9;
-            if (g < 0) g = 0;
+            r = (r * (256 - k) + tr * k) >> 8;
+            g = (g * (256 - k) + tg * k) >> 8;
+            b = (b * (256 - k) + tb * k) >> 8;
         }
         if (dmg || low) {
             int e = (v * v) >> 10;                         // edges only
@@ -282,8 +288,14 @@ void MainWindow::renderHUD()
         text(0, 162, W, 16, Qt::AlignCenter, QString("Secrets %1 / %2   -   expect heavy resistance").arg(m_gs.secretsFound).arg(m_gs.secretsTotal),
              QColor(220, 220, 220, int(230 * t)), 12, 600);
     }
-    if (m_acidFlash > 0.3f && !m_gs.gameOver)
-        text(0, H / 2 + 60, W, 22, Qt::AlignCenter, "ACID!  JUMP OUT", QColor(170, 255, 90, int(255 * std::min(1.f, m_acidFlash))), 18, 900);
+    if (m_acidFlash > 0.3f && !m_gs.gameOver) {
+        const char *hname = m_curHazardName ? m_curHazardName : THEMES[m_theme].hazName;
+        uint32_t hcol = m_curHazardColor ? m_curHazardColor : THEMES[m_theme].hazLight;
+        QColor tc = qc(hcol);
+        if (m_theme == BIO_DESERT && hname && strcmp(hname, "TAR") == 0) tc = QColor(240, 180, 80);
+        tc.setAlpha(int(255 * std::min(1.f, m_acidFlash)));
+        text(0, H / 2 + 60, W, 22, Qt::AlignCenter, QString("%1!  JUMP OUT").arg(hname ? hname : "HAZARD"), tc, 18, 900);
+    }
     if (m_combo >= 2 && m_comboDisplay > 0) {
         float t = std::min(1.f, m_comboDisplay / 0.5f);
         text(0, 96, W, 30, Qt::AlignCenter, QString("x%1  KILL STREAK").arg(m_combo), QColor(255, 200, 60, int(255 * t)), 22, 800);
@@ -436,7 +448,7 @@ void MainWindow::renderMinimap()
                  (cx + 0.5f - pl.posX) * (cx + 0.5f - pl.posX) + (cy + 0.5f - pl.posY) * (cy + 0.5f - pl.posY) < 49.f)
             c = withAlpha(lerpCol(rgb(150, 156, 164), rgb(235, 200, 120), 0.18f + 0.14f * std::sin(m_time * 3.f)), 235);   // a faint shimmer
         else if (solidCell(cx, cy)) c = withAlpha(rgb(150, 156, 164), 235);
-        else if (m_acid[cy][cx]) c = withAlpha(rgb(90, 190, 50), 220);
+        else if (m_acid[cy][cx]) c = withAlpha(hazardColorAt(cx, cy), 220);
         else {
             int lift = int(m_plat[cy][cx] * 40.f);           // ledges lighter, pits darker
             c = withAlpha(rgb(14 + lift, 18 + lift, 22 + lift), 180);
@@ -1238,7 +1250,7 @@ void MainWindow::renderMenu()
 void MainWindow::renderMapSelect()
 {
     menuHeader("STEP 1 / 3", "SELECT DEPLOYMENT ZONE");
-    static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  DUNES", "SWAMP  |  BOG + TREES", "SNOW  |  64x64", "CITY RUINS  |  64x64", "FACILITY  |  56x56", "CITADEL  |  48x48" };
+    static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  TAR PITS", "SWAMP  |  BOG + TREES", "SNOW  |  ICE + PINES", "CITY RUINS  |  ACID", "FACILITY  |  COOLANT", "CITADEL  |  ACID VAULTS" };
     for (int i = 0; i < MAP_COUNT; i++) {
         bool sel = m_mapChoice == i;
         int w = 244, h = 228, col = i % 3, row = i / 3;

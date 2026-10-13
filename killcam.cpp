@@ -90,7 +90,9 @@ void MainWindow::renderKillcam()
         cx = px + std::cos(a) * 2.6f; cy = py + std::sin(a) * 2.6f; cz = pz + 0.6f;
         if (!posValid(cx, cy, 0.1f)) { cx = px - pl.dirX * 1.5f; cy = py - pl.dirY * 1.5f; }
         cz = std::max(cz, groundAt(cx, cy) + 0.3f);
-        who = m_killerIdx == -2 ? "YOUR OWN EXPLOSIVE" : "THE ENVIRONMENT";
+        if (m_killerIdx == -2) who = "YOUR OWN EXPLOSIVE";
+        else if (m_killerIdx == -3) who = QString(m_curHazardName ? m_curHazardName : THEMES[m_theme].hazName);
+        else who = "THE ENVIRONMENT";
     }
     float lx = px - cx, ly = py - cy, ll = std::sqrt(lx * lx + ly * ly) + 1e-4f;
     m_kcBodyYaw = std::atan2(f.player.dirY, f.player.dirX);

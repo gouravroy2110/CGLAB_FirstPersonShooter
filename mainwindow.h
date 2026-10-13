@@ -372,6 +372,10 @@ private:
 
     // -- Feedback ------------------------------------------------------------------
     float m_hitMarker = 0, m_headMarker = 0, m_killMarker = 0, m_headshotBanner = 0, m_secretBanner = 0, m_acidFlash = 0;
+    const char *m_curHazardName = nullptr;
+    uint32_t    m_curHazardColor = 0;
+    const char *hazardNameAt(int cx, int cy) const;
+    uint32_t    hazardColorAt(int cx, int cy) const;
     float m_damageAngle = 0, m_damageDirTimer = 0;
     // Damage indicators remember where the hit came from (world space), so the
     // arc keeps pointing at the attacker while you turn. Up to 6 at once.
