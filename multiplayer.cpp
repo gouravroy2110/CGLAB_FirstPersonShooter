@@ -16,6 +16,50 @@ static const char *const BOT_NAMES[8] = {
 };
 }
 
+// Network data is untrusted: keep ids, weapons, teams and positions in range
+static inline int clampGun(int g) { return (g >= -1 && g < WPN_COUNT) ? g : -1; }
+static inline bool finitePos(float x, float y, float z, const World *w)
+{
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+    if (w && (x < 0.f || y < 0.f || x >= float(w->m_mapW) || y >= float(w->m_mapH))) return false;
+    return std::fabs(z) < 50.f;
+}
+static inline bool doorCell(const World &w, int y, int x) { return w.inside(x, y); }
+
+int NetworkManager::idForSocket(QTcpSocket *s) const
+{
+    for (const auto &p : m_sockIds) if (p.first == s) return p.second;
+    return -1;
+}
+
+QTcpSocket *NetworkManager::socketForId(int id) const
+{
+    for (const auto &p : m_sockIds) if (p.second == id) return p.first;
+    return nullptr;
+}
+
+// Team spawn: the Citadel has dedicated spawn rooms; on other maps the first
+// open floor cell scanning in from the west (Alpha) or east (Bravo) edge
+void NetworkManager::teamSpawn(int team, const World &world, float &x, float &y) const
+{
+    if (isCitadel() && world.m_mapW >= 48 && world.m_mapH >= 48) { x = team == 0 ? 2.5f : 44.5f; y = 22.5f; return; }
+    int W = world.m_mapW, H = world.m_mapH;
+    for (int r = 0; r < H / 2; r++) {
+        for (int k = 0; k < W; k++) {
+            int cx = team == 0 ? 1 + k : W - 2 - k;
+            for (int sgn = -1; sgn <= 1; sgn += 2) {
+                int cy = H / 2 + sgn * r;
+                if (!world.inside(cx, cy)) continue;
+                float fx = cx + 0.5f, fy = cy + 0.5f;
+                bool reachOk = world.m_reach.size() != size_t(W) * size_t(H) || world.reachable(cx, cy);   // reach map may be from the last map
+                if (world.posValid(fx, fy, 0.3f) && reachOk) { x = fx; y = fy; return; }
+            }
+            if (k > W / 3) break;
+        }
+    }
+    x = W * 0.5f; y = H * 0.5f;
+}
+
 NetworkManager::NetworkManager(QObject *parent)
     : QObject(parent)
 {
@@ -46,6 +90,8 @@ void NetworkManager::disconnectSession()
         }
     }
     m_clientSockets.clear();
+    m_sockIds.clear();
+    m_nextClientId = 1;
 
     if (m_tcpServer) {
         m_tcpServer->disconnect();
@@ -153,8 +199,10 @@ void NetworkManager::onNewConnection()
     if (!m_tcpServer) return;
     while (m_tcpServer->hasPendingConnections()) {
         QTcpSocket *sock = m_tcpServer->nextPendingConnection();
+        if (int(m_clientSockets.size()) >= MP_MAX_PLAYERS - 1 || m_nextClientId >= 100) { sock->abort(); sock->deleteLater(); continue; }   // room full
         sock->setSocketOption(QAbstractSocket::LowDelayOption, 1);
         m_clientSockets.push_back(sock);
+        m_sockIds.push_back({sock, m_nextClientId++});
         connect(sock, &QTcpSocket::readyRead, this, &NetworkManager::onClientData);
         connect(sock, &QTcpSocket::disconnected, this, &NetworkManager::onClientDisconnected);
     }
@@ -168,6 +216,13 @@ void NetworkManager::onClientDisconnected()
     auto it = std::find(m_clientSockets.begin(), m_clientSockets.end(), sock);
     if (it != m_clientSockets.end()) {
         m_clientSockets.erase(it);
+    }
+    // drop the player's lobby slot and, mid-match, their operative
+    int gone = idForSocket(sock);
+    m_sockIds.erase(std::remove_if(m_sockIds.begin(), m_sockIds.end(), [sock](const std::pair<QTcpSocket*, int> &p) { return p.first == sock; }), m_sockIds.end());
+    if (gone >= 0) {
+        m_slots.erase(std::remove_if(m_slots.begin(), m_slots.end(), [gone](const MpPlayerSlot &s) { return s.id == gone; }), m_slots.end());
+        if (m_activeGs) m_activeGs->actors.erase(std::remove_if(m_activeGs->actors.begin(), m_activeGs->actors.end(), [gone](const Actor &a) { return a.id == gone; }), m_activeGs->actors.end());
     }
     sock->deleteLater();
 
@@ -246,12 +301,9 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
 
     if (m_isHost) {
         // --- HOST HANDLERS ---
-        // Find which client socket sent this
-        int clientIdx = -1;
-        for (size_t i = 0; i < m_clientSockets.size(); i++) {
-            if (m_clientSockets[i] == fromSocket) { clientIdx = int(i); break; }
-        }
-        int playerId = clientIdx + 1;
+        // Which player sent this (ids are fixed per connection)
+        int playerId = idForSocket(fromSocket);
+        if (playerId < 0) return;
 
         if (data.size() < 1) return;
         quint8 type = 0;
@@ -272,7 +324,7 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
 
             MpPlayerSlot slot;
             slot.id = playerId;
-            slot.name = name.trimmed().isEmpty() ? QString("Operative %1").arg(playerId + 1) : name.trimmed();
+            slot.name = name.trimmed().isEmpty() ? QString("Operative %1").arg(playerId + 1) : name.trimmed().left(15);
             slot.team = assignedTeam;
             slot.cls = CharClass(reqClass % 3);
             slot.ready = false;
@@ -327,7 +379,7 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
         else if (type == NET_SET_NAME) {
             QString newName; in >> newName;
             if (!newName.trimmed().isEmpty()) {
-                for (auto &s : m_slots) { if (s.id == playerId) { s.name = newName.trimmed(); break; } }
+                for (auto &s : m_slots) { if (s.id == playerId) { s.name = newName.trimmed().left(15); break; } }
                 broadcastLobbyState();
                 emit lobbyUpdated();
             }
@@ -336,6 +388,9 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
             qint32 pid; float px, py, pz, dx, dy, vx, vy;
             qint32 gun, hp; quint8 alive, shooting;
             in >> pid >> px >> py >> pz >> dx >> dy >> vx >> vy >> gun >> hp >> alive >> shooting;
+            pid = playerId;                                   // a client can only move its own operative
+            if (in.status() != QDataStream::Ok || !finitePos(px, py, pz, m_activeWorld) || !std::isfinite(dx) || !std::isfinite(dy)) return;
+            gun = clampGun(gun); hp = std::max(0, std::min(int(hp), 500));
 
             if (m_activeGs) {
                 for (auto &act : m_activeGs->actors) {
@@ -358,9 +413,10 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
             QVariantMap data; in >> data;
             if (evType == EV_DAMAGE) {
                 int target = data.value("target").toInt();
-                int dmg = data.value("dmg").toInt();
-                int shooter = data.value("shooter").toInt();
+                int dmg = std::max(0, std::min(data.value("dmg").toInt(), 400));
+                int shooter = playerId;
                 bool head = data.value("head").toBool();
+                data["shooter"] = shooter; data["dmg"] = dmg;
 
                 QByteArray fwd; QDataStream fout(&fwd, QIODevice::WriteOnly);
                 fout << (quint8)NET_EVENT << (quint8)EV_DAMAGE << data;
@@ -392,7 +448,8 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
                 }
             }
             else if (evType == EV_RESPAWN) {
-                int rid = data.value("id").toInt();
+                int rid = playerId;
+                data["id"] = rid;
                 QByteArray fwd; QDataStream fout(&fwd, QIODevice::WriteOnly);
                 fout << (quint8)NET_EVENT << (quint8)EV_RESPAWN << data;
                 broadcastTcpPacket(NET_EVENT, fwd);
@@ -429,11 +486,12 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
             m_settings.roomCode = rCode;
 
             m_slots.clear();
-            for (int i = 0; i < numSlots; i++) {
+            numSlots = std::max(0, std::min(int(numSlots), MP_MAX_PLAYERS * 2));
+            for (int i = 0; i < numSlots && in.status() == QDataStream::Ok; i++) {
                 qint32 id, team, cls; QString name; quint8 ready, bot;
                 in >> id >> name >> team >> cls >> ready >> bot;
                 MpPlayerSlot s;
-                s.id = id; s.name = name; s.team = team; s.cls = CharClass(cls);
+                s.id = id; s.name = name.left(15); s.team = team == 1 ? 1 : 0; s.cls = CharClass(((cls % 3) + 3) % 3);
                 s.ready = (ready != 0); s.isBot = (bot != 0);
                 s.isHost = (id == 0);
                 m_slots.push_back(s);
@@ -467,7 +525,7 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
             // Blast doors
             float d5, d42; quint8 dm5, dm42;
             in >> d5 >> dm5 >> d42 >> dm42;
-            if (m_activeWorld && m_activeWorld->m_mapH > 22 && m_activeWorld->m_mapW > 42) {
+            if (m_activeWorld && isCitadel() && doorCell(*m_activeWorld, 22, 42)) {
                 m_activeWorld->m_doorT[22][5] = d5;
                 m_activeWorld->m_doorMoving[22][5] = (dm5 != 0);
                 m_activeWorld->m_doorT[22][42] = d42;
@@ -479,7 +537,8 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
             qint32 hgun, hhp; quint8 halive, hshooting;
             in >> hx >> hy >> hz >> hdx >> hdy >> hvx >> hvy >> hgun >> hhp >> halive >> hshooting;
 
-            if (m_activeGs) {
+            hgun = clampGun(hgun);
+            if (m_activeGs && finitePos(hx, hy, hz, m_activeWorld)) {
                 for (auto &act : m_activeGs->actors) {
                     if (act.id == 0) {
                         act.posX = hx; act.posY = hy; act.footZ = hz;
@@ -494,12 +553,17 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
                     }
                 }
 
+            }
+            if (m_activeGs) {
                 qint32 actCount; in >> actCount;
-                for (int i = 0; i < actCount; i++) {
+                actCount = std::max(0, std::min(int(actCount), 64));
+                for (int i = 0; i < actCount && in.status() == QDataStream::Ok; i++) {
                     qint32 aid, ateam, actl;
                     float ax, ay, az, adx, ady, avx, avy;
                     qint32 agun, ahp; quint8 aalive, ashooting;
                     in >> aid >> ateam >> actl >> ax >> ay >> az >> adx >> ady >> avx >> avy >> agun >> ahp >> aalive >> ashooting;
+                    agun = clampGun(agun);
+                    if (!finitePos(ax, ay, az, m_activeWorld)) continue;
 
                     if (aid == m_localPlayerId) {
                         if (ahp < m_activeGs->player.hp) {
@@ -717,11 +781,7 @@ void NetworkManager::setReady(bool ready)
 void NetworkManager::kickSlot(int slotId)
 {
     if (!m_isHost || slotId == m_localPlayerId) return;
-    int clientIdx = slotId - 1;
-    if (clientIdx >= 0 && clientIdx < int(m_clientSockets.size())) {
-        QTcpSocket *sock = m_clientSockets[size_t(clientIdx)];
-        if (sock) sock->disconnectFromHost();
-    }
+    if (QTcpSocket *sock = socketForId(slotId)) sock->disconnectFromHost();
     m_slots.erase(std::remove_if(m_slots.begin(), m_slots.end(), [slotId](const MpPlayerSlot &s) { return s.id == slotId; }), m_slots.end());
     balanceTeamsAndFillBots();
     broadcastLobbyState();
@@ -829,8 +889,9 @@ void NetworkManager::resetRound(GameState &gs, World &world, const ParsedMap &pm
     // Dedicated Spawn Rooms:
     // Team Alpha: West Spawn Room (center: X: 2.5, Y: 22.5)
     // Team Bravo: East Spawn Room (center: X: 44.5, Y: 22.5)
-    float baseA_X = 2.5f, baseA_Y = 22.5f;
-    float baseB_X = 44.5f, baseB_Y = 22.5f;
+    float baseA_X, baseA_Y, baseB_X, baseB_Y;
+    teamSpawn(0, world, baseA_X, baseA_Y);
+    teamSpawn(1, world, baseB_X, baseB_Y);
 
     gs.actors.clear();
 
@@ -889,23 +950,21 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
 
         // Safety blast door release: 3s into the round, ensure spawn blast doors are opening
         if (m_match.roundTimer <= (float(m_settings.roundDuration) - 3.0f)) {
-            if (world.m_map[22][5] == CELL_DOOR && !world.m_doorMoving[22][5] && world.m_doorT[22][5] < 0.9f) {
-                world.m_doorMoving[22][5] = true;
-            }
-            if (world.m_map[22][42] == CELL_DOOR && !world.m_doorMoving[22][42] && world.m_doorT[22][42] < 0.9f) {
-                world.m_doorMoving[22][42] = true;
+            if (isCitadel() && doorCell(world, 22, 42)) {
+                if (world.m_map[22][5] == CELL_DOOR && !world.m_doorMoving[22][5] && world.m_doorT[22][5] < 0.9f) world.m_doorMoving[22][5] = true;
+                if (world.m_map[22][42] == CELL_DOOR && !world.m_doorMoving[22][42] && world.m_doorT[22][42] < 0.9f) world.m_doorMoving[22][42] = true;
             }
         }
 
         // Check encryption key objective spawn (spawns 2 minutes into round)
-        if (!m_match.keyActive && m_match.roundTimer <= (float(m_settings.roundDuration) - 120.f)) {
+        if (isCitadel() && !m_match.keyActive && !m_match.vaultUnlocked && m_match.roundTimer <= (float(m_settings.roundDuration) - 120.f)) {
             m_match.keyActive = true;
             m_match.keyCarrier = -1;
             m_match.keyX = 23.5f; m_match.keyY = 22.5f; m_match.keyZ = -1.8f;
 
             WeaponPickup kp;
             kp.x = m_match.keyX; kp.y = m_match.keyY;
-            kp.type = PICKUP_INTEL;
+            kp.type = PICKUP_KEY;
             kp.reward = true;
             gs.weaponPickups.push_back(kp);
 
@@ -916,7 +975,7 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
 
         // Power weapon pads (Catwalk AWM Sniper every 60s, Courtyard M249 SAW every 60s)
         m_match.catwalkWeaponTimer -= dt;
-        if (m_match.catwalkWeaponTimer <= 0.f) {
+        if (m_match.catwalkWeaponTimer <= 0.f && world.posValid(23.5f, 10.5f, 0.2f)) {
             m_match.catwalkWeaponTimer = 60.f;
             WeaponPickup wp; wp.x = 23.5f; wp.y = 10.5f; wp.type = PICKUP_WEAPON;
             wp.weapon = (rand() % 2 == 0) ? WPN_SNIPER : WPN_DMR;
@@ -925,7 +984,7 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
         }
 
         m_match.courtyardWeaponTimer -= dt;
-        if (m_match.courtyardWeaponTimer <= 0.f) {
+        if (m_match.courtyardWeaponTimer <= 0.f && world.posValid(23.5f, 33.5f, 0.2f)) {
             m_match.courtyardWeaponTimer = 60.f;
             WeaponPickup wp; wp.x = 23.5f; wp.y = 33.5f; wp.type = PICKUP_WEAPON;
             wp.weapon = (rand() % 2 == 0) ? WPN_LMG : WPN_AUTO_SHOTGUN;
@@ -935,7 +994,7 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
 
         // Supply pads
         m_match.medkitTimer1 -= dt;
-        if (m_match.medkitTimer1 <= 0.f) {
+        if (m_match.medkitTimer1 <= 0.f && world.posValid(8.5f, 7.5f, 0.2f)) {
             m_match.medkitTimer1 = 35.f;
             HealthKit hk; hk.x = 8.5f; hk.y = 7.5f; hk.active = true;
             gs.healthKits.push_back(hk);
@@ -1000,10 +1059,11 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
             << (quint8)(m_match.vaultUnlocked ? 1 : 0);
 
         // Blast door states (Citadel)
-        float d5 = (world.m_mapH > 22 && world.m_mapW > 5) ? world.m_doorT[22][5] : 0.f;
-        float d42 = (world.m_mapH > 22 && world.m_mapW > 42) ? world.m_doorT[22][42] : 0.f;
-        quint8 dm5 = (world.m_mapH > 22 && world.m_mapW > 5) ? (world.m_doorMoving[22][5] ? 1 : 0) : 0;
-        quint8 dm42 = (world.m_mapH > 22 && world.m_mapW > 42) ? (world.m_doorMoving[22][42] ? 1 : 0) : 0;
+        bool doors = isCitadel() && doorCell(world, 22, 42);
+        float d5 = doors ? world.m_doorT[22][5] : 0.f;
+        float d42 = doors ? world.m_doorT[22][42] : 0.f;
+        quint8 dm5 = doors ? (world.m_doorMoving[22][5] ? 1 : 0) : 0;
+        quint8 dm42 = doors ? (world.m_doorMoving[22][42] ? 1 : 0) : 0;
         out << d5 << dm5 << d42 << dm42;
 
         // Host player (id 0)
@@ -1064,11 +1124,11 @@ void NetworkManager::handleDeathDrop(int victimId, int killerId, bool headshot, 
 {
     Player *p = nullptr;
     int victimTeam = 0;
-    int killerTeam = 0;
+    int killerTeam = -1;
 
     for (const auto &s : m_slots) {
-        if (s.id == victimId) victimTeam = s.team;
-        if (s.id == killerId) killerTeam = s.team;
+        if (s.id == victimId) victimTeam = s.team == 1 ? 1 : 0;
+        if (s.id == killerId && killerId != victimId) killerTeam = s.team == 1 ? 1 : 0;
     }
 
     if (victimId == m_localPlayerId) p = &gs.player;
@@ -1097,7 +1157,7 @@ void NetworkManager::handleDeathDrop(int victimId, int killerId, bool headshot, 
     }
 
     // Points calculation: +100 kill (+150 for headshot), -50 for death
-    m_match.teamScore[killerTeam] += headshot ? 150 : 100;
+    if (killerTeam >= 0 && killerTeam != victimTeam) m_match.teamScore[killerTeam] += headshot ? 150 : 100;
     m_match.teamScore[victimTeam] = std::max(0, m_match.teamScore[victimTeam] - 50);
 
     QVariantMap kev;
@@ -1116,8 +1176,8 @@ void NetworkManager::handleRespawn(int actorId, GameState &gs, const World &worl
     for (const auto &s : m_slots) {
         if (s.id == actorId) { team = s.team; cls = s.cls; break; }
     }
-    float baseX = (team == 0) ? 2.5f : 44.5f;
-    float baseY = 22.5f;
+    float baseX, baseY;
+    teamSpawn(team, world, baseX, baseY);
     float sx = baseX, sy = baseY;
     float rx = baseX + float(rand() % 5 - 2) * 0.25f;
     float ry = baseY + float(rand() % 5 - 2) * 0.25f;
@@ -1180,7 +1240,7 @@ void NetworkManager::checkObjectiveInteractions(GameState &gs)
             m_match.vaultUnlocked = true;
 
             int team = 0;
-            for (const auto &s : m_slots) { if (s.id == m_localPlayerId) team = s.team; }
+            for (const auto &s : m_slots) { if (s.id == m_localPlayerId) team = s.team == 1 ? 1 : 0; }
             m_match.teamScore[team] += 500; // +500 points for team!
 
             // Spawn Vault power weapons

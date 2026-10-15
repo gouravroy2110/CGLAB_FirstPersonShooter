@@ -50,3 +50,7 @@ CMakeLists.txt.user
 # Archives & Scratch
 *.zip
 scratch_map.txt
+
+# Build output
+/fps_game
+/fps_game.exe

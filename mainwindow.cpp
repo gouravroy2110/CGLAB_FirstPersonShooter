@@ -2111,8 +2111,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if (m_screen == SCR_PLAYING && m_flyActive) { if (!e->isAutoRepeat()) { m_flyActive = false; m_keys.erase(k); } return; }
     if (m_screen == SCR_PLAYING && k == Qt::Key_F5 && m_edPlaytest) { m_edPlaytest = false; openEditor(m_edMap); return; }
 
-    // Global settings key: [O] or [P] opens/toggles settings
-    if (k == Qt::Key_O || k == Qt::Key_P) {
+    // Global settings key: [O] or [P] opens/toggles settings (not while a control is being rebound)
+    if ((k == Qt::Key_O || k == Qt::Key_P) && !(m_screen == SCR_SETTINGS && m_rebindingAction >= 0)) {
         if (m_screen == SCR_SETTINGS) {
             menuBack();
             return;
@@ -2937,6 +2937,33 @@ bool MainWindow::snapshot(const QString &dir)
     for (int i = 0; i < 120; i++) { advance(1.f / 60.f); render(); }
     log(QString("%1 ms/frame (dungeon)").arg(tm.elapsed() / 120.0));
 
+    // --- Soldier model close-up: front, profile while walking, sprinting ----------
+    {
+        start(1);
+        m_tpp = false; m_boomT = 0.f;
+        place(20.5f, 20.5f, 0.f);
+        m_gs.enemies.clear();
+        auto add = [&](int id, float x, float y, float yaw, int gun, float vel, float walk, bool sprint) {
+            Actor a; a.id = id; a.team = id == 3 ? 1 : 0; a.posX = x; a.posY = y; a.footZ = floorH(x, y);
+            a.dirX = std::cos(yaw); a.dirY = std::sin(yaw); a.curWeapon = gun; a.velX = vel; a.walkPhase = walk; a.sprinting = sprint;
+            a.thinkT = 99.f;
+            m_gs.actors.push_back(a);
+        };
+        add(1, 22.3f, 20.1f, 3.14159f, WPN_RIFLE, 0.f, 0.f, false);      // facing the camera
+        add(2, 22.6f, 20.95f, 1.5708f, WPN_SMG, 2.4f, 1.1f, false);      // side view, mid-stride
+        add(3, 23.4f, 19.5f, 2.4f, WPN_SHOTGUN, 4.f, 2.2f, true);        // sprinting, other team
+        m_pitch = -0.08f;
+        computeView(); render(); save("60b_soldier_closeup");
+        QElapsedTimer t2; t2.start();
+        for (int i = 0; i < 60; i++) { computeView(); render(); }
+        double withSoldiers = t2.elapsed() / 60.0;
+        std::vector<Actor> keep = m_gs.actors; m_gs.actors.clear();
+        t2.restart();
+        for (int i = 0; i < 60; i++) { computeView(); render(); }
+        log(QString("soldier close-up: %1 ms/frame with 3 soldiers at 2 m, %2 ms without").arg(withSoldiers, 0, 'f', 2).arg(t2.elapsed() / 60.0, 0, 'f', 2));
+        (void)keep;
+    }
+
     // --- Third person: boom, wall collision, body + squad soldier -----------------
     start(1);
     place(20.5f, 20.5f, 0.4f);
@@ -3043,7 +3070,11 @@ bool MainWindow::snapshot(const QString &dir)
             if (w == WPN_SMG || w == WPN_ROCKET || w == WPN_ARC || w == WPN_FLAMETHROWER || w == WPN_REVOLVER || w == WPN_RAILGUN || w == WPN_PLASMA || w == WPN_AXE) {
                 render(); save(QString("7%1_%2").arg(char('a' + w % 26)).arg(d.shortName).replace('.', '_').replace('-', '_'));
             }
-            for (int f = 0; f < 90; f++) advance(1.f / 60.f);   // let projectiles land, burns tick
+            for (int f = 0; f < 90; f++) {                       // let projectiles land, burns tick
+                float keepX = t.x, keepY = t.y;
+                advance(1.f / 60.f);
+                t.x = keepX; t.y = keepY;                          // the dummy stands still
+            }
             m_lmb = false; releaseTrigger();
             int dmg = hp0 - m_gs.enemies[0].hp;
             if (dmg > 0) working++;

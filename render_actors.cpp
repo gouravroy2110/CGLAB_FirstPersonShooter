@@ -1,8 +1,9 @@
 // =============================================================================
 //  render_actors.cpp  -  3D soldiers standing in the world
 //
-//  Your own body in third person and every squad bot are low-poly 3D
-//  soldiers: boxes for the limbs, torso, vest, pack and helmet, plus the same
+//  Your own body in third person and every squad bot are 3D
+//  soldiers: smooth-shaded tubes and ellipsoids (lit per vertex) for the
+//  limbs, torso, plate carrier, pack, head and helmet, plus the same
 //  extruded gun profiles as the first-person weapon. They are transformed
 //  into the camera frame used by the terrain marcher and drawn by the shared
 //  triangle rasterizer (raster3d.h) against the world z-buffer, so hills and
@@ -31,6 +32,8 @@ struct Soldier3D {
     int   weapon = WPN_RIFLE;
     SoldierLook look;
     float recoil = 0.f;     // 0..1 kick after a shot
+    bool  sprint = false;   // gun held low while running
+    uint32_t band = 0xFF3C8CFF;   // team armband
 };
 
 } // namespace
@@ -46,6 +49,8 @@ struct WorldCam {
 };
 
 // Build and rasterize one soldier. Local frame: a = forward, b = right, c = up.
+// Rounded, smooth-shaded parts (tubes and ellipsoids lit per vertex) instead of
+// flat boxes; detail drops with distance so far-away soldiers stay cheap.
 static void drawSoldier(Raster3D &r, const WorldCam &cam, const Soldier3D &p)
 {
     const float fx = std::cos(p.yaw), fy = std::sin(p.yaw);   // forward
@@ -62,40 +67,83 @@ static void drawSoldier(Raster3D &r, const WorldCam &cam, const Soldier3D &p)
     };
     const SoldierLook &L = p.look;
     V3 fwd = D(1, 0, 0), right = D(0, 1, 0), up = D(0, 0, 1);
+    // level of detail from the distance to the camera
+    float dist = std::max(0.1f, P(0, 0, 0.5f).z);
+    const int SEG = dist < 4.f ? 12 : dist < 10.f ? 9 : 6;          // ellipsoid segments
+    const int SIDES = dist < 4.f ? 10 : dist < 10.f ? 8 : 6;        // tube sides
+    const bool fine = dist < 9.f;                                   // small kit details
+    auto ball = [&](V3 c, float ra, float rb, float rc, uint32_t col, float spec) { r.ellipsoid(c, fwd, right, up, ra, rb, rc, col, spec, SEG); };
+    auto joint = [&](V3 c, float ra, float rb, float rc, uint32_t col, float spec) { r.ellipsoid(c, fwd, right, up, ra, rb, rc, col, spec, std::max(6, SEG - 4)); };
+    const float breathe = 0.004f * std::sin(p.walk * 0.5f + 1.3f) * (1.f - p.move);
 
     // --- Legs: thigh swings with the walk cycle, shin bends on the back swing ------
     for (int side = -1; side <= 1; side += 2) {
         float ph = p.walk + (side > 0 ? PI : 0.f);
         float swing = std::sin(ph) * 0.55f * p.move;
-        float bend = (0.5f - 0.5f * std::cos(ph)) * 0.75f * p.move;
-        float hb = 0.05f * side;
+        float bend = (0.5f - 0.5f * std::cos(ph)) * 0.75f * p.move + 0.06f;
+        float hb = 0.055f * side;
         V3 hip = P(0.f, hb, 0.47f);
         float ka = std::sin(swing) * 0.22f, kc = 0.47f - std::cos(swing) * 0.22f;
         V3 knee = P(ka, hb, kc);
         float sa = swing - bend;
-        float fa = ka + std::sin(sa) * 0.22f, fc = std::max(0.035f, kc - std::cos(sa) * 0.22f);
-        V3 foot = P(fa, hb, fc);
-        r.box(hip, knee, 0.042f, 0.036f, L.uniform, 0.05f);
-        r.box(knee, foot, 0.034f, 0.03f, L.uniformDark, 0.05f);
-        r.box(P(fa - 0.03f, hb, fc - 0.01f), P(fa + 0.07f, hb, fc - 0.01f), 0.032f, 0.03f, L.boots, 0.1f);   // boot
+        float fa = ka + std::sin(sa) * 0.21f, fc = std::max(0.045f, kc - std::cos(sa) * 0.21f);
+        V3 ankle = P(fa, hb, fc);
+        r.tube(hip, knee, right, fwd, 0.047f, 0.05f, 0.036f, 0.038f, L.uniform, 0.05f, SIDES);
+        r.tube(knee, ankle, right, fwd, 0.035f, 0.037f, 0.027f, 0.029f, L.uniformDark, 0.05f, SIDES);
+        joint(knee + fwd * 0.026f, 0.022f, 0.03f, 0.034f, L.vestDark, 0.25f);                       // knee pad
+        // boot: rounded toe cap on a block, darker sole
+        float toe = fa + 0.075f, heel = fa - 0.035f, bz = std::max(0.f, fc - 0.03f);
+        r.tube(P(heel, hb, bz + 0.03f), P(toe, hb, bz + 0.026f), up, right, 0.03f, 0.031f, 0.022f, 0.03f, L.boots, 0.15f, SIDES);
+        r.boxAxes(P(heel - 0.004f, hb, bz), P(toe + 0.006f, hb, bz), right, up, 0.033f, 0.006f, 0.033f, 0.006f, scaleCol(L.boots, 0.5f), 0.05f);
+        r.tube(ankle, P(fa, hb, bz + 0.04f), 0.03f, 0.031f, L.boots, 0.15f, SIDES);                 // boot cuff
+        if (fine && side > 0) r.boxAxes(P(ka * 0.5f + 0.01f, hb + 0.045f, 0.39f), P(ka * 0.5f + 0.01f, hb + 0.045f, 0.31f), fwd, right,
+                                        0.035f, 0.016f, 0.032f, 0.016f, L.vestDark, 0.1f);        // thigh pouch
     }
 
-    // --- Pelvis, torso, vest, pack ----------------------------------------------------
-    float lean = 0.03f + 0.02f * p.move;
-    r.boxAxes(P(0, 0, 0.43f), P(0, 0, 0.51f), right, fwd, 0.08f, 0.05f, 0.08f, 0.05f, L.uniformDark, 0.05f);
-    r.boxAxes(P(0, 0, 0.49f), P(lean, 0, 0.73f), right, fwd, 0.08f, 0.05f, 0.095f, 0.055f, L.uniform, 0.05f);
-    r.boxAxes(P(0.004f, 0, 0.53f), P(lean + 0.004f, 0, 0.71f), right, fwd, 0.088f, 0.062f, 0.1f, 0.066f, L.vest, 0.12f);
-    r.boxAxes(P(-0.07f, 0, 0.52f), P(lean - 0.07f, 0, 0.70f), right, fwd, 0.065f, 0.04f, 0.07f, 0.045f, L.vestDark, 0.08f);
-    // --- Neck, head, helmet, goggles --------------------------------------------------
-    float hx = lean + 0.01f;
-    r.box(P(hx, 0, 0.72f), P(hx, 0, 0.77f), 0.025f, 0.025f, L.skin, 0.05f);
-    r.boxAxes(P(hx, 0, 0.765f), P(hx, 0, 0.855f), right, fwd, 0.042f, 0.045f, 0.042f, 0.045f, L.mask, 0.1f);
-    r.boxAxes(P(hx - 0.005f, 0, 0.82f), P(hx - 0.005f, 0, 0.885f), right, fwd, 0.054f, 0.058f, 0.046f, 0.05f, L.helmet, 0.25f);
-    r.boxAxes(P(hx + 0.046f, 0, 0.805f), P(hx + 0.046f, 0, 0.83f), right, fwd, 0.034f, 0.006f, 0.034f, 0.006f, L.lens, 0.9f);
+    // --- Pelvis, belt, torso, plate carrier, pack ---------------------------------------
+    float lean = 0.03f + 0.05f * p.move * (p.sprint ? 1.6f : 1.f);
+    r.tube(P(0, 0, 0.42f), P(0, 0, 0.51f), right, fwd, 0.084f, 0.058f, 0.088f, 0.06f, L.uniformDark, 0.05f, SIDES);
+    r.tube(P(0, 0, 0.485f), P(0, 0, 0.515f), right, fwd, 0.092f, 0.065f, 0.092f, 0.065f, scaleCol(L.boots, 0.9f), 0.2f, SIDES);   // belt
+    if (fine) r.boxAxes(P(0.064f, 0, 0.488f), P(0.064f, 0, 0.512f), right, fwd, 0.016f, 0.004f, 0.016f, 0.004f, rgb(150, 140, 110), 0.7f);  // buckle
+    // torso widens from the waist to the chest
+    r.tube(P(0, 0, 0.5f), P(lean, 0, 0.735f + breathe), right, fwd, 0.078f, 0.054f, 0.1f, 0.062f, L.uniform, 0.05f, SIDES);
+    // plate carrier: a slightly angular shell over the chest, plates front and back
+    r.tube(P(lean * 0.2f, 0, 0.535f), P(lean + 0.002f, 0, 0.712f + breathe), right, fwd, 0.094f, 0.068f, 0.104f, 0.072f, L.vest, 0.12f, 8);
+    r.boxAxes(P(lean * 0.3f + 0.066f, 0, 0.56f), P(lean + 0.07f, 0, 0.70f), right, fwd, 0.072f, 0.012f, 0.078f, 0.012f, L.vest, 0.15f);
+    r.boxAxes(P(lean * 0.3f - 0.072f, 0, 0.56f), P(lean - 0.07f, 0, 0.70f), right, fwd, 0.07f, 0.01f, 0.076f, 0.01f, L.vestDark, 0.1f);
+    if (fine) {
+        for (int k = -1; k <= 1; k++)                                                           // magazine pouches
+            r.boxAxes(P(lean * 0.3f + 0.084f, k * 0.048f, 0.555f), P(lean * 0.3f + 0.084f, k * 0.048f, 0.615f), right, fwd,
+                      0.019f, 0.012f, 0.019f, 0.012f, L.vestDark, 0.1f);
+        r.boxAxes(P(lean + 0.082f, 0.05f, 0.645f), P(lean + 0.082f, 0.05f, 0.68f), right, fwd, 0.022f, 0.008f, 0.022f, 0.008f, scaleCol(L.vestDark, 0.8f), 0.1f);
+    }
+    // pack with a radio and antenna
+    r.tube(P(lean * 0.4f - 0.115f, 0, 0.53f), P(lean - 0.115f, 0, 0.705f), right, fwd, 0.07f, 0.04f, 0.066f, 0.036f, L.vestDark, 0.08f, 8);
+    if (fine) {
+        r.boxAxes(P(lean - 0.12f, -0.045f, 0.66f), P(lean - 0.12f, -0.045f, 0.74f), right, fwd, 0.016f, 0.014f, 0.016f, 0.014f, rgb(46, 48, 44), 0.3f);
+        r.box(P(lean - 0.12f, -0.05f, 0.74f), P(lean - 0.13f, -0.055f, 0.9f), 0.003f, 0.0025f, rgb(30, 30, 30), 0.3f);
+    }
+
+    // --- Neck, head, helmet, goggles ---------------------------------------------------
+    float hx = lean + 0.012f, hz = breathe;
+    r.tube(P(hx, 0, 0.715f + hz), P(hx + 0.004f, 0, 0.775f + hz), 0.026f, 0.025f, L.skin, 0.05f, SIDES);
+    ball(P(hx + 0.004f, 0, 0.805f + hz), 0.046f, 0.04f, 0.05f, L.mask, 0.12f);                     // head (balaclava)
+    if (fine) ball(P(hx + 0.036f, 0, 0.79f + hz), 0.014f, 0.024f, 0.016f, L.skin, 0.1f);           // face under the goggles
+    r.ellipsoid(P(hx - 0.004f, 0, 0.815f + hz), fwd, right, up, 0.06f, 0.055f, 0.066f, L.helmet, 0.3f, SEG, true);   // helmet dome
+    r.tube(P(hx - 0.004f, 0, 0.812f + hz), P(hx - 0.004f, 0, 0.822f + hz), fwd, right, 0.063f, 0.058f, 0.063f, 0.058f, scaleCol(L.helmet, 0.8f), 0.2f, SIDES);   // brim
+    if (fine) {
+        for (int sd = -1; sd <= 1; sd += 2) joint(P(hx, sd * 0.047f, 0.795f + hz), 0.022f, 0.012f, 0.024f, scaleCol(L.vestDark, 0.8f), 0.2f);   // ear cups
+        r.boxAxes(P(hx + 0.058f, 0, 0.835f + hz), P(hx + 0.058f, 0, 0.86f + hz), right, fwd, 0.012f, 0.006f, 0.01f, 0.006f, rgb(40, 42, 44), 0.4f);   // NVG mount
+    }
+    r.boxAxes(P(hx + 0.045f, 0, 0.798f + hz), P(hx + 0.045f, 0, 0.823f + hz), right, fwd, 0.036f, 0.008f, 0.037f, 0.008f, scaleCol(L.boots, 0.6f), 0.2f);   // goggle frame
+    r.emissive = true;
+    r.boxAxes(P(hx + 0.052f, 0, 0.801f + hz), P(hx + 0.052f, 0, 0.82f + hz), right, fwd, 0.031f, 0.003f, 0.032f, 0.003f, L.lens, 0.9f);
+    r.emissive = false;
 
     // --- Arms + gun: everything above the shoulders pivots with the aim pitch ---------
-    const float shZ = 0.69f;
-    float pc = std::cos(p.aimPitch), ps = std::sin(p.aimPitch);
+    const float shZ = 0.695f;
+    float aimP = p.sprint && p.move > 0.5f ? -0.65f : p.aimPitch;      // sprinting: gun held low across the chest
+    float pc = std::cos(aimP), ps = std::sin(aimP);
     auto aimRot = [&](float a, float b, float c) {            // rotate about the shoulder line
         float da = a, dc = c - shZ;
         return P(lean + da * pc - dc * ps, b, shZ + da * ps + dc * pc);
@@ -108,16 +156,29 @@ static void drawSoldier(Raster3D &r, const WorldCam &cam, const Soldier3D &p)
     float lA = pistol ? 0.27f : 0.29f, lB = pistol ? 0.0f : -0.005f, lC = pistol ? 0.70f : 0.655f;
     if (oneHand) { rA = 0.2f; rB = 0.1f; rC = 0.56f; }
     V3 rHand = aimRot(rA + kick, rB, rC), lHand = aimRot(lA + kick, lB, lC);
-    V3 rSh = P(lean, 0.1f, shZ), lSh = P(lean, -0.1f, shZ);
+    V3 rSh = P(lean, 0.108f, shZ), lSh = P(lean, -0.108f, shZ);
+    // two-bone IK: the elbow sits where both bones reach, bent down and outward
     auto arm = [&](V3 sh, V3 hand, float outward) {
-        V3 mid = (sh + hand) * 0.5f;
-        V3 elbow = mid - up * 0.07f + right * outward;
-        r.box(sh, elbow, 0.033f, 0.029f, L.uniform, 0.05f);
-        r.box(elbow, hand, 0.028f, 0.024f, L.uniformAlt, 0.05f);
-        r.box(hand - fwd * 0.012f, hand + fwd * 0.025f, 0.024f, 0.022f, L.gloves, 0.1f);
+        const float LU = 0.165f, LF = 0.165f;
+        V3 d = hand - sh;
+        float len = std::sqrt(dot(d, d)) + 1e-5f;
+        V3 dir = d * (1.f / len);
+        float reach = std::min(len, LU + LF - 0.002f);
+        float a = (LU * LU - LF * LF + reach * reach) / (2.f * reach);
+        float h = std::sqrt(std::max(0.f, LU * LU - a * a));
+        V3 pole = up * -1.f + right * (outward * 6.f);
+        pole = norm(pole - dir * dot(pole, dir));
+        V3 elbow = sh + dir * a + pole * h;
+        joint(sh, 0.042f, 0.044f, 0.04f, L.uniform, 0.06f);                                       // shoulder
+        r.tube(sh, elbow, 0.036f, 0.03f, L.uniform, 0.05f, SIDES);
+        if (fine) r.tube(sh + (elbow - sh) * 0.28f, sh + (elbow - sh) * 0.42f, 0.0375f, 0.035f, p.band, 0.2f, SIDES);   // team armband
+        joint(elbow, 0.029f, 0.029f, 0.029f, L.uniformAlt, 0.05f);
+        r.tube(elbow, hand, 0.029f, 0.023f, L.uniformAlt, 0.05f, SIDES);
+        V3 hd = norm(hand - elbow);
+        r.ellipsoid(hand + hd * 0.012f, hd, right, up, 0.03f, 0.022f, 0.02f, L.gloves, 0.15f, SEG);  // glove
     };
     arm(rSh, rHand, 0.04f);
-    if (oneHand) arm(lSh, P(0.05f, -0.12f, 0.5f), -0.03f);
+    if (oneHand) arm(lSh, P(0.05f + 0.06f * std::sin(p.walk) * p.move, -0.13f, 0.5f), -0.03f);
     else arm(lSh, lHand, -0.05f);
 
     // Gun: extruded profile, grip in the right hand, barrel along the aim direction
@@ -273,6 +334,8 @@ void MainWindow::renderActors3D()
         sp.fall = a.alive ? 0.f : 1.f;
         sp.weapon = a.curWeapon;
         sp.look = a.team == 0 ? SQUAD_LOOK : ENEMY_LOOK;
+        sp.band = a.escort ? rgb(240, 240, 240) : a.team == 0 ? rgb(60, 140, 255) : rgb(230, 60, 50);
+        sp.sprint = a.sprinting;
         sp.recoil = std::min(1.f, a.shootAnim / 0.12f);
         r.lightMul = litAt(a.posX, a.posY) * (a.hitFlash > 0 ? 1.6f : 1.f);
         r.alpha = 1.f;
@@ -303,6 +366,8 @@ void MainWindow::renderActors3D()
             sp.move = std::min(1.f, std::sqrt(pl.velX * pl.velX + pl.velY * pl.velY) / 3.5f);
             sp.weapon = pl.curWeapon;
             sp.look = lookForClass(m_charChoice);
+            sp.sprint = pl.sprinting;
+            sp.band = rgb(60, 140, 255);
             sp.recoil = std::min(1.f, m_kick);
             r.lightMul = litAt(pl.posX, pl.posY) * (pl.damageFlash > 0.3f ? 1.5f : 1.f);
             r.alpha = alpha;

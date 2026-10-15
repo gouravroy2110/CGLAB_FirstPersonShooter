@@ -159,6 +159,137 @@ struct Raster3D {
         V3 s1 = norm(cross(ax, ref)), s2 = cross(s1, ax);
         boxAxes(a, b, s1, s2, ra, ra, rb, rb, col, specK);
     }
+    // ── Smooth (Gouraud) shading: lighting per vertex, colours interpolated ───────
+    // Same light model as face(): Lambert + Blinn specular + rim, then fog
+    uint32_t shadeAt(V3 p, V3 n, uint32_t base, float specK) const {
+        if (emissive) return rs::scaleCol(base, 1.1f);
+        float diff = std::max(0.f, dot(n, light));
+        V3 view = norm(p * -1.f), half = norm(light + view);
+        float h = std::max(0.f, dot(n, half)), h4 = h * h * h * h, h8 = h4 * h4;
+        float spec = h8 * h8 * h8 * h4 * specK * lightMul;                  // h^28 without pow()
+        float v = 1.f - std::max(0.f, dot(n, view));
+        float rim = v * v * v * 0.18f;
+        float shade = (0.30f + 0.95f * diff + rim) * lightMul;
+        uint32_t col = rs::rgb(int(rs::R(base) * shade * 1.35f + 255 * spec), int(rs::G(base) * shade * 1.35f + 255 * spec),
+                               int(rs::B(base) * shade * 1.35f + 255 * spec));
+        if (fogDensity > 0.f) col = rs::lerpCol(fogCol, col, std::exp(-fogDensity * std::max(0.f, p.z)));
+        return col;
+    }
+    // Triangle with a colour per vertex (barycentric interpolation) and the depth test
+    void triG(float x0, float y0, float z0, uint32_t c0, float x1, float y1, float z1, uint32_t c1, float x2, float y2, float z2, uint32_t c2) {
+        static const uint8_t BAYER[4][4] = { {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5} };
+        float area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+        if (std::fabs(area) < 1e-4f) return;
+        if (area < 0) { std::swap(x1, x2); std::swap(y1, y2); std::swap(z1, z2); std::swap(c1, c2); area = -area; }
+        int minX = std::max(0, int(std::floor(std::min({x0, x1, x2})))), maxX = std::min(W - 1, int(std::ceil(std::max({x0, x1, x2}))));
+        int minY = std::max(0, int(std::floor(std::min({y0, y1, y2})))), maxY = std::min(H - 1, int(std::ceil(std::max({y0, y1, y2}))));
+        float inv = 1.f / area;
+        int ditherCut = int(alpha * 16.f);
+        const float r0 = rs::R(c0), g0 = rs::G(c0), b0 = rs::B(c0), r1 = rs::R(c1), g1 = rs::G(c1), b1 = rs::B(c1), r2 = rs::R(c2), g2 = rs::G(c2), b2 = rs::B(c2);
+        // edge functions are linear in x: step them across the row instead of re-evaluating
+        const float dw0 = -(y2 - y1), dw1 = -(y0 - y2), dw2 = -(y1 - y0);
+        for (int y = minY; y <= maxY; y++) {
+            float py = y + 0.5f, px = minX + 0.5f;
+            float w0 = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+            float w1 = (x0 - x2) * (py - y2) - (y0 - y2) * (px - x2);
+            float w2 = (x1 - x0) * (py - y0) - (y1 - y0) * (px - x0);
+            bool was = false;
+            for (int x = minX; x <= maxX; x++, w0 += dw0, w1 += dw1, w2 += dw2) {
+                if (w0 < 0 || w1 < 0 || w2 < 0) { if (was) break; continue; }     // left the (convex) span
+                was = true;
+                if (ditherCut < 16 && BAYER[y & 3][x & 3] >= ditherCut) continue;
+                float b0w = w0 * inv, b1w = w1 * inv, b2w = w2 * inv;
+                float iz = b0w * z0 + b1w * z1 + b2w * z2;
+                float &d = zb[y * W + x];
+                if (worldZ) { float z = 1.f / iz; if (z >= d) continue; d = z; }
+                else { if (iz <= d) continue; d = iz; }
+                cv.p[y * W + x] = 0xFF000000u | (uint32_t(b0w * r0 + b1w * r1 + b2w * r2) << 16) |
+                                  (uint32_t(b0w * g0 + b1w * g1 + b2w * g2) << 8) | uint32_t(b0w * b0 + b1w * b1 + b2w * b2);
+            }
+        }
+    }
+    // Planar polygon with per-vertex normals: culled by its face normal, lit per vertex,
+    // clipped to the near plane (colours interpolated along clipped edges), fan-filled
+    void faceSmooth(const V3 *pts, const V3 *nrm, int n, V3 faceN, uint32_t base, float specK) {
+        V3 c{0, 0, 0};
+        for (int i = 0; i < n; i++) c = c + pts[i];
+        c = c * (1.f / n);
+        if (dot(faceN, c) >= 0.f) return;
+        uint32_t vc[8];
+        for (int i = 0; i < n; i++) vc[i] = shadeAt(pts[i], nrm[i], base, specK);
+        V3 clip[16]; uint32_t cc[16]; int m = 0;
+        for (int i = 0; i < n && m < 14; i++) {
+            int j = (i + 1) % n;
+            V3 a = pts[i], b = pts[j];
+            bool ain = a.z >= nearZ, bin = b.z >= nearZ;
+            if (ain) { clip[m] = a; cc[m++] = vc[i]; }
+            if (ain != bin) { float t = (nearZ - a.z) / (b.z - a.z); clip[m] = a + (b - a) * t; cc[m++] = rs::lerpCol(vc[i], vc[j], t); }
+        }
+        if (m < 3) return;
+        float sx[16], sy[16], iz[16];
+        for (int i = 0; i < m; i++) { project(clip[i], sx[i], sy[i]); iz[i] = 1.f / clip[i].z; }
+        for (int i = 1; i + 1 < m; i++) triG(sx[0], sy[0], iz[0], cc[0], sx[i], sy[i], iz[i], cc[i], sx[i + 1], sy[i + 1], iz[i + 1], cc[i + 1]);
+    }
+    // Rounded tube from a to b with an elliptical cross-section (r1 along s1, r2 along
+    // s2), smooth normals around it and flat end caps: limbs, torso, boots
+    void tube(V3 a, V3 b, V3 s1, V3 s2, float ra1, float ra2, float rb1, float rb2, uint32_t col, float specK, int sides = 10, bool caps = true) {
+        V3 ax = norm(b - a);
+        // keep the side axes perpendicular to the tube
+        s1 = norm(s1 - ax * dot(s1, ax)); s2 = norm(cross(ax, s1));
+        if (dot(s2, s2) < 0.5f) s2 = norm(cross(ax, V3{0, 1, 0}));
+        sides = std::max(3, std::min(sides, 16));
+        V3 A[16], B[16], N[16];
+        for (int k = 0; k < sides; k++) {
+            float t = 6.2831853f * k / sides, cs = std::cos(t), sn = std::sin(t);
+            A[k] = a + s1 * (cs * ra1) + s2 * (sn * ra2);
+            B[k] = b + s1 * (cs * rb1) + s2 * (sn * rb2);
+            N[k] = norm(s1 * (cs / std::max(1e-3f, (ra1 + rb1) * 0.5f)) + s2 * (sn / std::max(1e-3f, (ra2 + rb2) * 0.5f)));
+        }
+        for (int k = 0; k < sides; k++) {
+            int j = (k + 1) % sides;
+            V3 q[4] = { A[k], A[j], B[j], B[k] }, qn[4] = { N[k], N[j], N[j], N[k] };
+            faceSmooth(q, qn, 4, norm(N[k] + N[j]), col, specK);
+        }
+        if (caps) {
+            V3 ca[16], cb[16];
+            for (int k = 0; k < sides; k++) { ca[sides - 1 - k] = A[k]; cb[k] = B[k]; }
+            face(ca, std::min(sides, 14), ax * -1.f, col, specK);
+            face(cb, std::min(sides, 14), ax, col, specK);
+        }
+    }
+    void tube(V3 a, V3 b, float ra, float rb, uint32_t col, float specK, int sides = 10) {
+        V3 ax = norm(b - a), ref = std::fabs(ax.y) > 0.9f ? V3{1, 0, 0} : V3{0, -1, 0};
+        V3 s1 = norm(cross(ax, ref));
+        tube(a, b, s1, cross(s1, ax), ra, ra, rb, rb, col, specK, sides);
+    }
+    // Smooth ellipsoid: centre c, unit axes e1 e2 e3 with radii r1 r2 r3. `upper`
+    // keeps only the half along +e3 (helmet domes); seg = rings around e3
+    void ellipsoid(V3 c, V3 e1, V3 e2, V3 e3, float r1, float r2, float r3, uint32_t col, float specK, int seg = 10, bool upper = false) {
+        seg = std::max(4, std::min(seg, 16));
+        int rings = seg / 2 + 1;
+        float lat0 = upper ? 0.f : -1.5707963f;
+        auto P = [&](float lat, float lon, V3 &p, V3 &n) {
+            float cl = std::cos(lat), sl = std::sin(lat), co = std::cos(lon), so = std::sin(lon);
+            p = c + e1 * (cl * co * r1) + e2 * (cl * so * r2) + e3 * (sl * r3);
+            n = norm(e1 * (cl * co / r1) + e2 * (cl * so / r2) + e3 * (sl / r3));
+        };
+        for (int i = 0; i < rings; i++) {
+            float la = lat0 + (1.5707963f - lat0) * i / rings, lb = lat0 + (1.5707963f - lat0) * (i + 1) / rings;
+            for (int k = 0; k < seg; k++) {
+                float oa = 6.2831853f * k / seg, ob = 6.2831853f * (k + 1) / seg;
+                V3 q[4], qn[4];
+                P(la, oa, q[0], qn[0]); P(la, ob, q[1], qn[1]); P(lb, ob, q[2], qn[2]); P(lb, oa, q[3], qn[3]);
+                V3 fn = norm(qn[0] + qn[1] + qn[2] + qn[3]);
+                if (i == rings - 1) { V3 t[3] = { q[0], q[1], q[2] }, tn[3] = { qn[0], qn[1], qn[2] }; faceSmooth(t, tn, 3, fn, col, specK); }
+                else faceSmooth(q, qn, 4, fn, col, specK);
+            }
+        }
+        if (upper) {                                              // close the rim with a flat disc
+            V3 disc[16];
+            for (int k = 0; k < seg && k < 14; k++) { V3 n; P(0.f, -6.2831853f * k / seg, disc[k], n); }
+            face(disc, std::min(seg, 14), e3 * -1.f, col, specK);
+        }
+    }
     // Box from a to b with explicit side axes and per-end half sizes (torso, head)
     void boxAxes(V3 a, V3 b, V3 s1, V3 s2, float ra1, float ra2, float rb1, float rb2, uint32_t col, float specK) {
         V3 ax = norm(b - a);

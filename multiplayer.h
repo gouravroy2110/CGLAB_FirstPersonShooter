@@ -252,6 +252,13 @@ private:
     QUdpSocket      *m_udpSocket = nullptr;
     quint16          m_port = MP_DEFAULT_PORT;
     QHostAddress     m_serverAddr;
+    // Each client socket keeps the player id it was given on connect (ids never shift)
+    std::vector<std::pair<QTcpSocket*, int>> m_sockIds;
+    int              m_nextClientId = 1;
+    int              idForSocket(QTcpSocket *s) const;
+    QTcpSocket      *socketForId(int id) const;
+    bool             isCitadel() const { return m_settings.mapChoice == 6; }
+    void             teamSpawn(int team, const World &world, float &x, float &y) const;
 
     float            m_snapshotTimer = 0.f;
     float            m_pingTimer = 0.f;
