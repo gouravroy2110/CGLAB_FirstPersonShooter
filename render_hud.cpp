@@ -110,6 +110,8 @@ void MainWindow::render()
         case SCR_CHAR_SELECT: renderCharSelect(); break;
         case SCR_SETTINGS:    renderSettings();   break;
         case SCR_ARSENAL:     renderArsenal();    break;
+        case SCR_LOADOUT:     renderLoadout();    break;
+        case SCR_STATS:       renderStats();      break;
         case SCR_CAMPAIGN:    renderCampaign();   break;
         case SCR_BRIEFING:    renderBriefing();   break;
         case SCR_DEBRIEF:     m_debriefT += m_dt; renderDebrief(); break;
@@ -305,7 +307,7 @@ void MainWindow::renderHUD()
         text(0, H - 16, W, 14, Qt::AlignCenter, QString("PIXEL BLOCK %1x%1  ( [ ] to change )").arg(m_pixelScale), QColor(255, 200, 100, 200), 11, 600);
     if (m_gs.frameNum < 420 && m_gs.level == 1 && !scoped) {
         m_cv.blendRect(0, H - 20, W, 20, withAlpha(0, 150));
-        text(0, H - 19, W, 18, Qt::AlignCenter, "WASD move  MOUSE aim  LMB fire/strike  RMB sights  R reload  1-4 weapons  SPACE jump  E door  ESC pause",
+        text(0, H - 19, W, 18, Qt::AlignCenter, "WASD move  LMB fire  RMB sights  R reload  1-4 weapons  SPACE jump  CTRL crouch  ALT+A/D lean  E use  ESC pause",
              QColor(220, 220, 220, 220), 11, 500, false);
     }
 }
@@ -1360,10 +1362,10 @@ void MainWindow::renderMenu()
     text(70, 182, 520, 30, Qt::AlignLeft | Qt::AlignVCenter, "T A C T I C A L   S H O O T E R", qc(AMBER), 18, 700);
     text(70, 212, 520, 18, Qt::AlignLeft, "Every pixel is computed on the CPU  -  pure software rasterization", QColor(170, 175, 180), 12, 500);
 
-    const char *opts[8] = { "CAMPAIGN", "FREE PLAY", "MULTIPLAYER", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "EXIT" };
-    for (int i = 0; i < 8; i++) {
+    const char *opts[9] = { "CAMPAIGN", "FREE PLAY", "MULTIPLAYER", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "STATS", "EXIT" };
+    for (int i = 0; i < 9; i++) {
         bool sel = m_menuCursor == i;
-        int x = 48, y = 230 + i * 40, w = 300, h = 36;
+        int x = 48, y = 230 + i * 36, w = 300, h = 33;
         m_menuRects.push_back({x, y, w, h, i});
         if (sel) {
             m_cv.hGrad(x, y, w, h, withAlpha(AMBER, 70), withAlpha(AMBER, 0));
@@ -1375,7 +1377,7 @@ void MainWindow::renderMenu()
 
 
     // Controls card
-    const int cx = W - 300, cy = 236, cw = 270, ch = 280;
+    const int cx = W - 300, cy = 226, cw = 270, ch = 312;
     panel(cx, cy, cw, ch, false, AMBER);
     text(cx + 16, cy + 8, cw, 18, Qt::AlignLeft, "FIELD MANUAL", qc(AMBER), 13, 800, false);
     QString statKey = keyName(m_keyBinds[ACT_WEAPON_STATS]);
@@ -1384,14 +1386,15 @@ void MainWindow::renderMenu()
     const char *rows[][2] = { {"WASD", "Move"}, {"LMB / F", "Fire (hold: charge)"}, {"RMB / TAB", "Aim / scope"},
                               {"1 2 3 4", "Melee / sidearm / primaries"}, {"R", "Reload"}, {"Q", "Quick melee"}, {"G  /  T", "Throw (hold to cook) / cycle"},
                               {"Z", "Use gadget"}, {"E", "Door / pick up / swap gun"}, {"V  /  X", "1st-3rd person / shoulder"},
-                              {"H", "Inspect weapon"}, {statKeyC, "Weapon stats (toggle)"}, {"SHIFT", "Sprint / hold breath"} };
-    for (int i = 0; i < 13; i++) {
+                              {"H", "Inspect weapon"}, {statKeyC, "Weapon stats (toggle)"}, {"SHIFT", "Sprint / hold breath"},
+                              {"CTRL", "Crouch (hold)"}, {"ALT + A / D", "Lean left / right"} };
+    for (int i = 0; i < 15; i++) {
         int ry = cy + 28 + i * 18;
         m_cv.blendRect(cx + 16, ry + 1, 80, 16, withAlpha(0xFFFFFFFF, 20));
         text(cx + 16, ry + 1, 80, 16, Qt::AlignCenter, rows[i][0], QColor(235, 235, 235), 10, 800, false);
         text(cx + 106, ry, cw - 116, 18, Qt::AlignLeft | Qt::AlignVCenter, rows[i][1], QColor(190, 190, 190), 10, 500, false);
     }
-    text(cx, cy + ch + 6, cw, 16, Qt::AlignCenter, "Headshots deal 2-3x damage", qc(AMBER), 12, 700);
+    text(cx, cy + ch + 4, cw, 16, Qt::AlignCenter, "Headshots deal 2-3x damage", qc(AMBER), 12, 700);
 
     m_cv.blendRect(0, H - 30, W, 30, withAlpha(0, 160));
     text(16, H - 28, W - 32, 26, Qt::AlignLeft | Qt::AlignVCenter, "UP/DOWN select   ENTER confirm   mouse supported", QColor(160, 160, 160), 12, 500, false);

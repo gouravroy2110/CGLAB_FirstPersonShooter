@@ -29,6 +29,7 @@ class MainWindow : public QWidget, public World {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
     // Dev aid: render a scripted set of scenes to PNG files and return.
     bool snapshot(const QString &dir);
     // Open the sound device (skipped in snapshot/test mode)
@@ -273,6 +274,8 @@ private:
         ACT_SLOT2,
         ACT_SLOT3,
         ACT_SLOT4,
+        ACT_CROUCH,
+        ACT_LEAN,
         ACT_COUNT
     };
     int   m_keyBinds[ACT_COUNT];
@@ -322,8 +325,46 @@ private:
     QString m_cInventory;
     void  loadCampaign();
     void  saveCampaign() const;
-    QString packInventory() const;
-    void  unpackInventory(const QString &s);
+    QString packInventory(const Player &pl) const;
+    void  unpackInventory(const QString &s, Player &pl);
+    // armoury: weapons and attachment options unlocked by missions, chosen in the loadout
+    uint32_t m_cWeapUnlock = 0;
+    uint8_t  m_cAttUnlock[AT_COUNT] = {};
+    uint8_t  m_cWeapRarity[WPN_COUNT] = {};
+    QStringList m_debriefUnlocks;
+    Player   m_loKit;                                     // the kit being edited in the loadout screen
+    int      m_loSlot = 2, m_loFocus = 0, m_loAtt = 0;   // loadout cursor
+    bool  weaponUnlocked(int w) const { return w >= 0 && w < WPN_COUNT && (m_cWeapUnlock >> w) & 1u; }
+    bool  attUnlocked(int slot, int opt) const { return opt == 0 || (slot >= 0 && slot < AT_COUNT && ((m_cAttUnlock[slot] >> opt) & 1u)); }
+    void  grantMissionUnlocks(int mission, int rank);
+    void  defaultKit(Player &pl) const;
+    void  openLoadout();
+    void  closeLoadout();
+    void  renderLoadout();
+    void  loadoutKey(int k);
+    void  loadoutClick(int id);
+    void  cycleSlotWeapon(int slot, int dir);
+    void  cycleAttachment(int att, int dir);
+    void  drawGunStage(int w, int tx, int ty, int tw, int th, float ang);
+    // lifetime stats (stats.cpp)
+    struct LifetimeStats {
+        int kills = 0, headshots = 0, deaths = 0, shots = 0, hits = 0, missionsWon = 0, bosses = 0, secrets = 0, zones = 0;
+        int bestStreak = 0, bestScore = 0;
+        float longestKill = 0.f;
+        double seconds = 0.0;
+        int wKills[WPN_COUNT] = {}, wShots[WPN_COUNT] = {}, wHits[WPN_COUNT] = {};
+    };
+    LifetimeStats m_stats;
+    int   m_statsShotsSeen = 0, m_statsHitsSeen = 0, m_statsSecretsSeen = 0;
+    bool  m_statsPrevOver = false, m_statsPrevZone = false;
+    float m_statsSaveT = 0.f;
+    void  loadStats();
+    void  saveStats() const;
+    void  trackStats(float dt);                           // per frame: shots / hits / secrets / deaths / time
+    void  statKill(bool head, float dist, bool boss);
+    void  renderStats();
+    void  openStats();
+
     // menu / briefing / debrief
     void  renderCampaign();
     void  buyCampaignUpgrade(int u);
@@ -435,6 +476,24 @@ private:
     bool findHotZoneDropPos(float &outX, float &outY) const;
     void checkEmergencyDrops(float dt);
     int  enemyFrame(const Enemy &e) const;
+    // 3D soldier bodies for regular hostiles (enemies.cpp / soldier3d.h)
+    bool soldierEnemy(const Enemy &e) const;              // drawn as a 3D soldier (not a boss or a machine)
+    bool enemyPose(int idx, struct Soldier3D &sp) const;
+    void updateEnemyAnim(float dt);                       // facing, hit flashes, loose helmets
+    bool updateEnemyTactics(int idx, float dt, float tgX, float tgY, float tgZ, float d, bool los, float &vx, float &vy, float &spd, bool &mayFire);
+    bool gridStep(float x, float y, float gx, float gy, float &wx, float &wy) const;   // BFS waypoint towards a goal
+    bool findCover(int idx, float tgX, float tgY, float tgZ, float &cx, float &cy);   // also records the peek spot
+    bool findFlank(int idx, float tgX, float tgY, float tgZ, float &fx, float &fy) const;
+    std::vector<uint16_t> m_shadowStamp;                  // stencil for planar shadows
+    std::vector<uint8_t>  m_modelMask;                    // pixels covered by 3D bodies this frame (edge smoothing)
+    void smoothModelEdges(int x0, int y0, int x1, int y1);
+    // Crouch (Ctrl) and lean (hold Alt + A / D)
+    bool  m_crouch = false;
+    float m_crouchT = 0.f;                                // 0 standing .. 1 crouched (animated)
+    float m_leanT = 0.f;                                  // -1 left .. 1 right (animated)
+    static constexpr int CTRL_ROWS = (ACT_COUNT + 1) / 2;  // controls list: rows per column
+    float playerAimZ() const { return m_gs.player.footZ + 0.5f - 0.18f * m_crouchT; }   // where hostiles aim / look
+    uint16_t m_shadowId = 0;
     int  enemyMaxHP() const;
     void spawnEnemy(float x, float y, bool elite, EnemyType type);
     void checkReinforcements(float dt);

@@ -47,7 +47,7 @@ int MainWindow::hostileTarget(float x, float y, float z, float &tx, float &ty, f
 {
     const Player &pl = m_gs.player;
     int best = -1;
-    tx = pl.posX; ty = pl.posY; tz = pl.footZ + 0.5f;
+    tx = pl.posX; ty = pl.posY; tz = playerAimZ();
     dist = std::sqrt((tx - x) * (tx - x) + (ty - y) * (ty - y));
     bool bestVis = hasLOS(x, y, z, tx, ty, tz);
     for (int i = 0; i < int(m_gs.actors.size()); i++) {

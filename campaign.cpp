@@ -53,6 +53,11 @@ void MainWindow::loadCampaign()
     for (int i = 0; i < MISSION_COUNT; i++) { m_cRank[i] = 0; m_cBest[i] = 0; }
     for (int i = 0; i < 4; i++) m_upg[i] = 0;
     m_cInventory.clear();
+    // starting armoury: knife, pistol, carbine; iron sights and a red dot
+    m_cWeapUnlock = (1u << WPN_KNIFE) | (1u << WPN_PISTOL) | (1u << WPN_RIFLE);
+    for (int k = 0; k < AT_COUNT; k++) m_cAttUnlock[k] = 1;
+    m_cAttUnlock[AT_OPTIC] |= 1u << 1;
+    for (int w = 0; w < WPN_COUNT; w++) m_cWeapRarity[w] = 0;
     if (m_testMode) return;
     QSettings s("RasterFPS", "RasterFPS");
     s.beginGroup("campaign");
@@ -61,7 +66,12 @@ void MainWindow::loadCampaign()
     for (int i = 0; i < MISSION_COUNT; i++) { m_cRank[i] = s.value(QString("rank%1").arg(i), 0).toInt(); m_cBest[i] = s.value(QString("best%1").arg(i), 0).toInt(); }
     for (int i = 0; i < 4; i++) m_upg[i] = clampi(s.value(QString("upg%1").arg(i), 0).toInt(), 0, UPGRADE_MAX[i]);
     m_cInventory = s.value("inventory", "").toString();
+    m_cWeapUnlock |= uint32_t(s.value("wunlock", 0).toUInt());
+    for (int k = 0; k < AT_COUNT; k++) m_cAttUnlock[k] |= uint8_t(s.value(QString("aunlock%1").arg(k), 0).toUInt());
+    for (int w = 0; w < WPN_COUNT; w++) m_cWeapRarity[w] = uint8_t(clampi(s.value(QString("wrare%1").arg(w), 0).toInt(), 0, RARITY_COUNT - 1));
     s.endGroup();
+    // older saves: the rewards of every mission already finished count as unlocked
+    for (int m = 0; m + 1 < m_cUnlocked; m++) { QStringList keep = m_debriefUnlocks; grantMissionUnlocks(m, 0); m_debriefUnlocks = keep; }
 }
 
 void MainWindow::saveCampaign() const
@@ -74,13 +84,15 @@ void MainWindow::saveCampaign() const
     for (int i = 0; i < MISSION_COUNT; i++) { s.setValue(QString("rank%1").arg(i), m_cRank[i]); s.setValue(QString("best%1").arg(i), m_cBest[i]); }
     for (int i = 0; i < 4; i++) s.setValue(QString("upg%1").arg(i), m_upg[i]);
     s.setValue("inventory", m_cInventory);
+    s.setValue("wunlock", uint(m_cWeapUnlock));
+    for (int k = 0; k < AT_COUNT; k++) s.setValue(QString("aunlock%1").arg(k), uint(m_cAttUnlock[k]));
+    for (int w = 0; w < WPN_COUNT; w++) s.setValue(QString("wrare%1").arg(w), int(m_cWeapRarity[w]));
     s.endGroup();
 }
 
 // The guns (with their rarity and attachments) and throwables you carry over
-QString MainWindow::packInventory() const
+QString MainWindow::packInventory(const Player &pl) const
 {
-    const Player &pl = m_gs.player;
     QStringList parts;
     for (int s = 0; s < SLOT_COUNT; s++) {
         int w = pl.slot[s];
@@ -95,12 +107,11 @@ QString MainWindow::packInventory() const
     return parts.join(";");
 }
 
-void MainWindow::unpackInventory(const QString &s)
+void MainWindow::unpackInventory(const QString &s, Player &pl)
 {
     if (s.isEmpty()) return;
     QStringList parts = s.split(';');
     if (parts.size() < SLOT_COUNT + 2) return;
-    Player &pl = m_gs.player;
     for (int w = 0; w < WPN_COUNT; w++) { pl.owned[w] = false; pl.mag[w] = 0; pl.reserve[w] = 0; }
     for (int sl = 0; sl < SLOT_COUNT; sl++) {
         pl.slot[sl] = -1;
@@ -112,7 +123,7 @@ void MainWindow::unpackInventory(const QString &s)
         Loadout L; L.rarity = uint8_t(clampi(ra[0].toInt(), 0, RARITY_COUNT - 1));
         for (int k = 0; k < AT_COUNT && k + 1 < ra.size(); k++) L.att[k] = uint8_t(ra[k + 1].toInt());
         pl.slot[sl] = w; pl.owned[w] = true; pl.load[w] = L;
-        pl.mag[w] = effectiveMagSize(w); pl.reserve[w] = WEAPONS[w].magSize * 3;
+        pl.mag[w] = WEAPONS[w].magSize * (L.att[AT_MAG] == 1 ? 3 : 2) / 2; pl.reserve[w] = WEAPONS[w].magSize * 3;
     }
     QStringList th = parts[SLOT_COUNT].split(',');
     for (int k = 0; k < TH_COUNT && k < th.size(); k++) pl.throwCount[k] = clampi(th[k].toInt(), 0, THROWS[k].maxCarry);
@@ -179,10 +190,15 @@ void MainWindow::renderCampaign()
     text(cx + 12, by, cw / 2, 30, Qt::AlignLeft | Qt::AlignVCenter, QString("[D] DIFFICULTY: %1").arg(DIFF_CFG[m_difficulty].name), QColor(220, 220, 220), 10, 800, false);
     text(cx + cw / 2, by, cw / 2 - 12, 30, Qt::AlignRight | Qt::AlignVCenter, QString("[C] CLASS: %1").arg(CHAR_PROFILES[m_charChoice].name), QColor(220, 220, 220), 10, 800, false);
     bool locked = m_cSel >= m_cUnlocked;
-    m_menuRects.push_back({cx, by + 38, cw, 34, 50});
-    m_cv.blendRect(cx, by + 38, cw, 34, withAlpha(locked ? 0xFF2A2F36 : 0xFF1D6638, 235));
-    m_cv.rectOutline(cx, by + 38, cw, 34, locked ? withAlpha(0xFFFFFFFF, 40) : 0xFF45F07E, locked ? 1 : 2);
-    text(cx, by + 38, cw, 34, Qt::AlignCenter, locked ? "FINISH THE PREVIOUS MISSION TO UNLOCK" : "BRIEFING  >>   [ENTER]", QColor(255, 255, 255), 13, 900);
+    const int lw = 140;
+    m_menuRects.push_back({cx, by + 38, lw, 34, 51});
+    m_cv.blendRect(cx, by + 38, lw, 34, withAlpha(0xFF2A2210, 235));
+    m_cv.rectOutline(cx, by + 38, lw, 34, withAlpha(C_AMBER, 200), 1);
+    text(cx, by + 38, lw, 34, Qt::AlignCenter, "[L] LOADOUT", qcC(C_AMBER), 12, 900);
+    m_menuRects.push_back({cx + lw + 8, by + 38, cw - lw - 8, 34, 50});
+    m_cv.blendRect(cx + lw + 8, by + 38, cw - lw - 8, 34, withAlpha(locked ? 0xFF2A2F36 : 0xFF1D6638, 235));
+    m_cv.rectOutline(cx + lw + 8, by + 38, cw - lw - 8, 34, locked ? withAlpha(0xFFFFFFFF, 40) : 0xFF45F07E, locked ? 1 : 2);
+    text(cx + lw + 8, by + 38, cw - lw - 8, 34, Qt::AlignCenter, locked ? "LOCKED" : "BRIEFING  >>   [ENTER]", QColor(255, 255, 255), 13, 900);
     // permanent upgrades
     int uy = by + 84;
     text(cx, uy, cw, 14, Qt::AlignLeft, "PERMANENT UPGRADES  (KEYS 5-8)", qcC(C_AMBER), 10, 800, false);
@@ -198,7 +214,7 @@ void MainWindow::renderCampaign()
              lvl < UPGRADE_MAX[u] && m_cCoins >= cost ? qcC(C_AMBER) : QColor(110, 110, 110), 9, 800, false);
     }
     if (m_ixMsgT > 0.f) text(366, 548, 414, 14, Qt::AlignCenter, m_ixMsg, QColor(140, 255, 160), 10, 800, false);
-    menuFooter("UP/DOWN mission   ENTER briefing   D difficulty   C class   5-8 upgrades   ESC back");
+    menuFooter("UP/DOWN mission   ENTER briefing   L loadout   D difficulty   C class   5-8 upgrades   ESC back");
 }
 
 void MainWindow::buyCampaignUpgrade(int u)
@@ -222,6 +238,7 @@ void MainWindow::campaignKey(int k)
         if (k == Qt::Key_D) { m_difficulty = (m_difficulty + 1) % 3; sfx(SND_UI_MOVE, 0.5f); }
         if (k == Qt::Key_C) { m_charChoice = (m_charChoice + 1) % 3; sfx(SND_UI_MOVE, 0.5f); }
         if (k >= Qt::Key_5 && k <= Qt::Key_8) buyCampaignUpgrade(k - Qt::Key_5);
+        if (k == Qt::Key_L) { openLoadout(); return; }
         if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
             if (m_cSel < m_cUnlocked) {
                 // the briefing flies over the mission map: load it, empty of the last game's people
@@ -256,6 +273,7 @@ void MainWindow::campaignClick(int id)
     if (id == 10) { menuBack(); return; }
     if (id >= 0 && id < MISSION_COUNT) { m_cSel = id; sfx(SND_UI_MOVE, 0.5f); }
     if (id == 50) campaignKey(Qt::Key_Return);
+    if (id == 51) openLoadout();
     if (id >= 60 && id < 64) buyCampaignUpgrade(id - 60);
 }
 
@@ -369,7 +387,8 @@ void MainWindow::startMission(int i)
     setEnvironment(M.hour, M.weather);
     // carry the campaign kit + permanent upgrades
     Player &pl = m_gs.player;
-    unpackInventory(m_cInventory);
+    unpackInventory(m_cInventory, pl);
+    for (int w = 0; w < WPN_COUNT; w++) if (pl.owned[w] && usesAmmo(w)) pl.mag[w] = effectiveMagSize(w);
     pl.hp = maxHP();
     pl.stamina = maxStamina();
     pl.damageReduction = CHAR_PROFILES[m_charChoice].damageReduction + 0.08f * m_upg[0];
@@ -776,10 +795,19 @@ void MainWindow::finishMission(bool won)
         m_cRank[m_mission] = std::max(m_cRank[m_mission], rank);
         m_cBest[m_mission] = std::max(m_cBest[m_mission], g.score);
         m_cUnlocked = std::max(m_cUnlocked, std::min(MISSION_COUNT, m_mission + 2));
-        m_cInventory = packInventory();
+        m_cInventory = packInventory(g.player);
+        // the guns you carried out of the mission join the armoury
+        m_debriefUnlocks.clear();
+        for (int sl = 0; sl < SLOT_COUNT; sl++) {
+            int w = g.player.slot[sl];
+            if (w >= 0 && !weaponUnlocked(w)) { m_cWeapUnlock |= 1u << w; m_debriefUnlocks << QString("FIELD PICKUP: %1").arg(WEAPONS[w].name); }
+        }
+        grantMissionUnlocks(m_mission, rank);
     }
     m_cCoins += m_debriefCoins;
     saveCampaign();
+    if (won) m_stats.missionsWon++;
+    saveStats();
     m_envLocked = false;
     m_screen = SCR_DEBRIEF;
 }
@@ -815,6 +843,12 @@ void MainWindow::renderDebrief()
         text(520, 334, 260, 16, Qt::AlignCenter, QString("SCORE %1").arg(m_debriefScore), QColor(140, 220, 255), 11, 800, false);
         if (m_debriefWon && m_mission + 1 < MISSION_COUNT) text(520, 356, 260, 16, Qt::AlignCenter, QString("UNLOCKED: %1").arg(MISSIONS[m_mission + 1].name), QColor(140, 255, 160), 11, 800, false);
         if (m_debriefWon && m_mission + 1 == MISSION_COUNT) text(380, 400, 400, 40, Qt::AlignCenter | Qt::TextWordWrap, "OPERATION ASHFALL COMPLETE. THE VALLEY'S LIGHTS ARE BACK ON.", QColor(255, 225, 120), 13, 900);
+        if (!m_debriefUnlocks.isEmpty()) {
+            int uy = 100 + int(m_debriefRows.size()) * 40 + 12;
+            text(60, uy, 440, 16, Qt::AlignLeft, "ARMOURY UNLOCKS", qcC(C_AMBER), 11, 900, false);
+            for (int i = 0; i < m_debriefUnlocks.size() && i < 6; i++)
+                text(72, uy + 18 + i * 15, 430, 14, Qt::AlignLeft, QString("+  %1").arg(m_debriefUnlocks[i]), QColor(140, 255, 170), 9, 800, false);
+        }
     }
     menuFooter(t < 2.5f ? "ENTER skip" : "ENTER continue");
 }
@@ -985,4 +1019,198 @@ void MainWindow::renderFlyby()
     text(0, H - 56, W, 30, Qt::AlignCenter, QString("%1:  %2").arg(M.codename).arg(M.name), QColor(255, 255, 255, int(255 * a)), 20, 900);
     text(0, H - 26, W, 16, Qt::AlignCenter, QString("%1   |   ANY KEY TO SKIP").arg(MAP_NAMES[M.map]), QColor(170, 170, 170, int(220 * a)), 10, 700, false);
     flushText();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Armoury: what each mission unlocks, and the loadout you deploy with
+// ─────────────────────────────────────────────────────────────────────────────
+static const int MISSION_GUNS[MISSION_COUNT][3] = {
+    { WPN_SMG, WPN_MACHINE_PISTOL, WPN_BATON },      { WPN_SHOTGUN, WPN_BURST_RIFLE, -1 },  { WPN_DMR, WPN_REVOLVER, WPN_MACHETE },
+    { WPN_SNIPER, WPN_LMG, -1 },                     { WPN_BULLPUP, WPN_PDW, -1 },          { WPN_BATTLE_RIFLE, WPN_AUTO_SHOTGUN, WPN_AXE },
+    { WPN_GRENADE_LAUNCHER, WPN_PLASMA, -1 },        { WPN_RAILGUN, WPN_ROCKET, -1 },       { WPN_ARC, WPN_FLAMETHROWER, WPN_DOUBLE_BARREL },
+};
+// {attachment slot, option} pairs, -1 = none
+static const int MISSION_ATTS[MISSION_COUNT][2][2] = {
+    { {AT_OPTIC, 2}, {AT_UNDER, 1} },  { {AT_MUZZLE, 1}, {AT_MAG, 1} },  { {AT_OPTIC, 3}, {AT_STOCK, 1} },
+    { {AT_OPTIC, 4}, {AT_AMMO, 1} },   { {AT_MUZZLE, 2}, {AT_UNDER, 2} }, { {AT_OPTIC, 5}, {AT_AMMO, 3} },
+    { {AT_AMMO, 2}, {-1, 0} },         { {-1, 0}, {-1, 0} },             { {-1, 0}, {-1, 0} },
+};
+
+void MainWindow::grantMissionUnlocks(int mission, int rank)
+{
+    if (mission < 0 || mission >= MISSION_COUNT) return;
+    for (int k = 0; k < 3; k++) {
+        int w = MISSION_GUNS[mission][k];
+        if (w < 0) continue;
+        if (!weaponUnlocked(w)) { m_cWeapUnlock |= 1u << w; m_debriefUnlocks << QString("WEAPON: %1").arg(WEAPONS[w].name); }
+        if (rank >= 4 && m_cWeapRarity[w] < 2) {                        // an S rank: the mission's guns come as RARE
+            m_cWeapRarity[w] = 2;
+            m_debriefUnlocks << QString("S RANK: %1 %2").arg(RARITY_NAMES[2]).arg(WEAPONS[w].name);
+        }
+    }
+    for (int k = 0; k < 2; k++) {
+        int sl = MISSION_ATTS[mission][k][0], op = MISSION_ATTS[mission][k][1];
+        if (sl < 0 || attUnlocked(sl, op)) continue;
+        m_cAttUnlock[sl] |= uint8_t(1u << op);
+        m_debriefUnlocks << QString("ATTACHMENT: %1 %2").arg(ATT_SLOT_NAMES[sl]).arg(ATT_NAMES[sl][op]);
+    }
+}
+
+void MainWindow::defaultKit(Player &pl) const
+{
+    pl = Player{};
+    for (int w = 0; w < WPN_COUNT; w++) { pl.owned[w] = false; pl.load[w] = Loadout{}; }
+    pl.slot[SLOT_MELEE] = WPN_KNIFE; pl.slot[SLOT_SIDEARM] = WPN_PISTOL; pl.slot[SLOT_PRIMARY] = WPN_RIFLE; pl.slot[SLOT_PRIMARY2] = -1;
+    pl.owned[WPN_KNIFE] = pl.owned[WPN_PISTOL] = pl.owned[WPN_RIFLE] = true;
+    pl.load[WPN_RIFLE].att[AT_OPTIC] = 1;
+    pl.throwCount[TH_FRAG] = 2; pl.throwCount[TH_SMOKE] = 1; pl.throwCount[TH_FLASH] = 1;
+    pl.gadget = GD_RADAR;
+}
+
+void MainWindow::openLoadout()
+{
+    defaultKit(m_loKit);
+    unpackInventory(m_cInventory, m_loKit);
+    m_loSlot = SLOT_PRIMARY; m_loFocus = 0; m_loAtt = 0;
+    m_screen = SCR_LOADOUT;
+    sfx(SND_UI_SELECT, 0.6f);
+}
+
+void MainWindow::closeLoadout()
+{
+    m_cInventory = packInventory(m_loKit);
+    saveCampaign();
+    m_screen = SCR_CAMPAIGN;
+    sfx(SND_UI_BACK, 0.6f);
+}
+
+// Next unlocked weapon for a slot (the second primary may be empty, never the same gun twice)
+void MainWindow::cycleSlotWeapon(int slot, int dir)
+{
+    Player &k = m_loKit;
+    std::vector<int> opts;
+    if (slot == SLOT_PRIMARY2) opts.push_back(-1);
+    int cat = slot == SLOT_PRIMARY2 ? SLOT_PRIMARY : slot;
+    for (int w = 0; w < WPN_COUNT; w++) {
+        if (!weaponUnlocked(w) || WEAPONS[w].slot != cat) continue;
+        int other = slot == SLOT_PRIMARY ? k.slot[SLOT_PRIMARY2] : slot == SLOT_PRIMARY2 ? k.slot[SLOT_PRIMARY] : -2;
+        if (w == other) continue;
+        opts.push_back(w);
+    }
+    if (opts.empty()) return;
+    int cur = 0;
+    for (int i = 0; i < int(opts.size()); i++) if (opts[size_t(i)] == k.slot[slot]) cur = i;
+    int nw = opts[size_t((cur + dir + int(opts.size()) * 4) % int(opts.size()))];
+    if (k.slot[slot] >= 0) k.owned[k.slot[slot]] = false;
+    k.slot[slot] = nw;
+    if (nw >= 0) {
+        k.owned[nw] = true;
+        k.load[nw].rarity = std::max(k.load[nw].rarity, m_cWeapRarity[nw]);
+        for (int a = 0; a < AT_COUNT; a++)                                   // drop anything that no longer fits / is locked
+            if (!attUnlocked(a, k.load[nw].att[a]) || !attachmentFits(nw, a, k.load[nw].att[a])) k.load[nw].att[a] = 0;
+    }
+    sfx(SND_UI_MOVE, 0.5f);
+}
+
+void MainWindow::cycleAttachment(int att, int dir)
+{
+    int w = m_loKit.slot[m_loSlot];
+    if (w < 0 || isMelee(w)) return;
+    Loadout &L = m_loKit.load[w];
+    int n = ATT_OPTIONS[att], cur = L.att[att];
+    for (int step = 1; step <= n; step++) {
+        int o = ((cur + dir * step) % n + n) % n;
+        if (attUnlocked(att, o) && attachmentFits(w, att, o)) { L.att[att] = uint8_t(o); sfx(SND_UI_MOVE, 0.5f); return; }
+    }
+}
+
+void MainWindow::renderLoadout()
+{
+    static const char *SLOTN[SLOT_COUNT] = { "MELEE", "SIDEARM", "PRIMARY", "SECOND PRIMARY" };
+    int unlocked = 0;
+    for (int w = 0; w < WPN_COUNT; w++) if (weaponUnlocked(w)) unlocked++;
+    menuHeader(QString("OPERATION ASHFALL   -   ARMOURY %1 / %2 WEAPONS").arg(unlocked).arg(WPN_COUNT), "LOADOUT");
+    // slot cards
+    for (int s = 0; s < SLOT_COUNT; s++) {
+        int x = 20, y = 84 + s * 74, w = 360, h = 66;
+        bool sel = s == m_loSlot;
+        int gun = m_loKit.slot[s];
+        uint32_t rc = gun >= 0 && m_loKit.load[gun].rarity ? RARITY_COLORS[m_loKit.load[gun].rarity] : C_AMBER;
+        m_menuRects.push_back({x, y, w, h, 300 + s});
+        m_cv.blendRect(x, y, w, h, withAlpha(sel ? 0xFF2A2210 : C_BG, sel ? 235 : 190));
+        m_cv.fillRect(x, y, 4, h, sel ? rc : withAlpha(rc, 120));
+        if (sel && m_loFocus == 0) m_cv.rectOutline(x, y, w, h, withAlpha(C_AMBER, 200));
+        text(x + 14, y + 6, 200, 12, Qt::AlignLeft, SLOTN[s], QColor(140, 150, 160), 9, 800, false);
+        text(x + 14, y + 20, w - 60, 24, Qt::AlignLeft | Qt::AlignVCenter, gun >= 0 ? WEAPONS[gun].name : "EMPTY", gun >= 0 ? QColor(255, 255, 255) : QColor(110, 110, 110), 15, 900);
+        if (gun >= 0) {
+            QString atts;
+            for (int a = 0; a < AT_COUNT; a++) if (m_loKit.load[gun].att[a]) atts += QString(atts.isEmpty() ? "" : "  ") + ATT_NAMES[a][m_loKit.load[gun].att[a]];
+            text(x + 14, y + 46, w - 28, 12, Qt::AlignLeft, (m_loKit.load[gun].rarity ? QString("%1   ").arg(RARITY_NAMES[m_loKit.load[gun].rarity]) : QString()) + (atts.isEmpty() ? QString("NO ATTACHMENTS") : atts),
+                 qcC(rc), 8, 700, false);
+        }
+        if (sel && m_loFocus == 0) text(x + w - 46, y, 40, h, Qt::AlignCenter, "<  >", qcC(C_AMBER), 12, 900, false);
+    }
+    // the selected gun on a turntable
+    int gun = m_loKit.slot[m_loSlot];
+    const int tx = 396, ty = 84, tw = 384, th = 170;
+    if (gun >= 0) drawGunStage(gun, tx, ty, tw, th, m_time * 0.6f);
+    else { m_cv.blendRect(tx, ty, tw, th, withAlpha(C_BG, 200)); text(tx, ty, tw, th, Qt::AlignCenter, "EMPTY SLOT", QColor(110, 110, 110), 14, 800); }
+    // attachments of the selected gun
+    int ay0 = ty + th + 10;
+    bool canAtt = gun >= 0 && !isMelee(gun);
+    text(tx, ay0, tw, 14, Qt::AlignLeft, canAtt ? "ATTACHMENTS   (TAB to edit)" : "NO ATTACHMENTS FOR MELEE", qcC(C_AMBER), 10, 800, false);
+    for (int a = 0; a < AT_COUNT && canAtt; a++) {
+        int y = ay0 + 18 + a * 30;
+        bool sel = m_loFocus == 1 && m_loAtt == a;
+        int opt = m_loKit.load[gun].att[a];
+        int avail = 0, total = 0;
+        for (int o = 0; o < ATT_OPTIONS[a]; o++) if (attachmentFits(gun, a, o)) { total++; if (attUnlocked(a, o)) avail++; }
+        m_menuRects.push_back({tx, y, tw, 26, 320 + a});
+        m_cv.blendRect(tx, y, tw, 26, withAlpha(sel ? 0xFF2A2210 : C_BG, sel ? 235 : 180));
+        if (sel) { m_cv.fillRect(tx, y, 3, 26, C_AMBER); m_cv.rectOutline(tx, y, tw, 26, withAlpha(C_AMBER, 170)); }
+        text(tx + 10, y, 120, 26, Qt::AlignLeft | Qt::AlignVCenter, ATT_SLOT_NAMES[a], QColor(160, 170, 180), 9, 800, false);
+        text(tx + 120, y, 180, 26, Qt::AlignLeft | Qt::AlignVCenter, total > 1 ? ATT_NAMES[a][opt] : "DOES NOT FIT", total > 1 ? QColor(240, 240, 240) : QColor(100, 100, 100), 10, 800, false);
+        text(tx + tw - 90, y, 80, 26, Qt::AlignRight | Qt::AlignVCenter, total > 1 ? QString("%1 / %2").arg(avail).arg(total) : QString(), QColor(120, 200, 140), 9, 800, false);
+    }
+    // what the next mission adds
+    int next = std::min(m_cUnlocked - 1, MISSION_COUNT - 1);
+    QString nx;
+    for (int k = 0; k < 3; k++) { int w = MISSION_GUNS[next][k]; if (w >= 0 && !weaponUnlocked(w)) nx += QString(nx.isEmpty() ? "" : ", ") + WEAPONS[w].shortName; }
+    for (int k = 0; k < 2; k++) { int sl = MISSION_ATTS[next][k][0], op = MISSION_ATTS[next][k][1]; if (sl >= 0 && !attUnlocked(sl, op)) nx += QString(nx.isEmpty() ? "" : ", ") + ATT_NAMES[sl][op]; }
+    if (!nx.isEmpty()) text(20, 386, 360, 40, Qt::AlignLeft | Qt::TextWordWrap, QString("COMPLETE %1 TO UNLOCK:  %2").arg(MISSIONS[next].name).arg(nx), QColor(150, 200, 255), 9, 800, false);
+    text(20, 430, 360, 50, Qt::AlignLeft | Qt::TextWordWrap, "An S rank upgrades that mission's weapons to RARE. Guns you finish a mission carrying are added to the armoury.",
+         QColor(130, 140, 150), 9, 600, false);
+    menuFooter("UP/DOWN select   LEFT/RIGHT change   TAB weapons / attachments   ENTER or ESC done");
+}
+
+void MainWindow::loadoutKey(int k)
+{
+    if (k == Qt::Key_Escape || k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_L) { closeLoadout(); return; }
+    if (k == Qt::Key_Tab) {
+        int gun = m_loKit.slot[m_loSlot];
+        if (gun >= 0 && !isMelee(gun)) { m_loFocus = 1 - m_loFocus; sfx(SND_UI_MOVE, 0.4f); }
+        return;
+    }
+    if (m_loFocus == 0) {
+        if (k == Qt::Key_Up) { m_loSlot = (m_loSlot + SLOT_COUNT - 1) % SLOT_COUNT; sfx(SND_UI_MOVE, 0.4f); }
+        if (k == Qt::Key_Down) { m_loSlot = (m_loSlot + 1) % SLOT_COUNT; sfx(SND_UI_MOVE, 0.4f); }
+        if (k == Qt::Key_Left) cycleSlotWeapon(m_loSlot, -1);
+        if (k == Qt::Key_Right) cycleSlotWeapon(m_loSlot, 1);
+    } else {
+        if (k == Qt::Key_Up) { m_loAtt = (m_loAtt + AT_COUNT - 1) % AT_COUNT; sfx(SND_UI_MOVE, 0.4f); }
+        if (k == Qt::Key_Down) { m_loAtt = (m_loAtt + 1) % AT_COUNT; sfx(SND_UI_MOVE, 0.4f); }
+        if (k == Qt::Key_Left) cycleAttachment(m_loAtt, -1);
+        if (k == Qt::Key_Right) cycleAttachment(m_loAtt, 1);
+    }
+}
+
+void MainWindow::loadoutClick(int id)
+{
+    if (id >= 300 && id < 300 + SLOT_COUNT) {
+        if (m_loSlot == id - 300 && m_loFocus == 0) cycleSlotWeapon(m_loSlot, 1);
+        m_loSlot = id - 300; m_loFocus = 0;
+    } else if (id >= 320 && id < 320 + AT_COUNT) {
+        if (m_loFocus == 1 && m_loAtt == id - 320) cycleAttachment(m_loAtt, 1);
+        m_loFocus = 1; m_loAtt = id - 320;
+    }
 }

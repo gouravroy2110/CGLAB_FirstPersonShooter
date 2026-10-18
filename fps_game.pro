@@ -32,7 +32,8 @@ SOURCES += \
     enemies.cpp \
     bosses.cpp \
     audio.cpp \
-    multiplayer.cpp
+    multiplayer.cpp \
+    stats.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -45,6 +46,7 @@ HEADERS += \
     world.h \
     sim.h \
     raster3d.h \
+    soldier3d.h \
     weapons.h \
     gunbuild.h \
     maps.h \

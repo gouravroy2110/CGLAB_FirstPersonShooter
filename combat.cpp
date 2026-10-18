@@ -416,6 +416,7 @@ void MainWindow::fireOnce()
     float baseSpread = effectiveSpread(w);
     float spread = baseSpread * (moving ? 1.8f : 1.f) * (inAir() ? 2.5f : 1.f) * (1.f + m_bloom * 0.5f);
     if (m_fanFire) spread *= 3.f;
+    spread *= 1.f - 0.3f * m_crouchT;                                     // crouched: steadier
     spread *= 1.f - 0.8f * m_adsT;
     if (d.mode == FM_BOLT && m_adsT > 0.85f) spread = 0.f;                // scoped bolt-action: dead on
     if (d.pellets > 1) spread = std::max(spread, baseSpread * 0.6f);

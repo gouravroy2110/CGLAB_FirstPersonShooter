@@ -434,7 +434,8 @@ void MainWindow::renderSprites()
             const std::vector<uint32_t> &atlas = atlasFor(e);
             if (e.bossKind) { light *= 1.1f; if (e.shielded) flash = 0.25f + 0.15f * std::sin(m_time * 8.f); }
             shimmer = (e.alive && e.type == ET_STALKER) ? e.cloak : (e.bossKind && e.decoy == false && e.cloak < 1.f && e.cloak > 0.f) ? e.cloak : 0.f;
-            blit(e.x, e.y, base, e.scale, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive && e.hover <= 0.f);
+            if (!soldierEnemy(e))                                  // soldiers are 3D bodies (renderActors3D)
+                blit(e.x, e.y, base, e.scale, &atlas[size_t(f) * ENEMY_TS * ENEMY_TS], ENEMY_TS, light, flash, e.alive ? 1.f : e.corpseFade, e.alive && e.hover <= 0.f);
             shimmer = 0.f;
             if (e.hover > 0.f && e.alive) {                       // drone: a soft shadow on the ground below
                 float gx, gy, gd;

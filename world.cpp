@@ -9,6 +9,7 @@
 //  baked sun-shadow map all sample this one description.
 // =============================================================================
 #include "mainwindow.h"
+#include "soldier3d.h"
 #include <cmath>
 #include <algorithm>
 
@@ -516,6 +517,17 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay, float startDist) c
         float spX = e.x - m_camX, spY = e.y - m_camY;
         float txX = invDet * (pl.dirY * spX - pl.dirX * spY), txY = invDet * (-eplY * spX + eplX * spY);
         if (txY < 0.1f + m_boomCur * 0.85f || txY < startDist || txY >= res.depth) continue;
+        Soldier3D sp;
+        if (enemyPose(i, sp)) {
+            // 3D soldier: the ray against the capsules of the drawn skeleton
+            float tHit;
+            int part = raySoldier(sp, m_camX, m_camY, m_eye, rdX, rdY, slope, tHit);
+            if (!part || tHit >= res.depth || tHit < startDist || tHit < 0.1f + m_boomCur * 0.85f) continue;
+            res.enemy = i; res.part = HitPart(part); res.depth = tHit;
+            res.x = m_camX + rdX * tHit; res.y = m_camY + rdY * tHit; res.z = m_eye + slope * tHit;
+            res.wall = res.floor = res.sky = false;
+            continue;
+        }
         float base = floorH(e.x, e.y) + e.hover;
         float scrX = W / 2.f * (1.f + txX / txY);
         float sz = m_K * e.scale / txY;

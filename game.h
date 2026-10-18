@@ -110,7 +110,7 @@ inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
 // --- Enums -------------------------------------------------------------------
 enum BulletOwner  { PLAYER_SHOT, ENEMY_SHOT };
 enum GameMode     { MODE_FREEPLAY = 0, MODE_CAMPAIGN = 1, MODE_MULTIPLAYER = 2 };
-enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING, SCR_SETTINGS, SCR_ARSENAL, SCR_EDITOR, SCR_CAMPAIGN, SCR_BRIEFING, SCR_DEBRIEF, SCR_MULTIPLAYER_LOBBY };
+enum GameScreen   { SCR_MENU, SCR_MAP_SELECT, SCR_DIFF_SELECT, SCR_CHAR_SELECT, SCR_PLAYING, SCR_SETTINGS, SCR_ARSENAL, SCR_EDITOR, SCR_CAMPAIGN, SCR_BRIEFING, SCR_DEBRIEF, SCR_MULTIPLAYER_LOBBY, SCR_LOADOUT, SCR_STATS };
 enum CharClass    { CLS_ASSAULT=0, CLS_SCOUT=1, CLS_TANK=2 };
 enum Difficulty   { DIFF_EASY=0, DIFF_MEDIUM=1, DIFF_HARD=2 };
 enum HitPart      { PART_NONE=0, PART_BODY=1, PART_HEAD=2, PART_LIMB=3, PART_SHIELD=4 };
@@ -181,7 +181,7 @@ struct Player {
     bool  onGround=true;
 
     float bobPhase=0,attackCooldown=0,flashTimer=0,damageFlash=0;
-    bool  adsMode=false,sprinting=false;
+    bool  adsMode=false,sprinting=false,crouching=false;
     float shakeY=0;
     // Weapons: four inventory slots (melee, sidearm, two primaries)
     int   curWeapon=WPN_PISTOL;
@@ -214,6 +214,7 @@ struct InputCmd {
     bool  jump    = false;
     bool  fire    = false;
     bool  ads     = false;
+    bool  crouch  = false;   // slow, low, steadier aim
     float yaw     = 0.f;     // facing angle (radians)
     int   seq     = 0;       // sequence number (for network replay later)
 };
@@ -279,7 +280,22 @@ struct Enemy {
     bool  shielded=false;         // invulnerable until the shield is broken
     int   partner=-1;             // twin bosses: the other one
     bool  decoy=false;            // a boss copy that dies in one hit
+    // 3D body (soldier3d.h)
+    float yaw=0.f;                // facing, turned smoothly towards where it looks
+    float fallYaw=0.f;            // world direction the body falls (away from the killing shot)
+    int   flashPart=0; float partFlashT=0.f;   // the part last hit glows red briefly
+    bool  helmetOff=false;        // knocked off by a headshot kill
+    // cover and flanking (enemies.cpp)
+    float coverX=0.f, coverY=0.f, planT=0.f, peekT=0.f, hideT=0.f;
+    float navT=0.f, navX=0.f, navY=0.f;   // next waypoint on the grid path to the goal
+    float peekX=0.f, peekY=0.f;           // full cover: the spot beside it to step out and shoot from
+    bool  lowCover=false;                 // true: duck / stand in place; false: step out to the peek spot
+    int   role=0;                 // 0 assault, 1 cover / suppress, 2 flank
+    bool  hasCover=false;
 };
+
+// A helmet knocked off by a headshot: tumbles, bounces and settles
+struct LooseHelmet { float x, y, z, vx, vy, vz, ang, spin, life; uint32_t color; bool hat; };
 
 // --- Projectiles, throwables, area effects, deployables ------------------------
 enum ProjOwner { PO_PLAYER, PO_ACTOR, PO_TURRET, PO_ENEMY };
@@ -327,6 +343,7 @@ struct GameState {
     std::vector<Bullet>    bullets;
     std::vector<Tracer>    tracers;
     std::vector<Particle>  particles;
+    std::vector<LooseHelmet> helmets;
     std::vector<HealthKit> healthKits;
     std::vector<WeaponPickup> weaponPickups;
     std::vector<DamageNum> damageNums;

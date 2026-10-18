@@ -53,6 +53,8 @@ void MainWindow::initDefaultKeyBinds()
     m_keyBinds[ACT_SLOT2]       = Qt::Key_2;
     m_keyBinds[ACT_SLOT3]       = Qt::Key_3;
     m_keyBinds[ACT_SLOT4]       = Qt::Key_4;
+    m_keyBinds[ACT_CROUCH]      = Qt::Key_Control;
+    m_keyBinds[ACT_LEAN]        = Qt::Key_Alt;
 }
 
 QString MainWindow::keyName(int k)
@@ -121,7 +123,7 @@ void MainWindow::loadSettings()
         "move_fwd", "move_back", "move_left", "move_right", "jump", "sprint",
         "fire", "ads", "reload", "melee", "inspect", "weapon_stats", "interact",
         "throw", "cycle_throw", "gadget", "flashlight", "camera", "shoulder",
-        "armory", "slot1", "slot2", "slot3", "slot4"
+        "armory", "slot1", "slot2", "slot3", "slot4", "crouch", "lean"
     };
 
     if (s.contains("keybind_v2")) {
@@ -171,7 +173,7 @@ void MainWindow::saveSettings() const
         "move_fwd", "move_back", "move_left", "move_right", "jump", "sprint",
         "fire", "ads", "reload", "melee", "inspect", "weapon_stats", "interact",
         "throw", "cycle_throw", "gadget", "flashlight", "camera", "shoulder",
-        "armory", "slot1", "slot2", "slot3", "slot4"
+        "armory", "slot1", "slot2", "slot3", "slot4", "crouch", "lean"
     };
 
     for (int i = 0; i < ACT_COUNT; i++) {
@@ -308,14 +310,16 @@ void MainWindow::renderSettings()
             "PRIMARY WEAPON",
             "SIDEARM",
             "HEAVY / MELEE",
-            "SPECIAL WEAPON"
+            "SPECIAL WEAPON",
+            "CROUCH (HOLD)",
+            "LEAN (HOLD + A / D)"
         };
 
-        const int col1X = 40, col2X = 415, colW = 345, y0 = 96, rh = 30, sp = 34;
+        const int col1X = 40, col2X = 415, colW = 345, y0 = 92, rh = 28, sp = 32;
 
         for (int i = 0; i < ACT_COUNT; i++) {
-            int cx = (i < 12) ? col1X : col2X;
-            int cy = y0 + (i % 12) * sp;
+            int cx = (i < CTRL_ROWS) ? col1X : col2X;
+            int cy = y0 + (i % CTRL_ROWS) * sp;
             bool sel = (m_controlsRow == i);
             bool rebinding = (m_rebindingAction == i);
 
@@ -343,7 +347,7 @@ void MainWindow::renderSettings()
         }
 
         // Reset Defaults Button
-        int rbx = 240, rby = y0 + 12 * sp + 4, rbw = 320, rbh = 28;
+        int rbx = 240, rby = y0 + CTRL_ROWS * sp + 4, rbw = 320, rbh = 26;
         bool resetSel = (m_controlsRow == ACT_COUNT);
         m_menuRects.push_back({rbx, rby, rbw, rbh, 200});
         m_cv.blendRect(rbx, rby, rbw, rbh, withAlpha(UI_BG, resetSel ? 230 : 170));
@@ -363,6 +367,44 @@ void MainWindow::renderSettings()
 // ─────────────────────────────────────────────────────────────────────────────
 //  Arsenal: turntable + stats for every weapon
 // ─────────────────────────────────────────────────────────────────────────────
+// A gun on a lit turntable inside a screen rectangle (Arsenal, Loadout, Stats)
+void MainWindow::drawGunStage(int w, int tx, int ty, int tw, int th, float ang)
+{
+    m_cv.vGrad(tx, ty, tw, th, withAlpha(0xFF101820, 230), withAlpha(0xFF05080C, 230));
+    m_cv.rectOutline(tx, ty, tw, th, withAlpha(0xFFFFFFFF, 30));
+    for (int gx = tx; gx < tx + tw; gx += 24) m_cv.blendRect(gx, ty + th - 50, 1, 50, withAlpha(0xFF3AB4E8, 26));   // floor grid
+    for (int gy = ty + th - 50; gy < ty + th; gy += 12) m_cv.blendRect(tx, gy, tw, 1, withAlpha(0xFF3AB4E8, 26));
+    {
+        const GunModel &M = gunModel(w);
+        const GunGeom3D &G3 = gunGeom(w);
+        std::vector<float> zb(size_t(W) * H, 0.f);
+        Raster3D r{m_cv, zb.data()};
+        r.fx = r.fy = 560.f * std::min(tw / 535.f, th / 250.f); r.cx = tx + tw / 2.f; r.cy = ty + th / 2.f - 6.f;   // scaled to the stage
+        r.light = norm(V3{-0.4f, -0.8f, -0.45f});
+        // every gun fills the stage the same way, but never spills out of it
+        float wantLen = 0.75f;
+        float S = wantLen / std::max(20.f, M.length);
+        S = std::min(S, 0.8f * tw * 1.25f / (r.fx * std::max(1.f, M.length)));
+        S = std::min(S, 0.55f * th * 1.25f / (r.fx * std::max(1.f, M.hMax - M.hMin)));
+        r.clipX0 = std::max(0, tx); r.clipY0 = std::max(0, ty); r.clipX1 = std::min(W - 1, tx + tw - 1); r.clipY1 = std::min(H - 1, ty + th - 1);
+        V3 Fd = norm(V3{std::cos(ang), 0.f, std::sin(ang)}), Ud = V3{0, -1, 0}, Rd = norm(cross(Fd, Ud));
+        float tilt = 0.18f;
+        Fd = rotate(Fd, Rd, tilt); Ud = rotate(Ud, Rd, tilt);
+        V3 C{0.f, 0.f, 1.25f};
+        float hMid = (M.hMax + M.hMin) * 0.5f;
+        V3 O = C - Fd * (M.length * 0.5f * S) - Ud * (hMid * S);
+        auto map = [&](float u, float h, float wz) { return O + Fd * (u * S) + Ud * (h * S) + Rd * (wz * S); };
+        for (int i = 0; i < M.count; i++) {
+            const GunPart &part = M.parts[i];
+            float width = i < G3.count ? G3.partW[i] : 4.f;
+            bool glass = (part.flags & GP_GLASS) != 0;
+            r.emissive = (part.flags & GP_GLOW) != 0;
+            r.extrude(part.pts, part.n, width, map, Fd, Ud, Rd, part.col, glass ? 0.8f : 0.45f, glass);
+            r.emissive = false;
+        }
+    }
+}
+
 void MainWindow::renderArsenal()
 {
     menuHeader("ARSENAL", QString("%1 WEAPONS").arg(WPN_COUNT));
@@ -385,36 +427,7 @@ void MainWindow::renderArsenal()
 
     // --- turntable -----------------------------------------------------------------------
     const int tx = 245, ty = 80, tw = 535, th = 250;
-    m_cv.vGrad(tx, ty, tw, th, withAlpha(0xFF101820, 230), withAlpha(0xFF05080C, 230));
-    m_cv.rectOutline(tx, ty, tw, th, withAlpha(0xFFFFFFFF, 30));
-    for (int gx = tx; gx < tx + tw; gx += 24) m_cv.blendRect(gx, ty + th - 50, 1, 50, withAlpha(0xFF3AB4E8, 26));   // floor grid
-    for (int gy = ty + th - 50; gy < ty + th; gy += 12) m_cv.blendRect(tx, gy, tw, 1, withAlpha(0xFF3AB4E8, 26));
-    {
-        const GunModel &M = gunModel(w);
-        const GunGeom3D &G3 = gunGeom(w);
-        std::vector<float> zb(size_t(W) * H, 0.f);
-        Raster3D r{m_cv, zb.data()};
-        r.fx = r.fy = 560.f; r.cx = tx + tw / 2.f; r.cy = ty + th / 2.f - 6.f;
-        r.light = norm(V3{-0.4f, -0.8f, -0.45f});
-        float ang = m_time * 0.6f;
-        float wantLen = 0.75f;                               // every gun fills the stage the same way
-        float S = wantLen / std::max(20.f, M.length);
-        V3 Fd = norm(V3{std::cos(ang), 0.f, std::sin(ang)}), Ud = V3{0, -1, 0}, Rd = norm(cross(Fd, Ud));
-        float tilt = 0.18f;
-        Fd = rotate(Fd, Rd, tilt); Ud = rotate(Ud, Rd, tilt);
-        V3 C{0.f, 0.f, 1.25f};
-        float hMid = (M.hMax + M.hMin) * 0.5f;
-        V3 O = C - Fd * (M.length * 0.5f * S) - Ud * (hMid * S);
-        auto map = [&](float u, float h, float wz) { return O + Fd * (u * S) + Ud * (h * S) + Rd * (wz * S); };
-        for (int i = 0; i < M.count; i++) {
-            const GunPart &part = M.parts[i];
-            float width = i < G3.count ? G3.partW[i] : 4.f;
-            bool glass = (part.flags & GP_GLASS) != 0;
-            r.emissive = (part.flags & GP_GLOW) != 0;
-            r.extrude(part.pts, part.n, width, map, Fd, Ud, Rd, part.col, glass ? 0.8f : 0.45f, glass);
-            r.emissive = false;
-        }
-    }
+    drawGunStage(w, tx, ty, tw, th, m_time * 0.6f);
     text(tx + 14, ty + 8, tw - 28, 26, Qt::AlignLeft, d.name, QColor(255, 255, 255), 20, 900);
     text(tx + 14, ty + 34, tw - 28, 14, Qt::AlignLeft,
          QString("%1   |   SLOT %2   |   %3").arg(CLS[d.cls]).arg(d.slot + 1).arg(d.tier ? QString("DROPS FROM ZONE %1+").arg(std::max(1, (d.tier - 1) * 2)) : QString("STARTING KIT")),

@@ -7,7 +7,20 @@
 
 ---
 
-## Latest update: story campaign, six distinct worlds, bosses, map editor
+## Latest update: 3D enemies, shadows, crouch & lean, smarter squads, armoury, stats
+
+| Area | What changed |
+|---|---|
+| **3D enemies** | Regular hostiles are now real 3D soldiers built from smooth-shaded (Gouraud) tubes and ellipsoids on a shared skeleton (`soldier3d.h`): IK arms and legs, per-type kit (riot shield, grenade bandolier, medic cross and bag, heavy armour plates, sniper boonie hat, stalker hood). Hits are a ray test against capsules on the same skeleton, so you hit exactly what you see |
+| **Character detail** | Close soldiers use a high-quality path: per-pixel procedural materials (camouflage, fabric weave, gunmetal, skin, rubber) solid-textured from body-local coordinates so they stay glued to the moving body; sky/ground hemispheric ambient + sun + rim + per-material specular; rounded-box (superellipse) plates, pouches and boots; sculpted chest, hands with fingers on the grip, a face under the balaclava, helmet cover / rails / ear cups / NVG mount / chin strap; feet planted on slopes by IK, breathing and weight shift; edge anti-aliasing on model silhouettes. Tessellation follows each part's size on screen |
+| **Hit reactions** | The body part you hit flashes red; a headshot kill knocks the helmet off, which tumbles and bounces; bodies buckle at the knees and fall away from the shot with arms flung out |
+| **Shadows** | Planar projected shadows for every soldier (including your own body, even in first person): each limb's shadow is a ground quad following the terrain, stencilled so overlaps darken once, strength from the sun and shade |
+| **Crouch & lean** | Hold **Ctrl** to crouch (half speed, steadier aim, smaller target, hides behind low walls); hold **Alt + A / D** to lean around corners. Both rebindable |
+| **Squad tactics** | Enemies take cover (low walls: duck and pop up; full walls: step out to a peek spot), flank to your side, and route around walls with a grid search |
+| **Armoury** | Each campaign mission unlocks weapons and attachment options; an S rank makes that mission's guns RARE; guns you carry out of a mission join the armoury. New **LOADOUT** screen ([L] in the campaign menu) to pick guns per slot and fit attachments |
+| **Stats** | New **STATS** screen: kills, headshots, accuracy, K/D, streaks, longest kill, bosses, secrets, time played, campaign ranks, per-weapon kills and accuracy, favourite gun on a turntable |
+
+## Story campaign, six distinct worlds, bosses, map editor
 
 | Area | What changed |
 |---|---|
@@ -79,6 +92,8 @@
 | **C** | Re-centre crosshair and view |
 | **Space** | Jump — onto ledges, out of pits, across acid |
 | **N** | Sound on / off |
+| **Ctrl** | Crouch (hold) |
+| **Alt + A / D** | Lean left / right (hold) |
 | **L** | Flashlight |
 | **← / →** | Turn |
 | **[ / ]** | Pixel-block size 1–8 (raster proof) |
@@ -314,6 +329,8 @@ fps_game/
 ├── enemies.cpp         New hostile types
 ├── environment.cpp     Weather, time of day, flashlight
 ├── editor.cpp          In-game map editor
+├── stats.cpp           Lifetime stats and the STATS screen
+├── soldier3d.h         Shared soldier skeleton: joints, IK, death fall, ray hit test
 ├── menus.cpp           Settings (saved) and the Arsenal browser
 ├── world.cpp           World methods + heightfield, light-map baking, doors & secrets, bullet-hole
 │                       decals, 3D hitscan, line of sight, movement checks

@@ -22,7 +22,8 @@ MoveEvents stepMovement(const World &w, Player &p, const InputCmd &cmd, float dt
     float inputLen = std::sqrt(moveX * moveX + moveY * moveY);
     if (inputLen > 1.f) { moveX /= inputLen; moveY /= inputLen; }   // no faster diagonals
 
-    float moveSpeed = p.speedMult * (p.sprinting ? 5.8f : p.adsMode ? 2.0f : 3.5f);
+    p.crouching = cmd.crouch && !cmd.jump;
+    float moveSpeed = p.speedMult * (p.crouching ? (p.adsMode ? 1.3f : 1.7f) : p.sprinting ? 5.8f : p.adsMode ? 2.0f : 3.5f);
     float targetVelX = moveX * moveSpeed * directionMult;
     float targetVelY = moveY * moveSpeed * directionMult;
     bool hasMoveInput = inputLen > 0.001f;

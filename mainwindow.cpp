@@ -15,6 +15,7 @@
 #include "mainwindow.h"
 #include "pixelfont.h"
 #include "missions.h"
+#include "raster3d.h"
 #include <QPainter>
 #include <QDir>
 #include <QFile>
@@ -77,6 +78,8 @@ MainWindow::MainWindow(QWidget *parent)
     bakeMachineAtlas(m_typeAtlas[ET_TURRET], m_typeMask[ET_TURRET], 1);
     bakeBossAtlases();
     bakePortraits();
+    loadStats();
+    (void)matTiles();                                   // bake the model material tiles now, not on the first frame
     bakePickups(m_pickupTex);
     for (int c = 0; c < 3; c++) {
         m_portrait[c].assign(PORTRAIT * PORTRAIT, 0);
@@ -411,7 +414,7 @@ void MainWindow::loadLevel(int lv)
     m_gs.levelComplete = false; m_gs.levelTransTimer = 0;
     m_upgradeCards.clear(); m_selectedUpgradeCard = -1; m_upgradePicked = false; m_showArmory = false;
     m_upgradeDecisionTimer = 30.0f; m_deployTimer = 0.0f;
-    m_gs.bullets.clear(); m_gs.tracers.clear(); m_gs.particles.clear(); m_gs.healthKits.clear();
+    m_gs.bullets.clear(); m_gs.tracers.clear(); m_gs.particles.clear(); m_gs.helmets.clear(); m_gs.healthKits.clear();
     m_gs.weaponPickups.clear(); m_gs.damageNums.clear();
     m_emergencyAmmoCooldown = 0.f; m_emergencyHealthCooldown = 0.f;
     m_gs.enemyBulletSpeed = cfg.bulletSpeed  * dc.bulletSpeedMult;
@@ -992,8 +995,14 @@ void MainWindow::gameStep(float dt)
         m_staminaExhausted = false;
     }
 
+    // Crouch (hold) and lean (hold + A / D): animated stance used by the camera, the body and the AI
+    bool leaning = isActionPressed(ACT_LEAN);
+    m_crouch = isActionPressed(ACT_CROUCH) && !(shift && moving);          // sprinting stands you up
+    m_crouchT += ((m_crouch ? 1.f : 0.f) - m_crouchT) * std::min(1.f, dt * 9.f);
+    float leanWant = leaning ? float(isActionPressed(ACT_MOVE_RIGHT)) - float(isActionPressed(ACT_MOVE_LEFT)) : 0.f;
+    m_leanT += (leanWant - m_leanT) * std::min(1.f, dt * 8.f);
     bool canStartSprint = pl.sprinting ? (pl.stamina > 0.f) : (pl.stamina > 5.f);
-    bool wantSprint = moving && shift && !m_staminaExhausted && canStartSprint && !pl.adsMode && !m_charging && !m_cooking;
+    bool wantSprint = moving && shift && !m_staminaExhausted && canStartSprint && !pl.adsMode && !m_charging && !m_cooking && !leaning;
     m_holdBreath = scoped && shift && !m_staminaExhausted && pl.stamina > 4.f;
 
     if (wantSprint) {
@@ -1044,10 +1053,11 @@ void MainWindow::gameStep(float dt)
         cmd.ads     = false;
     } else {
         cmd.forward = float(isActionPressed(ACT_MOVE_FWD)) - float(isActionPressed(ACT_MOVE_BACK));
-        cmd.strafe  = float(isActionPressed(ACT_MOVE_RIGHT)) - float(isActionPressed(ACT_MOVE_LEFT));
+        cmd.strafe  = leaning ? 0.f : float(isActionPressed(ACT_MOVE_RIGHT)) - float(isActionPressed(ACT_MOVE_LEFT));   // A / D lean instead
         cmd.sprint  = wantSprint;
         cmd.jump    = m_jumpQueued;
         cmd.ads     = pl.adsMode;
+        cmd.crouch  = m_crouch;
     }
     cmd.yaw     = std::atan2(pl.dirY, pl.dirX);
     cmd.seq     = m_gs.frameNum;
@@ -1101,6 +1111,8 @@ void MainWindow::gameStep(float dt)
     updateEnemies(dt);
     updateBossWorld(dt);
     updateSecretHints(dt);
+    updateEnemyAnim(dt);
+    trackStats(dt);
     checkReinforcements(dt);
 
     // Enemy projectiles
@@ -1136,7 +1148,7 @@ void MainWindow::gameStep(float dt)
         closest(pl.posX, pl.posY, cbx, cby, cbz);
         float dx = cbx - pl.posX, dy = cby - pl.posY;
         if (!b.whizzed && dx * dx + dy * dy < 1.6f) { b.whizzed = true; sfxAt(SND_BULLET_WHIZ, b.x, b.y, 0.9f, frand(0.9f, 1.15f)); }
-        if (dx * dx + dy * dy < 0.15f && cbz > m_gs.player.footZ - 0.1f && cbz < m_gs.player.footZ + 0.95f) {
+        if (dx * dx + dy * dy < 0.15f && cbz > m_gs.player.footZ - 0.1f && cbz < m_gs.player.footZ + 0.95f - 0.3f * m_crouchT) {
             b.alive = false;
             int dmg = b.damage > 0 ? b.damage : int((10 + 4 * (m_gs.level - 1)) * (1.f - pl.damageReduction) * dc.dmgReceivedMult);
             pl.hp -= dmg; m_gs.zoneDamage += dmg; pl.damageFlash = 0.45f; pl.shakeY = -9.f;
@@ -1224,9 +1236,9 @@ void MainWindow::updateEnemies(float dt)
         if (e.shootAnim > 0) e.shootAnim -= dt;
         e.fireCooldown -= dt;
 
-        float ez = floorH(e.x, e.y) + 0.62f;
+        float ez = floorH(e.x, e.y) + ((e.hasCover && e.peekT <= 0.f) ? 0.35f : 0.62f);   // ducked behind cover: eyes low
         float tgX, tgY, tgZ, d;
-        if (m_gs.actors.empty()) { tgX = pl.posX; tgY = pl.posY; tgZ = pl.footZ + 0.5f; d = std::sqrt((tgX - e.x) * (tgX - e.x) + (tgY - e.y) * (tgY - e.y)); }
+        if (m_gs.actors.empty()) { tgX = pl.posX; tgY = pl.posY; tgZ = playerAimZ(); d = std::sqrt((tgX - e.x) * (tgX - e.x) + (tgY - e.y) * (tgY - e.y)); }
         else hostileTarget(e.x, e.y, ez, tgX, tgY, tgZ, d);
         float dx = tgX - e.x, dy = tgY - e.y;
         float detectRange = e.aggroRange * 1.5f;
@@ -1251,6 +1263,8 @@ void MainWindow::updateEnemies(float dt)
 
         // Pick movement vector based on archetype and tactical posture
         float vx = 0, vy = 0, spd = 0;
+        bool mayFire = true;
+        if (e.state != ES_ALERT) e.hasCover = false;
         if (e.state == ES_ALERT) {
             if (e.alertDist > 0.f) {
                 // Moving towards bullet alert position
@@ -1268,12 +1282,17 @@ void MainWindow::updateEnemies(float dt)
                     e.moveX = frand() < 0.5f ? -1.f : 1.f;
                 }
 
+                // Squad tactics first (cover / flank); otherwise the archetype's own posture
+                bool tactic = updateEnemyTactics(int(i), dt, tgX, tgY, tgZ, d, los, vx, vy, spd, mayFire);
+
                 // TACTICAL STOP-AND-SHOOT:
                 // When aiming / preparing to shoot within effective range, stop to steady weapon
                 float maxFiringRange = (e.type == ET_SNIPER ? 22.f : e.type == ET_RIFLEMAN ? 15.f : e.type == ET_SCOUT ? 10.f : 7.5f);
                 bool aimingToFire = (los && d <= maxFiringRange && e.fireCooldown <= 0.35f);
 
-                if (aimingToFire) {
+                if (tactic) {
+                    // the tactic already chose where to go
+                } else if (aimingToFire) {
                     vx = 0.f; vy = 0.f; spd = 0.f;
                 } else {
                     // Tactical movement & repositioning:
@@ -1372,7 +1391,7 @@ void MainWindow::updateEnemies(float dt)
 
         // Fire: engage target with realistic tactical cadence within effective weapon range
         float firingRange = (e.type == ET_SNIPER ? 22.f : e.type == ET_RIFLEMAN ? 15.f : e.type == ET_SCOUT ? 10.f : 7.5f);
-        if (e.state == ES_ALERT && e.alertDist <= 0.f && los && d <= firingRange && e.fireCooldown <= 0 && e.hitFlash <= 0) {
+        if (e.state == ES_ALERT && e.alertDist <= 0.f && los && mayFire && d <= firingRange && e.fireCooldown <= 0 && e.hitFlash <= 0) {
             enemyFire(e, tgX, tgY, tgZ);
             e.shootAnim = 0.22f;
             float cool = 0.f;
@@ -1392,6 +1411,7 @@ void MainWindow::spawnEnemy(float x, float y, bool elite, EnemyType type)
 {
     int baseHp = enemyMaxHP();
     Enemy e; e.x = x; e.y = y; e.elite = elite; e.type = type;
+    e.yaw = std::atan2(m_gs.player.posY - y, m_gs.player.posX - x);   // starts looking towards the player
     int hp = baseHp;
     if (type == ET_SCOUT) hp = int(baseHp * 0.70f);
     else if (type == ET_SHOTGUNNER) hp = int(baseHp * 1.35f);
@@ -1493,6 +1513,7 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     dmg = std::max(1, int(dmg * (1.f - e.armor)));
     e.hp -= dmg; e.hitFlash = 0.16f;
     e.hpShow = 2.2f;
+    e.flashPart = part; e.partFlashT = 0.14f;
     if (e.type == ET_STALKER) e.revealT = 1.5f;
     if (e.bossKind) bossDamaged(idx, dmg);
     if (e.hp <= 0 && (e.type == ET_DRONE || e.type == ET_TURRET)) { e.hover = 0.f; explode(e.x, e.y, floorH(e.x, e.y) + 0.4f, 1.2f, 0.f, PO_ENEMY, true); }
@@ -1502,6 +1523,18 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     // the hostile reacts to whoever shot it
     const Player &src = mine ? m_gs.player : m_gs.actors[size_t(byActor)];
     float dx = src.posX - e.x, dy = src.posY - e.y, d = std::sqrt(dx * dx + dy * dy);
+    e.fallYaw = std::atan2(-dy, -dx);                         // a killing shot knocks the body away from the shooter
+    if (e.hp <= 0 && head && soldierEnemy(e) && !e.helmetOff && e.type != ET_STALKER) {
+        // headshot kill: the helmet flies off and tumbles
+        e.helmetOff = true;
+        float ux = d > 0.01f ? -dx / d : 0.f, uy = d > 0.01f ? -dy / d : 0.f;
+        bool hat = e.type == ET_SNIPER;
+        static const SoldierLook *LK[ET_COUNT] = { &ENEMY_LOOK, &SCOUT_LOOK, &SHOTGUN_LOOK, &SNIPER_LOOK, &GRENADIER_LOOK, &SHIELD_LOOK, &MEDIC_LOOK, &HEAVY_LOOK, &STALKER_LOOK, &ENEMY_LOOK, &ENEMY_LOOK };
+        uint32_t col = e.elite ? ELITE_LOOK.helmet : LK[rs::clampi(int(e.type), 0, ET_COUNT - 1)]->helmet;
+        m_gs.helmets.push_back(LooseHelmet{e.x, e.y, floorH(e.x, e.y) + 0.82f * e.scale, ux * 2.6f + frand(-0.4f, 0.4f), uy * 2.6f + frand(-0.4f, 0.4f),
+                                           2.4f, 0.f, frand(8.f, 14.f) * (rand() % 2 ? 1.f : -1.f), 12.f, col, hat});
+        sfxAt(SND_RICOCHET, e.x, e.y, 0.6f, 1.3f);
+    }
     float ez = floorH(e.x, e.y) + 0.62f;
     float detectRange = e.aggroRange * 1.5f;
     bool los = d < std::max(18.f, detectRange) && hasLOS(e.x, e.y, ez, src.posX, src.posY, src.footZ + 0.5f);
@@ -1557,6 +1590,7 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
         if (head) m_gs.zoneHeadshots++;
         m_gs.score += 100 * m_gs.level + (head ? 50 * m_gs.level : 0);
         if (head) { m_gs.headshots++; m_headshotBanner = 1.3f; }
+        statKill(head, d, e.boss || (e.bossKind && !bossIsMinor(e.bossKind) && !e.decoy));
         m_killMarker = 0.5f;
         m_combo++; m_comboTimer = 3.5f; m_comboDisplay = 1.8f;
         pushFeed((m_combo > 1 ? QString("x%1  ").arg(m_combo) : QString()) + (head ? "HEADSHOT KILL" : "ENEMY DOWN"), 4.5f, head);
@@ -1917,9 +1951,14 @@ void MainWindow::computeView()
     m_K = float(H) / m_adsFOVMult;
     bool moving = m_screen == SCR_PLAYING && isPlayerMoving();
     float bobZ = moving ? std::sin(pl.bobPhase * 2.f) * (pl.sprinting ? 0.018f : 0.01f) * (1.f - m_adsT * 0.8f) : 0.f;
-    m_headZ = m_gs.player.footZ + 0.5f + bobZ;
+    m_headZ = m_gs.player.footZ + 0.5f - 0.18f * m_crouchT - 0.03f * std::fabs(m_leanT) + bobZ;
     m_eye = m_headZ;
     m_camX = pl.posX; m_camY = pl.posY;
+    if (std::fabs(m_leanT) > 0.01f) {
+        float off = 0.3f * m_leanT, rx = -pl.dirY, ry = pl.dirX;
+        for (int k = 0; k < 4 && !posValid(pl.posX + rx * off, pl.posY + ry * off, 0.12f); k++) off *= 0.6f;
+        m_camX += rx * off; m_camY += ry * off;
+    }
     if (m_boomT > 0.001f && m_boomCur > 0.001f) {
         float dx, dy, dz;
         boomOffset(m_boomCur, dx, dy, dz);
@@ -2055,7 +2094,8 @@ void MainWindow::menuConfirm()
         else if (m_menuCursor == 4) openEditor(m_mapChoice);
         else if (m_menuCursor == 5) openSettings(SCR_MENU);
         else if (m_menuCursor == 6) startDebugMode();
-        else QApplication::quit();
+        else if (m_menuCursor == 7) openStats();
+        else { saveStats(); QApplication::quit(); }
         break;
     case SCR_SETTINGS: changeSetting(m_settingsRow, 1); break;
     case SCR_ARSENAL: break;
@@ -2089,6 +2129,8 @@ void MainWindow::menuBack()
         }
         break;
     case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 3; break;
+    case SCR_LOADOUT:     closeLoadout(); break;
+    case SCR_STATS:       m_screen = SCR_MENU; m_menuCursor = 7; break;
     case SCR_DIFF_SELECT: m_screen = SCR_MAP_SELECT; break;
     case SCR_CHAR_SELECT: m_screen = SCR_DIFF_SELECT; break;
     case SCR_MULTIPLAYER_LOBBY:
@@ -2108,6 +2150,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     m_keys.insert(k);
     if (m_screen == SCR_EDITOR) { editorKey(e); return; }
     if (m_screen == SCR_CAMPAIGN || m_screen == SCR_BRIEFING || m_screen == SCR_DEBRIEF) { if (!e->isAutoRepeat()) campaignKey(k); return; }
+    if (m_screen == SCR_LOADOUT) { loadoutKey(k); return; }
+    if (m_screen == SCR_STATS) { if (k == Qt::Key_Escape || k == Qt::Key_Backspace || k == Qt::Key_Return) menuBack(); return; }
     if (m_screen == SCR_PLAYING && m_flyActive) { if (!e->isAutoRepeat()) { m_flyActive = false; m_keys.erase(k); } return; }
     if (m_screen == SCR_PLAYING && k == Qt::Key_F5 && m_edPlaytest) { m_edPlaytest = false; openEditor(m_edMap); return; }
 
@@ -2217,8 +2261,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_Up || k == Qt::Key_Down || k == Qt::Key_Left || k == Qt::Key_Right) sfx(SND_UI_MOVE, 0.5f);
         if (m_screen == SCR_MENU) {
             if (k == Qt::Key_Up)   m_menuCursor = std::max(0, m_menuCursor - 1);
-            if (k == Qt::Key_Down) m_menuCursor = std::min(7, m_menuCursor + 1);
-            if (k >= Qt::Key_1 && k <= Qt::Key_8) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
+            if (k == Qt::Key_Down) m_menuCursor = std::min(8, m_menuCursor + 1);
+            if (k >= Qt::Key_1 && k <= Qt::Key_9) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
         } else if (m_screen == SCR_SETTINGS) {
             if (m_rebindingAction >= 0) {
                 if (k == Qt::Key_Escape) {
@@ -2265,20 +2309,20 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
                 return;
             } else {
                 if (k == Qt::Key_Up) {
-                    if (m_controlsRow == ACT_COUNT) m_controlsRow = 11;
-                    else if (m_controlsRow % 12 == 0) m_controlsRow = m_controlsRow + 11;
+                    if (m_controlsRow == ACT_COUNT) m_controlsRow = CTRL_ROWS - 1;
+                    else if (m_controlsRow % CTRL_ROWS == 0) m_controlsRow = std::min(ACT_COUNT - 1, m_controlsRow + CTRL_ROWS - 1);
                     else m_controlsRow--;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Down) {
                     if (m_controlsRow == ACT_COUNT) m_controlsRow = 0;
-                    else if (m_controlsRow % 12 == 11) m_controlsRow = ACT_COUNT;
+                    else if (m_controlsRow % CTRL_ROWS == CTRL_ROWS - 1 || m_controlsRow == ACT_COUNT - 1) m_controlsRow = ACT_COUNT;
                     else m_controlsRow++;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Left) {
-                    if (m_controlsRow >= 12 && m_controlsRow < ACT_COUNT) m_controlsRow -= 12;
+                    if (m_controlsRow >= CTRL_ROWS && m_controlsRow < ACT_COUNT) m_controlsRow -= CTRL_ROWS;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Right) {
-                    if (m_controlsRow < 12) m_controlsRow += 12;
+                    if (m_controlsRow < CTRL_ROWS && m_controlsRow + CTRL_ROWS < ACT_COUNT) m_controlsRow += CTRL_ROWS;
                     sfx(SND_UI_MOVE, 0.4f);
                 } else if (k == Qt::Key_Return || k == Qt::Key_Enter || k == Qt::Key_Space) {
                     if (m_controlsRow == ACT_COUNT) {
@@ -2446,6 +2490,7 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
             if (f.x() < r.x || f.y() < r.y || f.x() >= r.x + r.w || f.y() >= r.y + r.h) continue;
             if (r.id == 10) { menuBack(); return; }
             if (m_screen == SCR_CAMPAIGN) { campaignClick(r.id); return; }
+            if (m_screen == SCR_LOADOUT) { loadoutClick(r.id); return; }
             if (m_screen == SCR_SETTINGS) {
                 if (m_rebindingAction >= 0) {
                     m_rebindingAction = -1;
@@ -2926,6 +2971,7 @@ bool MainWindow::snapshot(const QString &dir)
         computeView();
         timeIt("terrain", [&] { renderTerrain(); });
         timeIt("sky", [&] { renderSky(); });
+        timeIt("actors3d", [&] { renderActors3D(); });
         timeIt("sprites", [&] { renderSprites(); });
         timeIt("viewmodel", [&] { renderViewModel(); });
         timeIt("postfx", [&] { renderPostFX(); });
@@ -2957,11 +3003,131 @@ bool MainWindow::snapshot(const QString &dir)
         QElapsedTimer t2; t2.start();
         for (int i = 0; i < 60; i++) { computeView(); render(); }
         double withSoldiers = t2.elapsed() / 60.0;
+        {
+            QElapsedTimer t3; t3.start();
+            for (int i = 0; i < 40; i++) { computeView(); renderTerrain(); }
+            double terr = t3.nsecsElapsed() / 40.0 / 1e6;
+            t3.restart();
+            for (int i = 0; i < 40; i++) { computeView(); renderTerrain(); renderActors3D(); }
+            double act = t3.nsecsElapsed() / 40.0 / 1e6 - terr;
+            t3.restart();
+            for (int i = 0; i < 40; i++) smoothModelEdges(0, 0, W - 1, H - 1);
+            log(QString("soldier profile: actors3d %1 ms (3 close soldiers), edge pass full screen %2 ms").arg(act, 0, 'f', 2).arg(t3.nsecsElapsed() / 40.0 / 1e6, 0, 'f', 2));
+        }
         std::vector<Actor> keep = m_gs.actors; m_gs.actors.clear();
         t2.restart();
         for (int i = 0; i < 60; i++) { computeView(); render(); }
         log(QString("soldier close-up: %1 ms/frame with 3 soldiers at 2 m, %2 ms without").arg(withSoldiers, 0, 'f', 2).arg(t2.elapsed() / 60.0, 0, 'f', 2));
         (void)keep;
+    }
+
+    // --- 3D enemies: directional death fall, helmet knocked off, part flash --------
+    {
+        start(1);
+        m_tpp = false; m_boomT = 0.f;
+        place(20.5f, 20.5f, 0.f);
+        m_gs.enemies.clear(); m_gs.helmets.clear();
+        spawnEnemy(23.5f, 20.2f, false, ET_RIFLEMAN); m_gs.enemies.back().fireCooldown = 99.f;
+        spawnEnemy(23.0f, 21.4f, false, ET_SHIELD);   m_gs.enemies.back().fireCooldown = 99.f;
+        spawnEnemy(24.2f, 19.3f, false, ET_HEAVY);    m_gs.enemies.back().fireCooldown = 99.f;
+        for (int k = 0; k < 20; k++) { m_gs.player.hp = 9999; advance(1.f / 60.f); }
+        damageEnemy(2, 5, PART_BODY, 24.2f, 19.3f, 0.5f);                   // a hit flash on the heavy's chest
+        render(); save("60c_enemies_3d");
+        Enemy &k0 = m_gs.enemies[0];
+        damageEnemy(0, 99999, PART_HEAD, k0.x, k0.y, floorH(k0.x, k0.y) + 0.8f);
+        for (int k = 0; k < 18; k++) { m_gs.player.hp = 9999; advance(1.f / 60.f); }
+        render(); save("60d_death_fall_mid");
+        for (int k = 0; k < 70; k++) { m_gs.player.hp = 9999; advance(1.f / 60.f); }
+        render(); save("60e_death_fall_end");
+        float awayX = std::cos(m_gs.enemies[0].fallYaw);
+        log(QString("death fall: falls away from shooter=%1 helmets=%2 helmetOff=%3 helmet z=%4 (ground %5)")
+            .arg(awayX > 0.5f).arg(m_gs.helmets.size()).arg(m_gs.enemies[0].helmetOff)
+            .arg(m_gs.helmets.empty() ? 0.f : m_gs.helmets[0].z, 0, 'f', 2).arg(m_gs.helmets.empty() ? 0.f : floorH(m_gs.helmets[0].x, m_gs.helmets[0].y), 0, 'f', 2));
+    }
+
+    // --- Walking over a body: no glitches when the camera passes over a corpse ---------
+    {
+        start(1);
+        m_tpp = false; m_boomT = 0.f;
+        m_gs.enemies.clear();
+        spawnEnemy(21.6f, 20.5f, false, ET_RIFLEMAN); m_gs.enemies.back().fireCooldown = 99.f;
+        spawnEnemy(2.5f, 37.5f, false, ET_RIFLEMAN); m_gs.enemies.back().fireCooldown = 999.f;   // keeps the zone open
+        place(20.5f, 20.5f, 0.f);
+        damageEnemy(0, 99999, PART_BODY, 21.6f, 20.5f, 0.5f);
+        for (int k = 0; k < 90; k++) { m_gs.player.hp = 9999; advance(1.f / 60.f); }
+        for (int k = 0; k < 6; k++) {
+            place(20.6f + k * 0.25f, 20.5f, 0.f);
+            m_pitch = -0.35f;
+            run(1); save(QString("59_over_body_%1").arg(k));
+        }
+    }
+
+    // --- Crouch and lean ---------------------------------------------------------------
+    {
+        start(1);
+        m_tpp = false; m_boomT = 0.f;
+        place(20.5f, 20.5f, 0.f);
+        for (auto &e : m_gs.enemies) e.fireCooldown = 999.f;
+        Player &pl = m_gs.player;
+        auto walk = [&](bool crouch) {
+            place(20.5f, 20.5f, 0.f);
+            m_keys.clear(); m_keys.insert(Qt::Key_W); if (crouch) m_keys.insert(Qt::Key_Control);
+            for (int k = 0; k < 60; k++) { pl.hp = 9999; advance(1.f / 60.f); }
+            float dist = pl.posX - 20.5f;
+            computeView();
+            float eye = m_eye - pl.footZ;
+            m_keys.clear();
+            for (int k = 0; k < 30; k++) advance(1.f / 60.f);
+            return std::make_pair(dist, eye);
+        };
+        auto st = walk(false), cr = walk(true);
+        place(20.5f, 20.5f, 0.f);
+        m_keys.clear(); m_keys.insert(Qt::Key_Alt); m_keys.insert(Qt::Key_D);
+        for (int k = 0; k < 40; k++) { pl.hp = 9999; advance(1.f / 60.f); }
+        computeView();
+        float leanOff = std::sqrt((m_camX - pl.posX) * (m_camX - pl.posX) + (m_camY - pl.posY) * (m_camY - pl.posY));
+        float leanMoved = std::fabs(pl.posY - 20.5f);
+        render(); save("60f_lean_right");
+        m_keys.clear();
+        m_tpp = true; m_keys.insert(Qt::Key_Control);
+        for (int k = 0; k < 40; k++) { pl.hp = 9999; advance(1.f / 60.f); }
+        render(); save("60g_tpp_crouch");
+        m_keys.clear(); m_tpp = false;
+        for (int k = 0; k < 40; k++) advance(1.f / 60.f);
+        log(QString("crouch: 1s walk standing=%1 crouched=%2, eye standing=%3 crouched=%4; lean: camera offset=%5 body moved=%6")
+            .arg(st.first, 0, 'f', 2).arg(cr.first, 0, 'f', 2).arg(st.second, 0, 'f', 2).arg(cr.second, 0, 'f', 2).arg(leanOff, 0, 'f', 2).arg(leanMoved, 0, 'f', 2));
+    }
+
+    // --- Enemy squad tactics: cover and flanking --------------------------------------
+    {
+        start(1);
+        m_tpp = false; m_boomT = 0.f;
+        Player &pl = m_gs.player;
+        place(20.5f, 20.5f, 0.f);
+        m_gs.enemies.clear();
+        float sx0[5] = { 29.5f, 30.5f, 29.5f, 28.5f, 30.5f }, sy0[5] = { 18.5f, 20.5f, 22.5f, 24.5f, 16.5f };
+        EnemyType tp[5] = { ET_RIFLEMAN, ET_RIFLEMAN, ET_RIFLEMAN, ET_SCOUT, ET_SNIPER };
+        for (int k = 0; k < 5; k++) { spawnEnemy(sx0[k], sy0[k], false, tp[k]); m_gs.enemies.back().state = ES_ALERT; }
+        int nan = 0, wall = 0, coverFrames = 0, hiddenShots = 0;
+        float minAng = 9.f, maxAng = -9.f;
+        int shotsBefore = 0;
+        for (int f = 0; f < 60 * 12; f++) {
+            pl.hp = 9999; advance(1.f / 60.f);
+            for (const Enemy &e : m_gs.enemies) {
+                if (!e.alive) continue;
+                if (std::isnan(e.x) || std::isnan(e.y)) nan++;
+                if (!posValid(e.x, e.y, 0.1f)) wall++;
+                if (e.hasCover) coverFrames++;
+                if (e.hasCover && e.peekT <= 0.f && e.shootAnim > 0.2f) hiddenShots++;
+                if (f > 60 * 8) { float a = std::atan2(e.y - pl.posY, e.x - pl.posX); minAng = std::min(minAng, a); maxAng = std::max(maxAng, a); }
+            }
+            if (f == 60 * 9) { render(); save("60h_squad_tactics"); }
+        }
+        (void)shotsBefore;
+        int roles[3] = { 0, 0, 0 };
+        for (const Enemy &e : m_gs.enemies) if (e.alive) roles[rs::clampi(e.role, 0, 2)]++;
+        log(QString("tactics: cover-frames=%1 shots-while-hidden=%2 roles assault/cover/flank=%3/%4/%5 spread around player=%6 deg dmg=%7 nan=%8 wall=%9")
+            .arg(coverFrames).arg(hiddenShots).arg(roles[0]).arg(roles[1]).arg(roles[2]).arg(int((maxAng - minAng) * 57.3f)).arg(m_gs.zoneDamage).arg(nan).arg(wall));
     }
 
     // --- Third person: boom, wall collision, body + squad soldier -----------------
@@ -3038,6 +3204,7 @@ bool MainWindow::snapshot(const QString &dir)
             Enemy &t = m_gs.enemies[0];
             t.alive = true; t.state = ES_ALERT; t.hp = t.maxHp = 100000; t.fireCooldown = 999.f; t.burnT = t.shockT = t.stunT = 0.f;
             t.x = 28.5f - dist; t.y = 6.5f; t.corpseFade = 1.f; t.scale = 1.f;
+            t.hasCover = false; t.role = 0; t.planT = 999.f; t.peekT = 0.f;                                      // a dummy: no cover tactics
             m_gs.enemies[1].alive = true; m_gs.enemies[1].hp = 100000; m_gs.enemies[1].fireCooldown = 999.f;     // keeps the zone open
             m_gs.enemies[1].x = 2.5f; m_gs.enemies[1].y = 37.5f; m_gs.enemies[1].corpseFade = 1.f;
             computeView();
@@ -3048,7 +3215,7 @@ bool MainWindow::snapshot(const QString &dir)
         QString list;
         for (int w = 1; w < WPN_COUNT; w++) {
             const WeaponDef &d = WEAPONS[w];
-            setupTarget(isMelee(w) ? 1.1f : d.proj == PJ_FLAME ? 3.0f : d.proj == PJ_ARC ? 5.f : 6.f);
+            setupTarget(isMelee(w) ? 1.1f : d.proj == PJ_FLAME || d.pellets > 1 ? 3.0f : d.proj == PJ_ARC ? 5.f : 6.f);
             for (int k = 0; k < WPN_COUNT; k++) pl.owned[k] = false;
             pl.slot[SLOT_PRIMARY] = pl.slot[SLOT_PRIMARY2] = -1;
             pl.owned[w] = true; pl.slot[d.slot == SLOT_PRIMARY ? SLOT_PRIMARY : d.slot] = w;
@@ -3064,7 +3231,7 @@ bool MainWindow::snapshot(const QString &dir)
             }
             m_lmb = true; tryFire();
             int hold = d.mode == FM_CHARGE ? 70 : d.mode == FM_SEMI || d.mode == FM_BOLT ? 1 : 40;
-            for (int f = 0; f < hold; f++) { int keep = t.hp; setupTarget(isMelee(w) ? 1.1f : d.proj == PJ_FLAME ? 3.0f : d.proj == PJ_ARC ? 5.f : 6.f); t.hp = keep; advance(1.f / 60.f); }
+            for (int f = 0; f < hold; f++) { int keep = t.hp; setupTarget(isMelee(w) ? 1.1f : d.proj == PJ_FLAME || d.pellets > 1 ? 3.0f : d.proj == PJ_ARC ? 5.f : 6.f); t.hp = keep; advance(1.f / 60.f); }
             m_lmb = false; releaseTrigger();
             if (w == WPN_BATTLE_RIFLE || w == WPN_LMG || w == WPN_PLASMA || w == WPN_ARC || w == WPN_FLAMETHROWER || w == WPN_RAILGUN || w == WPN_SNIPER || w == WPN_ROCKET) { m_lmb = true; tryFire(); }
             if (w == WPN_SMG || w == WPN_ROCKET || w == WPN_ARC || w == WPN_FLAMETHROWER || w == WPN_REVOLVER || w == WPN_RAILGUN || w == WPN_PLASMA || w == WPN_AXE) {
@@ -3239,7 +3406,7 @@ bool MainWindow::snapshot(const QString &dir)
             Enemy &e = m_gs.enemies.back(); e.state = ES_ALERT; e.fireCooldown = 0.5f;
             int dmg0 = m_gs.zoneDamage, nan = 0, wall = 0;
             float x0 = e.x, y0 = e.y;
-            for (int f = 0; f < 60 * 9; f++) {
+            for (int f = 0; f < 60 * (t == ET_GRENADIER ? 14 : 9); f++) {      // lobbed grenades need time to land
                 pl.hp = 9999; advance(1.f / 60.f);
                 const Enemy &q = m_gs.enemies.back();
                 if (std::isnan(q.x) || std::isnan(q.y)) nan++;
@@ -3258,9 +3425,10 @@ bool MainWindow::snapshot(const QString &dir)
         int shieldIdx = int(m_gs.enemies.size()) - 1;
         float sx, sy, sd;
         project(m_gs.enemies[size_t(shieldIdx)].x, m_gs.enemies[size_t(shieldIdx)].y, floorH(25.5f, 24.5f) + 0.45f, sx, sy, sd);
-        HitResult hs = hitscan(sx - 0.12f * m_K / sd, sy);
+        sx += 0.09f * m_K / sd;                                  // the shield is on its left arm: screen right when it faces you
+        HitResult hs = hitscan(sx, sy);
         int hp0 = m_gs.enemies[size_t(shieldIdx)].hp;
-        pl.curWeapon = WPN_PISTOL; pl.mag[WPN_PISTOL] = 12; pl.attackCooldown = 0; m_aimX = sx - 0.12f * m_K / sd; m_aimY = sy; tryFire();
+        pl.curWeapon = WPN_PISTOL; pl.mag[WPN_PISTOL] = 12; pl.attackCooldown = 0; m_aimX = sx; m_aimY = sy; tryFire();
         log(QString("riot shield: part=%1 (4 = shield) hp %2 -> %3").arg(int(hs.part)).arg(hp0).arg(m_gs.enemies[size_t(shieldIdx)].hp));
         // medic: brings a fallen rifleman back
         arena();
@@ -3429,6 +3597,31 @@ bool MainWindow::snapshot(const QString &dir)
         for (int f = 0; f < 60 * 5 && m_screen == SCR_PLAYING; f++) { m_gs.player.hp = 9999; advance(1.f / 60.f); }
         log(QString("escort killed: failed=%1 screen=debrief:%2 won=%3").arg(m_missionFailed).arg(m_screen == SCR_DEBRIEF).arg(m_debriefWon));
         m_campaignRun = false; m_envLocked = false;
+        // armoury: mission 1 with an S rank unlocks the SMG (as RARE), the holo sight; the loadout carries it into a mission
+        loadCampaign();
+        m_debriefUnlocks.clear();
+        grantMissionUnlocks(0, 4);
+        QString unl = m_debriefUnlocks.join(" | ");
+        openLoadout();
+        m_loSlot = SLOT_PRIMARY; cycleSlotWeapon(SLOT_PRIMARY, 1);
+        int picked = m_loKit.slot[SLOT_PRIMARY];
+        m_loFocus = 1; m_loAtt = AT_OPTIC; cycleAttachment(AT_OPTIC, 1); cycleAttachment(AT_OPTIC, 1);
+        int optic = picked >= 0 ? m_loKit.load[picked].att[AT_OPTIC] : -1;
+        m_loSlot = SLOT_PRIMARY;
+        run(2); save("97_loadout");
+        closeLoadout();
+        m_cUnlocked = 2; startMission(0); m_flyActive = false;
+        const Player &kp = m_gs.player;
+        log(QString("armoury: unlocks=[%1] picked=%2 rarity=%3 optic=%4 (2 = holo) -> in mission primary=%5 optic=%6 rarity=%7")
+            .arg(unl).arg(picked >= 0 ? WEAPONS[picked].shortName : "-").arg(picked >= 0 ? int(m_loKit.load[picked].rarity) : -1).arg(optic)
+            .arg(kp.slot[SLOT_PRIMARY] >= 0 ? WEAPONS[kp.slot[SLOT_PRIMARY]].shortName : "-").arg(kp.slot[SLOT_PRIMARY] >= 0 ? int(kp.load[kp.slot[SLOT_PRIMARY]].att[AT_OPTIC]) : -1)
+            .arg(kp.slot[SLOT_PRIMARY] >= 0 ? int(kp.load[kp.slot[SLOT_PRIMARY]].rarity) : -1));
+        m_campaignRun = false; m_envLocked = false;
+        // stats collected by all of the above
+        log(QString("stats: kills=%1 headshots=%2 shots=%3 hits=%4 deaths=%5 missions=%6 bosses=%7 secrets=%8 time=%9s")
+            .arg(m_stats.kills).arg(m_stats.headshots).arg(m_stats.shots).arg(m_stats.hits).arg(m_stats.deaths).arg(m_stats.missionsWon)
+            .arg(m_stats.bosses).arg(m_stats.secrets).arg(int(m_stats.seconds)));
+        openStats(); run(2); save("97_stats");
     }
 
     // --- FRONTIER: 64x64 map, runtime map size --------------------------------------
