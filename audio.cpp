@@ -475,7 +475,7 @@ void SoundEngine::play(SoundId id, float gain, float pan, float pitch, float del
             int(delaySec * m_fmt.sampleRate()), false, false};
     std::lock_guard<std::mutex> g(m_lock);
     if (m_voices.size() > 48) {                                      // voice stealing: drop the oldest one-shot
-        for (size_t i = 0; i < m_voices.size(); i++) if (!m_voices[i].ambient) { m_voices.erase(m_voices.begin() + long(i)); break; }
+        for (size_t i = 0; i < m_voices.size(); i++) if (!m_voices[i].ambient && !m_voices[i].clip) { m_voices.erase(m_voices.begin() + long(i)); break; }
     }
     m_voices.push_back(v);
 }
@@ -488,6 +488,35 @@ void SoundEngine::setAmbience(int id, float gain)
     if (id < 0 || id >= SND_COUNT) return;
     float rateScale = float(RATE) / float(std::max(1, m_fmt.sampleRate()));
     m_voices.push_back(Voice{&m_bank[id], 0.0, rateScale, gain, gain, 0, true, true});
+}
+
+int SoundEngine::addClip(std::vector<float> samples)
+{
+    std::lock_guard<std::mutex> g(m_lock);
+    m_clips.push_back(std::make_unique<std::vector<float>>(std::move(samples)));
+    return int(m_clips.size()) - 1;
+}
+
+float SoundEngine::clipSeconds(int handle) const
+{
+    if (handle < 0 || handle >= int(m_clips.size())) return 0.f;
+    return float(m_clips[size_t(handle)]->size()) / float(RATE);
+}
+
+void SoundEngine::playClip(int handle, float gain)
+{
+    if (!m_sink || handle < 0 || gain <= 0.001f) return;
+    std::lock_guard<std::mutex> g(m_lock);
+    if (handle >= int(m_clips.size())) return;
+    float rateScale = float(RATE) / float(std::max(1, m_fmt.sampleRate()));
+    Voice v{m_clips[size_t(handle)].get(), 0.0, rateScale, gain, gain, 0, false, false, true};
+    m_voices.push_back(v);
+}
+
+void SoundEngine::stopClips()
+{
+    std::lock_guard<std::mutex> g(m_lock);
+    m_voices.erase(std::remove_if(m_voices.begin(), m_voices.end(), [](const Voice &v) { return v.clip; }), m_voices.end());
 }
 
 qint64 SoundEngine::readData(char *data, qint64 maxSize)

@@ -33,7 +33,8 @@ SOURCES += \
     bosses.cpp \
     audio.cpp \
     multiplayer.cpp \
-    stats.cpp
+    stats.cpp \
+    commander.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -47,6 +48,7 @@ HEADERS += \
     sim.h \
     raster3d.h \
     soldier3d.h \
+    radiolines.h \
     weapons.h \
     gunbuild.h \
     maps.h \
@@ -55,6 +57,10 @@ HEADERS += \
     multiplayer.h
 
 FORMS +=
+
+# Radio voices shipped with the game (tools/bundle_voices.py writes voices/ and this file)
+RESOURCES += voices.qrc
+CONFIG += resources_big
 
 # Suppress deprecation warnings from Qt internals
 DEFINES += QT_DEPRECATED_WARNINGS

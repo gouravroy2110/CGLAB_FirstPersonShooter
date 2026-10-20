@@ -107,6 +107,7 @@ void MainWindow::statKill(bool head, float dist, bool boss)
     if (boss) m_stats.bosses++;
     if (w >= 0 && w < WPN_COUNT) m_stats.wKills[w]++;
     m_stats.longestKill = std::max(m_stats.longestKill, dist);
+    if (head && dist > 18.f) m_cmdLongShot = true;              // the radio compliments a long headshot
 }
 
 void MainWindow::renderStats()

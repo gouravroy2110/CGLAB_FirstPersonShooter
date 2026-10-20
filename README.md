@@ -2,7 +2,7 @@
 ### A tactical FPS built entirely in Qt using pure software rasterization
 
 > **No OpenGL. No GPU. Every single pixel is computed by the CPU and written into a `QImage` framebuffer.**
-> No image files are loaded either — every texture, sprite, gun and portrait is generated procedurally at start-up.
+> No image files are loaded either — every texture, sprite, gun and portrait is generated procedurally at start-up. (The one set of asset files is the radio voice lines in `voices/`.)
 > This is a Computer Graphics lab group project demonstrating real-time raster algorithms inside an interactive game.
 
 ---
@@ -18,6 +18,7 @@
 | **Crouch & lean** | Hold **Ctrl** to crouch (half speed, steadier aim, smaller target, hides behind low walls); hold **Alt + A / D** to lean around corners. Both rebindable |
 | **Squad tactics** | Enemies take cover (low walls: duck and pop up; full walls: step out to a peek spot), flank to your side, and route around walls with a grid search |
 | **Armoury** | Each campaign mission unlocks weapons and attachment options; an S rank makes that mission's guns RARE; guns you carry out of a mission join the armoury. New **LOADOUT** screen ([L] in the campaign menu) to pick guns per slot and fit attachments |
+| **Radio commander** | Scripted spoken call-outs (no AI): ~65 lines for 20 situations (low health, hazard, low ammo, fire from behind, flankers, grenade at your feet, snipers, streaks, long headshots, squadmate down, last hostiles, bosses, secrets, idling, stealth, zone start / clear, respawn) with priorities, cooldowns and rotating variants (`radiolines.h`). All 202 voice lines (made with the Windows speech engine) ship inside the game from `voices/` (8 MB, compiled in through `voices.qrc`), so they play on any PC with no setup; the game puts each one through its own radio filter (band-pass, overdrive, hiss, squelch; a ring modulator for VECTOR). Campaign radio lines are voiced too. A newly added line is spoken into a local cache on Windows; `tools/bundle_voices.py` adds it to the bundle. Settings → RADIO VOICE switches to subtitles only |
 | **Stats** | New **STATS** screen: kills, headshots, accuracy, K/D, streaks, longest kill, bosses, secrets, time played, campaign ranks, per-weapon kills and accuracy, favourite gun on a turntable |
 
 ## Story campaign, six distinct worlds, bosses, map editor
@@ -330,6 +331,10 @@ fps_game/
 ├── environment.cpp     Weather, time of day, flashlight
 ├── editor.cpp          In-game map editor
 ├── stats.cpp           Lifetime stats and the STATS screen
+├── commander.cpp       Radio commander: situations, voice cache, radio filter
+├── radiolines.h        The commander's script: situations, priorities, lines
+├── voices/ + voices.qrc  The spoken radio lines, compiled into the game
+├── tools/bundle_voices.py  Refreshes voices/ from the game's local voice cache
 ├── soldier3d.h         Shared soldier skeleton: joints, IK, death fall, ray hit test
 ├── menus.cpp           Settings (saved) and the Arsenal browser
 ├── world.cpp           World methods + heightfield, light-map baking, doors & secrets, bullet-hole

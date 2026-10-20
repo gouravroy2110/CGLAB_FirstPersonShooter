@@ -336,7 +336,16 @@ void MainWindow::updateRadio(float dt)
 {
     if (m_radio.empty()) return;
     RadioMsg &m = m_radio.front();
-    if (m.t == m.dur) sfx(SND_RADIO, 0.55f);
+    if (!m.started) {
+        // spoken through the radio filter when the line has a voice, otherwise just the crackle
+        m.started = true;
+        int clip = voiceClip(m.speaker, m.text);
+        if (clip >= 0) {
+            m_snd->playClip(clip, 0.95f);
+            m.dur = std::max(m.dur, m_snd->clipSeconds(clip) + 0.35f);
+            m.t = m.dur;
+        } else sfx(SND_RADIO, 0.55f);
+    }
     m.t -= dt;
     if (m.t <= 0.f) m_radio.erase(m_radio.begin());
 }

@@ -118,6 +118,7 @@ void MainWindow::loadSettings()
     m_squadSize  = clampi(s.value("squad", 0).toInt(), 0, 3);
     m_crossColor = clampi(s.value("crosshair", 0).toInt(), 0, 3);
     m_showFps    = s.value("showFps", true).toBool();
+    m_radioVoice = s.value("radioVoice", true).toBool();
 
     static const char *const ACTION_SLUGS[ACT_COUNT] = {
         "move_fwd", "move_back", "move_left", "move_right", "jump", "sprint",
@@ -167,6 +168,7 @@ void MainWindow::saveSettings() const
     s.setValue("squad", m_squadSize);
     s.setValue("crosshair", m_crossColor);
     s.setValue("showFps", m_showFps);
+    s.setValue("radioVoice", m_radioVoice);
     s.setValue("keybind_v2", true);
 
     static const char *const ACTION_SLUGS[ACT_COUNT] = {
@@ -192,7 +194,7 @@ void MainWindow::applySettings()
     if (m_snd) m_snd->setMasterVolume(m_volume / 100.f);
 }
 
-int MainWindow::settingsRows() const { return 10; }
+int MainWindow::settingsRows() const { return 11; }
 
 void MainWindow::changeSetting(int row, int dir)
 {
@@ -205,15 +207,16 @@ void MainWindow::changeSetting(int row, int dir)
     case 5: m_squadSize = (m_squadSize + dir + 4) % 4; break;
     case 6: m_crossColor = (m_crossColor + dir + 4) % 4; break;
     case 7: m_showFps = !m_showFps; break;
-    case 8:
+    case 8: m_radioVoice = !m_radioVoice; if (!m_radioVoice && m_snd) m_snd->stopClips(); break;
+    case 9:
         m_settingsTab = 1;
         m_controlsRow = 0;
         sfx(SND_UI_SELECT, 0.5f);
         return;
-    case 9:
+    case 10:
         if (dir != 0) {
             m_mouseSens = 1.f; m_fovDeg = 67; m_volume = 80; m_tpp = false;
-            m_freeAim = false; m_squadSize = 0; m_crossColor = 0; m_showFps = true;
+            m_freeAim = false; m_squadSize = 0; m_crossColor = 0; m_showFps = true; m_radioVoice = true;
             sfx(SND_UPGRADE, 0.6f);
         }
         break;
@@ -253,9 +256,9 @@ void MainWindow::renderSettings()
     text(tab1X, tabY, tab1W, tabH, Qt::AlignCenter, "2  CONTROLS", t1Sel ? QColor(255, 255, 255) : QColor(170, 175, 180), 12, 800, false);
 
     if (m_settingsTab == 0) {
-        const int x = 60, w = W - 120, y0 = 98, rh = 38, sp = 42;
+        const int x = 60, w = W - 120, y0 = 98, rh = 34, sp = 38;
         struct Row { const char *name; QString value; float bar; const char *help; };
-        Row rows[10] = {
+        Row rows[11] = {
             {"MOUSE SENSITIVITY", QString::number(m_mouseSens, 'f', 2) + "x", (m_mouseSens - 0.2f) / 5.8f, "Adjust aiming speed (higher = faster, lower = precision)"},
             {"FIELD OF VIEW", QString("%1 DEG").arg(m_fovDeg), (m_fovDeg - 55) / 45.f, "Horizontal view angle of the raster camera"},
             {"MASTER VOLUME", QString("%1%").arg(m_volume), m_volume / 100.f, "Adjust all sound effects and synthesizer volume"},
@@ -264,17 +267,18 @@ void MainWindow::renderSettings()
             {"SQUAD BOTS", m_squadSize ? QString::number(m_squadSize) : QString("OFF"), m_squadSize / 3.f, "AI teammates that follow you and fight"},
             {"CROSSHAIR COLOUR", CROSS_NAMES[m_crossColor], -1.f, "Pick one that stands out for your eyes"},
             {"SHOW FPS", m_showFps ? "ON" : "OFF", -1.f, "Frame rate under the score"},
+            {"RADIO VOICE", m_radioVoice ? "ON" : "SUBTITLES ONLY", -1.f, "Spoken radio call-outs (Windows voices) with subtitles"},
             {"CONFIGURE CONTROLS", "ENTER / CLICK ->", -1.f, "Customize keyboard bindings for movement, combat, and actions"},
             {"RESET GENERAL DEFAULTS", "ENTER / CLICK", -1.f, "Restore default sensitivity, volume, and options"},
         };
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 11; i++) {
             int y = y0 + i * sp;
             bool sel = m_settingsRow == i;
             m_menuRects.push_back({x, y, w, rh, i});
             m_cv.blendRect(x, y, w, rh, withAlpha(UI_BG, sel ? 225 : 170));
             if (sel) { m_cv.fillRect(x, y, 4, rh, UI_AMBER); m_cv.rectOutline(x, y, w, rh, withAlpha(UI_AMBER, 160)); }
-            text(x + 18, y + 3, 300, 18, Qt::AlignLeft, rows[i].name, sel ? QColor(255, 255, 255) : QColor(200, 200, 200), 13, 800, false);
-            text(x + 18, y + 21, 420, 14, Qt::AlignLeft, rows[i].help, QColor(130, 140, 150), 9, 500, false);
+            text(x + 18, y + 2, 300, 18, Qt::AlignLeft, rows[i].name, sel ? QColor(255, 255, 255) : QColor(200, 200, 200), 13, 800, false);
+            text(x + 18, y + 19, 420, 14, Qt::AlignLeft, rows[i].help, QColor(130, 140, 150), 9, 500, false);
             int vx = x + w - 300;
             if (rows[i].bar >= 0.f) {
                 m_cv.blendRect(vx, y + 15, 170, 8, withAlpha(0xFFFFFFFF, 30));
@@ -282,7 +286,7 @@ void MainWindow::renderSettings()
             }
             if (i == 6) m_cv.fillRect(vx + 150, y + 11, 16, 16, CROSS_COLORS[m_crossColor]);
             text(vx + 156, y, 120, rh, Qt::AlignRight | Qt::AlignVCenter, rows[i].value, sel ? qc(UI_AMBER) : QColor(220, 220, 220), 13, 800, false);
-            if (sel && i < 8) { text(vx - 26, y, 20, rh, Qt::AlignCenter, "<", qc(UI_AMBER), 14, 900, false); text(x + w - 18, y, 16, rh, Qt::AlignCenter, ">", qc(UI_AMBER), 14, 900, false); }
+            if (sel && i < 9) { text(vx - 26, y, 20, rh, Qt::AlignCenter, "<", qc(UI_AMBER), 14, 900, false); text(x + w - 18, y, 16, rh, Qt::AlignCenter, ">", qc(UI_AMBER), 14, 900, false); }
         }
         menuFooter("UP/DOWN choose   LEFT/RIGHT change   [2] or TAB controls   [O] / ESC back");
     } else {

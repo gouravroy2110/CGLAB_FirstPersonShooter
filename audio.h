@@ -10,6 +10,7 @@
 #include <QIODevice>
 #include <QAudioFormat>
 #include <vector>
+#include <memory>
 #include <mutex>
 #include <atomic>
 
@@ -50,6 +51,11 @@ public:
     void play(SoundId id, float gain = 1.f, float pan = 0.f, float pitch = 1.f, float delaySec = 0.f);
     // Looping ambience (one at a time); id < 0 stops it
     void setAmbience(int id, float gain);
+    // Sounds made at run time (radio voices): mono at RATE. addClip returns a handle.
+    int  addClip(std::vector<float> samples);
+    void playClip(int handle, float gain);
+    void stopClips();                          // cut whatever clip is playing (a more urgent call)
+    float clipSeconds(int handle) const;
     void setMuted(bool m) { m_muted = m; }
     bool muted() const { return m_muted; }
     void setMasterVolume(float v) { m_master = v; }
@@ -65,8 +71,9 @@ protected:
     bool   isSequential() const override { return true; }
 
 private:
-    struct Voice { const std::vector<float> *buf; double pos; float step, gainL, gainR; int delay; bool loop; bool ambient; };
+    struct Voice { const std::vector<float> *buf; double pos; float step, gainL, gainR; int delay; bool loop; bool ambient; bool clip = false; };
     std::vector<float> m_bank[SND_COUNT];
+    std::vector<std::unique_ptr<std::vector<float>>> m_clips;   // stable addresses: voices point into them
     std::vector<Voice> m_voices;
     std::mutex m_lock;
     QAudioSink *m_sink = nullptr;

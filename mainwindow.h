@@ -3,6 +3,7 @@
 // =============================================================================
 #pragma once
 #include <QWidget>
+#include <QHash>
 #include <QImage>
 #include <QTimer>
 #include <QElapsedTimer>
@@ -380,13 +381,37 @@ private:
     // radio
     static const int PORT = 64;
     std::vector<uint32_t> m_speakerPortrait[5];
-    struct RadioMsg { int speaker; QString text; float dur; float t = -1.f; RadioMsg(int s, const QString &x, float d) : speaker(s), text(x), dur(d), t(d) {} };
+    struct RadioMsg { int speaker; QString text; float dur; float t = -1.f; int prio = 2; bool started = false; RadioMsg(int s, const QString &x, float d) : speaker(s), text(x), dur(d), t(d) {} };
     std::vector<RadioMsg> m_radio;
     void  bakePortraits();
     void  say(int speaker, const QString &line, float seconds);
     void  sayTagged(const char *tagged);
     void  updateRadio(float dt);
     void  renderRadio();
+    // radio commander + spoken voices (commander.cpp, radiolines.h)
+    bool  m_radioVoice = true;                         // speak radio lines (Settings)
+    bool  m_voicesInit = false;
+    float m_cmdCool[32] = {};
+    int   m_cmdLast[32] = {};
+    float m_cmdGap = 99.f, m_cmdZoneStartT = 0.f, m_cmdIdleT = 0.f, m_cmdPrevAlarm = 0.f;
+    bool  m_cmdWasLowHp = false, m_cmdHitBehind = false, m_cmdLongShot = false, m_cmdSecret = false;
+    bool  m_cmdZoneStart = false, m_cmdRespawn = false, m_cmdPrevZoneDone = false;
+    int   m_cmdPrevAlive = -1, m_cmdPrevCombo = 0, m_cmdAmmoWarnW = -1, m_cmdIdleKills = 0, m_cmdFired = 0;
+    std::vector<int> m_cmdBossPhase;
+    std::vector<uint8_t> m_cmdActorAlive;
+    struct VoiceJob { int speaker; QString text; QString key; };
+    QString m_voiceDir;
+    std::vector<VoiceJob> m_voicePending;
+    QHash<QString, int> m_voiceClips;
+    class QProcess *m_voiceProc = nullptr;
+    void  radioEvent(int ev, const QString &arg = QString());
+    void  updateCommander(float dt);
+    void  initVoices();
+    void  queueVoice(int speaker, const QString &text);
+    void  startVoiceJob();
+    int   voiceClip(int speaker, const QString &text);
+    QString voiceKey(int speaker, const QString &text) const;
+    QString radioName(const QString &s) const;
     // mission runtime
     int   m_mission = 0, m_obj = -1, m_objCount = 0, m_objMask = 0, m_objZone = -1, m_waveCount = 0, m_alarms = 0;
     int   m_intelCount = 0, m_keyCount = 0, m_escort = -1, m_objKillBase = 0, m_squadSizeSaved = 0;

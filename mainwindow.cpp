@@ -15,6 +15,7 @@
 #include "mainwindow.h"
 #include "pixelfont.h"
 #include "missions.h"
+#include "radiolines.h"
 #include "raster3d.h"
 #include <QPainter>
 #include <QDir>
@@ -300,6 +301,8 @@ void MainWindow::initGame()
     m_upgradePicked = false;
     m_showArmory = false;
     m_showWeaponStats = false;
+    m_radio.clear();                                            // a new game starts with a quiet radio
+    if (m_snd) m_snd->stopClips();
     pl.owned[WPN_KNIFE] = true;
     pl.owned[WPN_PISTOL] = true;
     pl.curWeapon = WPN_PISTOL;
@@ -553,6 +556,8 @@ void MainWindow::loadLevel(int lv)
     }
     m_gs.secretsTotal = 0;
     m_secretHinted.clear();
+    m_cmdZoneStart = true; m_cmdZoneStartT = 0.f;               // radio: a word when the zone begins
+    m_cmdBossPhase.clear(); m_cmdActorAlive.clear(); m_cmdPrevAlive = -1;
     for (int y = 0; y < m_mapH; y++) for (int x = 0; x < m_mapW; x++) if (m_map[y][x] == CELL_SECRET) m_gs.secretsTotal++;
     m_gs.zoneSecretsTotal = m_gs.secretsTotal;
     for (const Marker &mk : pm.markers) {
@@ -590,6 +595,7 @@ void MainWindow::tick()
 
 void MainWindow::advance(float dt)
 {
+    if (!m_voicesInit) { m_voicesInit = true; initVoices(); }  // after the settings are loaded
     m_dt = dt;
     m_time += dt;
     m_menuFrame++;
@@ -618,7 +624,7 @@ void MainWindow::advance(float dt)
         }
         m_net->checkObjectiveInteractions(m_gs);
     }
-    if (playing && m_campaignRun && m_gs.gameOver) updateRadio(dt);
+    if (playing && m_gs.gameOver) updateRadio(dt);              // the radio finishes its line over the game-over screen
 
 
     // ADS blend + FOV
@@ -861,6 +867,7 @@ void MainWindow::addDamageMark(float srcX, float srcY, float strength)
     // merge with a mark from nearly the same direction, else add (oldest drops off)
     const Player &pl = m_gs.player;
     float a = std::atan2(srcY - pl.posY, srcX - pl.posX);
+    if (std::fabs(std::remainder(a - std::atan2(pl.dirY, pl.dirX), 6.2831853f)) > 2.2f) m_cmdHitBehind = true;   // shot from behind: the radio warns
     for (DamageMark &d : m_damageMarks) {
         float b = std::atan2(d.y - pl.posY, d.x - pl.posX);
         if (std::fabs(std::remainder(a - b, 6.2831853f)) < 0.25f) { d.x = srcX; d.y = srcY; d.t = 2.2f; d.strength = std::min(1.f, d.strength + strength * 0.5f); return; }
@@ -1037,6 +1044,7 @@ void MainWindow::gameStep(float dt)
             m_mpRespawnCountdown = -1.f;
             m_net->handleRespawn(m_net->localPlayerId(), m_gs, *this, m_parsed[m_gs.mapChoice]);
             pushFeed("DEPLOYED TO BATTLEFIELD", 2.0f);
+            m_cmdRespawn = true;
             QVariantMap rev; rev["id"] = m_net->localPlayerId();
             m_net->broadcastEvent(EV_RESPAWN, rev);
         }
@@ -1113,6 +1121,7 @@ void MainWindow::gameStep(float dt)
     updateSecretHints(dt);
     updateEnemyAnim(dt);
     trackStats(dt);
+    updateCommander(dt);
     checkReinforcements(dt);
 
     // Enemy projectiles
@@ -2509,14 +2518,14 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
                 }
                 if (m_settingsTab == 0) {
                     m_settingsRow = r.id;
-                    if (r.id == 8) {
+                    if (r.id == 9) {
                         m_settingsTab = 1;
                         m_controlsRow = 0;
                         sfx(SND_UI_SELECT, 0.5f);
                         return;
                     }
-                    if (r.id == 9) {
-                        changeSetting(9, 1);
+                    if (r.id == 10) {
+                        changeSetting(10, 1);
                         return;
                     }
                     int vx = 60 + (W - 120) - 300;
@@ -3060,6 +3069,51 @@ bool MainWindow::snapshot(const QString &dir)
             m_pitch = -0.35f;
             run(1); save(QString("59_over_body_%1").arg(k));
         }
+    }
+
+    // --- Radio commander: situations queue scripted lines with priorities ------------
+    {
+        start(1);
+        Player &pl = m_gs.player;
+        place(20.5f, 20.5f, 0.f);
+        for (auto &e : m_gs.enemies) e.fireCooldown = 999.f;
+        m_radio.clear();
+        for (float &c : m_cmdCool) c = 0.f;
+        m_cmdGap = 99.f;
+        QStringList heard;
+        auto drain = [&](int frames) {
+            for (int f = 0; f < frames; f++) {
+                pl.hp = std::max(pl.hp, 1);
+                if (!m_radio.empty() && !m_radio.front().started) heard << QString("[%1] %2").arg(SPEAKER_NAMES[m_radio.front().speaker]).arg(m_radio.front().text);
+                advance(1.f / 60.f);
+            }
+        };
+        pl.hp = maxHP() / 5; drain(30);                                        // low health
+        addDamageMark(pl.posX - 5.f, pl.posY, 1.f); drain(30);                 // shot from behind (urgent: cuts in)
+        Projectile g; g.kind = PJ_GRENADE; g.owner = PO_ENEMY; g.x = pl.posX + 1.f; g.y = pl.posY; g.z = 1.f; g.fuse = 1.5f;
+        g.landX = pl.posX + 0.5f; g.landY = pl.posY; g.gravity = 9.8f; g.life = 2.f;
+        m_gs.projectiles.push_back(g); drain(30);                              // grenade at your feet
+        pl.hp = 9999;                                                          // (survive the blast)
+        m_gs.projectiles.clear();
+        drain(60 * 12);                                                        // let the channel clear
+        int keep = 0;                                                          // leave two hostiles alive
+        for (auto &e : m_gs.enemies) { if (e.alive && keep < 2) { keep++; continue; } e.alive = false; e.corpseFade = 0.f; }
+        drain(60 * 6);
+        log(QString("radio commander: %1 lines fired, heard in order: %2").arg(m_cmdFired).arg(heard.join("  |  ")));
+        // every commander line (with each boss / hazard / squad name) is shipped inside the game
+        int bundled = QDir(":/voices").entryList(QDir::Files).size(), missing = 0, total = 0;
+        static const char *const NAMES[] = { "HAWK", "VIPER", "ECHO", "GHOST", "TITAN", "STRIKER", "SPECTRE", "PHANTOM", "GOLIATH", "VALKYRIE", "RAZOR", "APEX" };
+        for (int i = 0; i < RADIO_SCRIPT_COUNT; i++) {
+            QString t(RADIO_SCRIPT[i].text);
+            QStringList ex;
+            if (t.contains("{boss}")) { for (int k = 1; k < BK_COUNT; k++) if (!bossIsMinor(k)) ex << QString(t).replace("{boss}", radioName(bossName(k))); }
+            else if (t.contains("{hazard}")) { for (int k = 0; k < THEME_COUNT; k++) ex << QString(t).replace("{hazard}", QString(THEMES[k].hazName).toLower()); }
+            else if (t.contains("{name}")) { for (const char *n : NAMES) ex << QString(t).replace("{name}", radioName(n)); }
+            else ex << t;
+            for (const QString &e : ex) { total++; QFile vf(":/voices/" + voiceKey(RADIO_SCRIPT[i].speaker, e)); if (!vf.open(QIODevice::ReadOnly) || vf.size() < 1000) missing++; }
+        }
+        log(QString("radio voices: %1 files inside the game, commander lines %2, missing %3").arg(bundled).arg(total).arg(missing));
+        m_radio.clear();
     }
 
     // --- Crouch and lean ---------------------------------------------------------------

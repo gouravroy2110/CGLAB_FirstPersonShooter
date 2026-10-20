@@ -592,6 +592,7 @@ void MainWindow::updateSecretHints(float dt)
         if (d2 < 5.5f * 5.5f && std::find(m_secretHinted.begin(), m_secretHinted.end(), key) == m_secretHinted.end()) {
             m_secretHinted.push_back(key);
             pushFeed("YOU FEEL A COLD DRAFT...", 3.5f);
+            m_cmdSecret = true;
             sfxAt(SND_SECRET, cx, cy, 0.18f, 0.55f);
         }
         if (!puff || rand() % 3) continue;

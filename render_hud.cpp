@@ -150,6 +150,7 @@ void MainWindow::render()
     renderScreenFlash();
     renderHUD();
     renderMissionHUD();
+    if (!m_campaignRun) renderRadio();                          // the radio commander outside the campaign
     flushText();
     renderLevelBanner();
     if (m_showArmory) renderArmoryOverlay();
