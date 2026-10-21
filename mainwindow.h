@@ -415,7 +415,7 @@ private:
     // mission runtime
     int   m_mission = 0, m_obj = -1, m_objCount = 0, m_objMask = 0, m_objZone = -1, m_waveCount = 0, m_alarms = 0;
     int   m_intelCount = 0, m_keyCount = 0, m_escort = -1, m_objKillBase = 0, m_squadSizeSaved = 0;
-    float m_objTimer = 0.f, m_waveT = 0.f, m_missionTime = 0.f, m_alarm = 0.f, m_missionEndT = 0.f, m_bossIntroT = 0.f, m_finaleT = 0.f;
+    float m_objTimer = 0.f, m_waveT = 0.f, m_missionTime = 0.f, m_alarm = 0.f, m_alarmCooldown = 0.f, m_missionEndT = 0.f, m_bossIntroT = 0.f, m_finaleT = 0.f;
     bool  m_missionDone = false, m_missionFailed = false, m_bossSpawned = false;
     QString m_failReason;
     bool  missionMarker(char c, float &x, float &y, int nth = 0) const;

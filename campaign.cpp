@@ -406,7 +406,7 @@ void MainWindow::startMission(int i)
     if (m_mission == 0) { float kx, ky; if (missionMarker('1', kx, ky)) { WeaponPickup wp; wp.x = kx; wp.y = ky; wp.type = PICKUP_KEY; m_gs.weaponPickups.push_back(wp); } }
     if (M.stealth) for (Enemy &e : m_gs.enemies) { e.aggroRange *= 0.55f; e.state = ES_IDLE; }
     m_obj = -1; m_objCount = 0; m_objTimer = 0.f; m_objMask = 0; m_waveT = 0.f; m_waveCount = 0;
-    m_missionTime = 0.f; m_alarm = 0.f; m_alarms = 0; m_intelCount = 0; m_keyCount = 0; m_missionDone = false; m_missionFailed = false;
+    m_missionTime = 0.f; m_alarm = 0.f; m_alarmCooldown = 0.f; m_alarms = 0; m_intelCount = 0; m_keyCount = 0; m_missionDone = false; m_missionFailed = false;
     m_missionEndT = 0.f; m_bossSpawned = false; m_escort = -1; m_objKillBase = 0;
     m_radio.clear();
     m_screen = SCR_PLAYING;
@@ -480,7 +480,17 @@ void MainWindow::spawnMissionWave(int n)
         float pd2 = (x - m_gs.player.posX) * (x - m_gs.player.posX) + (y - m_gs.player.posY) * (y - m_gs.player.posY);
         if (pd2 < 64.f) continue;
         spawnEnemy(x, y, false, missionEnemyType());
-        m_gs.enemies.back().state = ES_ALERT;
+        Enemy &ne = m_gs.enemies.back();
+        ne.state = ES_ALERT;
+        if (M.stealth) {
+            ne.aggroRange *= 0.55f;
+            float dx = ox - x, dy = oy - y, d = std::hypot(dx, dy);
+            if (d > 0.01f) {
+                ne.alertDirX = dx / d;
+                ne.alertDirY = dy / d;
+                ne.alertDist = d;
+            }
+        }
         made++;
     }
     m_waveCount++;
@@ -503,15 +513,40 @@ void MainWindow::updateMission(float dt)
     }
     // stealth: hostiles that spot you fill the alarm; a full alarm calls reinforcements
     if (M.stealth) {
-        int alert = 0;
-        for (const Enemy &e : m_gs.enemies) if (e.alive && e.state == ES_ALERT && !e.bossKind) alert++;
-        m_alarm += alert ? 0.12f * alert * dt : -0.05f * dt;
+        if (m_alarmCooldown > 0.f) m_alarmCooldown -= dt;
+        int spotters = 0;
+        float pAimZ = playerAimZ();
+        for (const Enemy &e : m_gs.enemies) {
+            if (!e.alive || e.bossKind) continue;
+            if (e.state == ES_ALERT) {
+                float ez = floorH(e.x, e.y) + ((e.hasCover && e.peekT <= 0.f) ? 0.35f : 0.62f);
+                float d = std::hypot(pl.posX - e.x, pl.posY - e.y);
+                float detectRange = e.aggroRange * 1.5f;
+                if (d < std::max(18.f, detectRange) && hasLOS(e.x, e.y, ez, pl.posX, pl.posY, pAimZ) && !smokeBlocks(e.x, e.y, ez, pl.posX, pl.posY, pAimZ)) {
+                    spotters++;
+                }
+            }
+        }
+        if (spotters > 0) {
+            float rise = 0.14f + 0.05f * std::min(spotters - 1, 3);
+            m_alarm += rise * dt;
+        } else {
+            m_alarm -= 0.10f * dt;
+        }
         m_alarm = clampf(m_alarm, 0.f, 1.f);
         if (m_alarm >= 1.f) {
             m_alarm = 0.f; m_alarms++;
             say(SPK_KADE, "They've raised the alarm! Reinforcements incoming!", 3.f);
             sfx(SND_RADIO, 0.8f);
-            int save = m_obj; spawnMissionWave(5); m_obj = save;
+            if (m_alarmCooldown <= 0.f && aliveEnemies() < 14) {
+                int spawnCount = std::min(3, 14 - aliveEnemies());
+                if (spawnCount > 0) {
+                    int save = m_obj;
+                    spawnMissionWave(spawnCount);
+                    m_obj = save;
+                }
+            }
+            m_alarmCooldown = 18.f;
         }
     }
     // escort death fails the mission
@@ -704,7 +739,29 @@ void MainWindow::renderMissionHUD()
     if (M.stealth) {
         m_cv.blendRect(W / 2 - 90, 92, 180, 8, withAlpha(0xFFFFFFFF, 30));
         m_cv.fillRect(W / 2 - 90, 92, int(180 * m_alarm), 8, m_alarm > 0.7f ? C_RED : C_AMBER);
-        text(W / 2 - 90, 78, 180, 12, Qt::AlignCenter, m_alarms ? QString("ALARM  x%1").arg(m_alarms) : QString("UNDETECTED"), m_alarm > 0.5f ? QColor(255, 120, 100) : QColor(170, 210, 255), 9, 800, false);
+        QString statusText;
+        QColor statusColor;
+        if (m_alarm >= 0.01f) {
+            bool spotted = false;
+            float pAimZ = playerAimZ();
+            for (const Enemy &e : m_gs.enemies) {
+                if (!e.alive || e.bossKind || e.state != ES_ALERT) continue;
+                float ez = floorH(e.x, e.y) + 0.62f;
+                float d = std::hypot(m_gs.player.posX - e.x, m_gs.player.posY - e.y);
+                if (d < 22.f && hasLOS(e.x, e.y, ez, m_gs.player.posX, m_gs.player.posY, pAimZ)) { spotted = true; break; }
+            }
+            if (spotted) {
+                statusText = m_alarms ? QString("ALARM x%1 (SPOTTED)").arg(m_alarms) : QString("SPOTTED! KILL GUARD OR HIDE");
+                statusColor = m_alarm > 0.6f ? QColor(255, 90, 80) : QColor(255, 180, 70);
+            } else {
+                statusText = QString("EVADING... (HIDDEN)");
+                statusColor = QColor(130, 240, 150);
+            }
+        } else {
+            statusText = m_alarms ? QString("ALARM x%1 (SEARCHING)").arg(m_alarms) : QString("UNDETECTED");
+            statusColor = m_alarms ? QColor(255, 180, 70) : QColor(170, 210, 255);
+        }
+        text(W / 2 - 130, 78, 260, 12, Qt::AlignCenter, statusText, statusColor, 9, 800, false);
     }
     // escort health
     if (m_escort >= 0 && m_escort < int(m_gs.actors.size()) && m_gs.actors[size_t(m_escort)].alive) {

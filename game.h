@@ -258,6 +258,7 @@ struct Enemy {
     bool  moving=false, killedByHeadshot=false;
     bool  elite=false;           // vault guard: tougher, faster, darker kit
     float alertDirX=0.f, alertDirY=0.f, alertDist=0.f;
+    float lostT=0.f;              // seconds since target was lost from sight
     float hpShow=0.f;             // seconds left to show the floating health bar
     bool  boss=false;             // zone commander: big, tough, drops a weapon
     float scale=1.f;              // sprite / hit-box size in world units

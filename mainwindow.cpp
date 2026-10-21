@@ -1251,21 +1251,45 @@ void MainWindow::updateEnemies(float dt)
         else hostileTarget(e.x, e.y, ez, tgX, tgY, tgZ, d);
         float dx = tgX - e.x, dy = tgY - e.y;
         float detectRange = e.aggroRange * 1.5f;
+        if (m_campaignRun && MISSIONS[m_mission].stealth) {
+            if (m_crouchT > 0.1f) detectRange *= (1.f - 0.35f * m_crouchT);
+            if (m_flashlightOn && m_dayLevel < 0.6f) detectRange *= 1.35f;
+            if (m_weather == WX_BLIZZARD) detectRange *= 0.85f;
+        }
         bool los = d < std::max(22.f, detectRange) && hasLOS(e.x, e.y, ez, tgX, tgY, tgZ) && !smokeBlocks(e.x, e.y, ez, tgX, tgY, tgZ);
         if (m_radarT > 0.f) e.hpShow = std::max(e.hpShow, 0.1f);
         if (e.stunT > 0.f) { e.moving = false; continue; }     // flashed / stunned: frozen
         // a loud (unsuppressed) shot nearby gets their attention
-        if (e.state == ES_IDLE && m_noiseT > 0.f && d < detectRange * 1.6f) { e.state = ES_ALERT; e.alertDist = 0.f; }
-        if (los && d < detectRange) {
+        if (e.state == ES_IDLE && m_noiseT > 0.f && d < detectRange * 1.6f) { e.state = ES_ALERT; e.alertDist = 0.f; e.lostT = 0.f; }
+        // Vision cone / field of view check for idle hostiles
+        float dot = d > 0.01f ? (std::cos(e.yaw) * dx + std::sin(e.yaw) * dy) / d : 1.f;
+        bool inFov = (e.state == ES_ALERT) || (dot > 0.20f) || (d < (m_crouchT > 0.5f ? 1.4f : 2.2f));
+
+        if (los && d < detectRange && inFov) {
             if (e.state != ES_ALERT) {
                 // Initial target acquisition: alert bot with snappy reaction time
                 e.state = ES_ALERT;
+                e.lostT = 0.f;
                 if (m_alertSndT <= 0) { sfxAt(SND_ENEMY_ALERT, e.x, e.y, 0.9f, frand(0.88f, 1.12f)); m_alertSndT = 1.5f; }
                 e.fireCooldown = frand(0.35f, 0.65f) * dc.fireCoolMult;
                 e.strafeTimer = frand(2.0f, 3.8f);
                 e.moveX = frand() < 0.5f ? -1.f : 1.f;
             }
             e.alertDist = 0.f; // Player detected! Pursue & engage
+        }
+        if (e.state == ES_ALERT) {
+            if (los && d < detectRange) {
+                e.lostT = 0.f;
+            } else {
+                e.lostT += dt;
+                // If target has been hidden / lost for 5.5s (and no loud gunfire), give up search and return to idle
+                if (e.lostT > 5.5f && !e.bossKind && m_noiseT <= 0.f) {
+                    e.state = ES_IDLE;
+                    e.wanderTimer = frand(2.0f, 4.0f);
+                    e.lostT = 0.f;
+                    e.alertDist = 0.f;
+                }
+            }
         }
         if (e.bossKind) { updateBoss(int(i), dt, tgX, tgY, tgZ, d, los); continue; }
         if (e.type >= ET_GRENADIER) { updateSpecialEnemy(int(i), dt, tgX, tgY, tgZ, d, los, detectRange); continue; }
