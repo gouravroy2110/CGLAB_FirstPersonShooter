@@ -49,7 +49,12 @@ void MainWindow::setEnvironment(float hour, int weather)
 // Build this frame's palette from the biome + hour + weather
 void MainWindow::computeEnv()
 {
-    const Theme &BT = THEMES[m_theme];
+    Theme BT = THEMES[m_theme];
+    if (m_water) {                                    // the campus: the swamp's trees and grass under a clear Kolkata sky
+        BT.zenith = rgb(70, 125, 200); BT.horizon = rgb(190, 212, 230); BT.haze = rgb(178, 196, 210);
+        BT.fogDensity *= 0.35f; BT.sunStrength = std::max(BT.sunStrength, 0.95f); BT.ambient = std::max(BT.ambient, 0.55f);
+        BT.cloudLit = rgb(245, 245, 248); BT.cloudDark = rgb(190, 196, 206);
+    }
     m_env = BT;
     float day = dayAmount(m_hour), tw = twilightAmount(m_hour);
     m_dayLevel = day;
@@ -61,6 +66,7 @@ void MainWindow::computeEnv()
     mixTint(duskTint, tw * 0.55f * day);
     float bright = 0.26f + 0.74f * day;
     m_skyTint[0] = tr * bright; m_skyTint[1] = tg * bright; m_skyTint[2] = tb * bright;
+    if (m_water) { m_skyTint[0] *= 0.82f; m_skyTint[1] *= 0.97f; m_skyTint[2] *= 1.3f; }   // the campus: a blue sky over the swamp's
     auto tint = [&](uint32_t c) { return rgb(clampi(int(R(c) * m_skyTint[0]), 0, 255), clampi(int(G(c) * m_skyTint[1]), 0, 255), clampi(int(B(c) * m_skyTint[2]), 0, 255)); };
     m_env.haze = tint(BT.haze);
     m_env.sunColor = lerpCol(lerpCol(BT.sunColor, rgb(255, 140, 70), tw * 0.7f), rgb(150, 170, 230), 1.f - day);   // moonlight at night

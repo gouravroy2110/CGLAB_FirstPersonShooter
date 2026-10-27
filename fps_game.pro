@@ -34,7 +34,9 @@ SOURCES += \
     audio.cpp \
     multiplayer.cpp \
     stats.cpp \
-    commander.cpp
+    commander.cpp \
+    cvinput.cpp \
+    cvcontrols.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -54,7 +56,8 @@ HEADERS += \
     maps.h \
     pixelfont.h \
     audio.h \
-    multiplayer.h
+    multiplayer.h \
+    cvinput.h
 
 FORMS +=
 
@@ -64,6 +67,11 @@ CONFIG += resources_big
 
 # Suppress deprecation warnings from Qt internals
 DEFINES += QT_DEPRECATED_WARNINGS
+# CV MODE finds tools/cv_control.py through this when the game runs from a build folder elsewhere
+# (a generated header: the path may contain spaces, which a -D define on the command line can't)
+RASTER_SRCDIR_LINE = "$${LITERAL_HASH}define RASTER_SRC_DIR \"$$PWD\""
+write_file($$OUT_PWD/raster_srcdir.h, RASTER_SRCDIR_LINE)
+INCLUDEPATH += $$OUT_PWD
 
 # Default rules for deployment
 qnx: target.path = /tmp/$${TARGET}/bin

@@ -47,6 +47,11 @@ float World::cellTop(int cx, int cy) const
 {
     int t = m_map[cy][cx];
     float h = WALL_HEIGHT[clampi(t, 0, 5)];
+    if (t == CELL_BRICK) h = (m_levels.w == m_mapW && m_levels[cy][cx]) ? m_levels[cy][cx] * STOREY_H : h * m_brickH;
+    if (m_campus && t == CELL_STONE && m_styles.w == m_mapW) {          // the compound wall, its gates and their columns
+        int st = m_styles[cy][cx];
+        return m_cellBase[cy][cx] + (st == 10 ? 0.62f : st == 11 ? 1.6f : 0.63f);   // the wall is 2.5 m
+    }
     if (cx == 0 || cy == 0 || cx == m_mapW - 1 || cy == m_mapH - 1) h += 1.0f;   // tall perimeter
     if (t == CELL_DOOR || t == CELL_SECRET) h *= 1.f - m_doorT[cy][cx];
     return m_cellBase[cy][cx] + h;
@@ -66,12 +71,13 @@ void World::loadLayout(const ParsedMap &pm, float terrainAmp, int seed, int them
 {
     m_theme = theme;
     m_mapW = pm.w; m_mapH = pm.h;
-    m_map.resize(m_mapW, m_mapH); m_plat.resize(m_mapW, m_mapH); m_acid.resize(m_mapW, m_mapH);
+    m_map.resize(m_mapW, m_mapH); m_plat.resize(m_mapW, m_mapH); m_acid.resize(m_mapW, m_mapH); m_road.resize(m_mapW, m_mapH);
     m_cellBase.resize(m_mapW, m_mapH); m_doorT.resize(m_mapW, m_mapH); m_doorMoving.resize(m_mapW, m_mapH);
     for (int y = 0; y < m_mapH; y++) for (int x = 0; x < m_mapW; x++) {
         m_map[y][x] = pm.type[y][x];
         m_plat[y][x] = pm.plat[y][x];
         m_acid[y][x] = pm.acid[y][x];
+        m_road[y][x] = pm.road.v.empty() ? 0 : pm.road[y][x];
         m_doorT[y][x] = 0.f;
         m_doorMoving[y][x] = false;
     }
@@ -110,19 +116,42 @@ void World::clearDecals()
 
 void MainWindow::loadMapGeometry(int map)
 {
+    m_brickH = map == MAP_JU ? 2.4f : 1.f;
+    m_water = m_campus = map == MAP_JU;
     loadLayout(m_parsed[map], TERRAIN_AMP[map], map, MAP_THEME[map]);
+    m_levels = Grid<uint8_t>{};
+    m_styles = Grid<uint8_t>{};
+    if (map == MAP_JU && LAYOUT_N(JU_LEVELS) == m_mapH) {          // every building at its own height, in its own colours
+        m_levels.resize(m_mapW, m_mapH);
+        m_styles.resize(m_mapW, m_mapH);
+        for (int y = 0; y < m_mapH; y++) for (int x = 0; x < m_mapW && JU_LEVELS[y][x]; x++) {
+            m_levels[y][x] = uint8_t(JU_LEVELS[y][x] - '0');
+            char sc = JU_STYLES[y][x];
+            m_styles[y][x] = uint8_t(clampi(sc >= 'a' ? 10 + sc - 'a' : sc - '0', 0, FACADE_STYLES - 1));   // 0-9 then a-j
+        }
+    }
+    // campus trees are not blocks: the cell is ground, and only the trunk stands in the way
+    m_trunk = Grid<uint8_t>{};
+    if (m_campus) {
+        m_trunk.resize(m_mapW, m_mapH);
+        for (int y = 1; y < m_mapH - 1; y++) for (int x = 1; x < m_mapW - 1; x++)
+            if (m_map[y][x] == CELL_PILLAR) { m_map[y][x] = CELL_FLOOR; m_trunk[y][x] = 1; }
+    }
     m_loadedMap = map;
     if (m_sunVisCache[map].empty()) { buildLightMap(); m_sunVisCache[map] = m_sunVis; m_lightCache[map] = m_lmAo; m_sunCache[map] = m_lmSun; }
     else { m_sunVis = m_sunVisCache[map]; m_lmAo = m_lightCache[map]; m_lmSun = m_sunCache[map]; m_light.assign(m_lmAo.size(), 100); }
     // trees: pillar cells in the swamp and the snow carry a canopy
     m_treeCells.clear();
     if (m_theme == BIO_SWAMP || m_theme == BIO_SNOW)
-        for (int y = 1; y < m_mapH - 1; y++) for (int x = 1; x < m_mapW - 1; x++) if (m_map[y][x] == CELL_PILLAR) m_treeCells.push_back(y * m_mapW + x);
+        for (int y = 1; y < m_mapH - 1; y++) for (int x = 1; x < m_mapW - 1; x++)
+            if (m_map[y][x] == CELL_PILLAR || (m_trunk.w == m_mapW && m_trunk[y][x])) m_treeCells.push_back(y * m_mapW + x);
     if (!m_envLocked) {
         static const float HOUR[THEME_COUNT] = { 15.5f, 13.f, 16.f, 11.f, 17.2f, 23.f };
         float hour = m_todSetting == 0 ? HOUR[m_theme] : m_todSetting == 1 ? 12.f : m_todSetting == 2 ? 18.4f : 0.5f;
         m_dayCycle = m_todSetting == 4;
         int wx = m_weatherSetting == 0 ? THEMES[m_theme].weather : m_weatherSetting - 1;
+        if (map == MAP_JU && m_todSetting == 0) hour = 10.5f;                    // a clear morning on campus
+        if (map == MAP_JU && m_weatherSetting == 0) wx = WX_NONE;
         setEnvironment(hour, wx);
     } else recomposeLight();
     updateAmbience();
@@ -329,7 +358,16 @@ void World::stampWallDecal(int cx, int cy, int face, float u, float v, bool pell
 bool World::posValid(float x, float y, float r) const
 {
     auto ok = [&](float tx, float ty) { return !solidCell(int(std::floor(tx)), int(std::floor(ty))); };
-    return ok(x - r, y - r) && ok(x + r, y - r) && ok(x - r, y + r) && ok(x + r, y + r);
+    if (!(ok(x - r, y - r) && ok(x + r, y - r) && ok(x - r, y + r) && ok(x + r, y + r))) return false;
+    if (m_trunk.w == m_mapW) {                                     // a tree trunk: a circle in the middle of its cell
+        int cx = int(std::floor(x)), cy = int(std::floor(y));
+        for (int ty = cy - 1; ty <= cy + 1; ty++) for (int tx = cx - 1; tx <= cx + 1; tx++) {
+            if (!inside(tx, ty) || !m_trunk[ty][tx]) continue;
+            float dx = x - (tx + 0.5f), dy = y - (ty + 0.5f), rr = r + 0.14f;
+            if (dx * dx + dy * dy < rr * rr) return false;
+        }
+    }
+    return true;
 }
 
 // Walkable if no wall is touched and no ground under the body rises more than maxUp

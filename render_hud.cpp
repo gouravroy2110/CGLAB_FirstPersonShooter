@@ -257,6 +257,7 @@ void MainWindow::renderHUD()
         renderMultiplayerHUD();
         if (m_showScoreboard) renderScoreboard();
     }
+    if (m_cvMode) renderCvPanel();                                     // webcam controls
 
 
     float ax, ay; aimPoint(ax, ay);
@@ -437,7 +438,7 @@ void MainWindow::renderMinimap()
 {
     const Player &pl = m_gs.player;
     const int MX = 86, MY = 90, MR = 66;
-    const float scale = 9.f;                       // pixels per world unit
+    const float scale = m_gs.mapChoice == MAP_JU ? 4.5f : 9.f;   // pixels per world unit (the campus has small cells)
     float fx = pl.dirX, fy = pl.dirY, fl = std::sqrt(fx * fx + fy * fy); fx /= fl; fy /= fl;
     float rx = -fy, ry = fx;                       // screen-right in world space
     for (int oy = -MR; oy <= MR; oy++) for (int ox = -MR; ox <= MR; ox++) {
@@ -453,6 +454,7 @@ void MainWindow::renderMinimap()
             c = withAlpha(lerpCol(rgb(150, 156, 164), rgb(235, 200, 120), 0.18f + 0.14f * std::sin(m_time * 3.f)), 235);   // a faint shimmer
         else if (solidCell(cx, cy)) c = withAlpha(rgb(150, 156, 164), 235);
         else if (m_acid[cy][cx]) c = withAlpha(hazardColorAt(cx, cy), 220);
+        else if (m_road[cy][cx]) c = withAlpha(rgb(70, 74, 82), 200);
         else {
             int lift = int(m_plat[cy][cx] * 40.f);           // ledges lighter, pits darker
             c = withAlpha(rgb(14 + lift, 18 + lift, 22 + lift), 180);
@@ -527,7 +529,17 @@ void MainWindow::renderMinimap()
         nx = (dx * rx + dy * ry) * (MR + 10); ny = -(dx * fx + dy * fy) * (MR + 10);
         text(MX + nx - 8, MY + ny - 8, 16, 16, Qt::AlignCenter, "N", QColor(255, 90, 70), 11, 800);
     }
-    text(MX - 70, MY + MR + 8, 140, 14, Qt::AlignCenter, QString("%1   -   ZONE %2").arg(MAP_NAMES[m_gs.mapChoice]).arg(m_gs.level), QColor(230, 230, 230), 11, 700);
+    QString where = QString("%1   -   ZONE %2").arg(MAP_NAMES[m_gs.mapChoice]).arg(m_gs.level);
+    if (m_gs.mapChoice == MAP_JU) {
+        const Landmark *near = nullptr; float bd = 14.f * 14.f;
+        for (const Landmark &l : JU_LANDMARKS) {
+            float d = (l.x - pl.posX) * (l.x - pl.posX) + (l.y - pl.posY) * (l.y - pl.posY);
+            if (d < bd) { bd = d; near = &l; }
+        }
+        where = near ? QString("NEAR %1").arg(near->name) : QString("JADAVPUR UNIVERSITY");
+    }
+    int lw = std::min(2 * (MX - 4), 240);
+    text(MX - lw / 2, MY + MR + 8, lw, 14, Qt::AlignCenter, where, QColor(230, 230, 230), 10, 700);
 }
 
 // Slanted HUD backing plate
@@ -919,6 +931,19 @@ void MainWindow::renderHitMarkers()
 // Squad name tags + health over their heads (depth-tested against the world)
 void MainWindow::renderSquadTags()
 {
+    if (m_gs.mapChoice == MAP_JU) {
+        for (const Landmark &l : JU_LANDMARKS) {
+            float sx, sy, d;
+            float gz = floorH(l.x, l.y);
+            float top = solidCell(int(l.x), int(l.y)) ? cellTop(int(l.x), int(l.y)) : gz + 1.f;
+            if (!project(l.x, l.y, top + 0.45f, sx, sy, d) || d < 1.f || d > 30.f) continue;
+            int alpha = int(235 * clampf((30.f - d) / 8.f, 0.f, 1.f));
+            QString n(l.name);
+            int tw = 8 * n.size() + 16;
+            m_cv.blendRect(int(sx) - tw / 2, int(sy) - 9, tw, 18, withAlpha(0, alpha / 2));
+            text(sx - tw / 2, sy - 9, tw, 18, Qt::AlignCenter, n, QColor(255, 230, 160, alpha), 10, 800);
+        }
+    }
     bool isMp = (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive());
     int myTeam = 0;
     if (isMp) {
@@ -1373,10 +1398,10 @@ void MainWindow::renderMenu()
     text(70, 182, 520, 30, Qt::AlignLeft | Qt::AlignVCenter, "T A C T I C A L   S H O O T E R", qc(AMBER), 18, 700);
     text(70, 212, 520, 18, Qt::AlignLeft, "Every pixel is computed on the CPU  -  pure software rasterization", QColor(170, 175, 180), 12, 500);
 
-    const char *opts[9] = { "CAMPAIGN", "FREE PLAY", "MULTIPLAYER", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "STATS", "EXIT" };
-    for (int i = 0; i < 9; i++) {
+    const char *opts[10] = { "CAMPAIGN", "FREE PLAY", "MULTIPLAYER", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "CV MODE (WEBCAM)", "STATS", "EXIT" };
+    for (int i = 0; i < 10; i++) {
         bool sel = m_menuCursor == i;
-        int x = 48, y = 230 + i * 36, w = 300, h = 33;
+        int x = 48, y = 230 + i * 33, w = 300, h = 30;
         m_menuRects.push_back({x, y, w, h, i});
         if (sel) {
             m_cv.hGrad(x, y, w, h, withAlpha(AMBER, 70), withAlpha(AMBER, 0));
@@ -1415,7 +1440,7 @@ void MainWindow::renderMenu()
 void MainWindow::renderMapSelect()
 {
     menuHeader("STEP 1 / 3", "SELECT DEPLOYMENT ZONE");
-    static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  TAR PITS", "SWAMP  |  BOG + TREES", "SNOW  |  ICE + PINES", "CITY RUINS  |  ACID", "FACILITY  |  COOLANT", "CITADEL  |  ACID VAULTS" };
+    static const char *TAGS[MAP_COUNT] = { "VOLCANIC  |  LAVA", "DESERT  |  TAR PITS", "SWAMP  |  BOG + TREES", "SNOW  |  ICE + PINES", "CITY RUINS  |  ACID", "FACILITY  |  COOLANT", "CITADEL  |  ACID VAULTS", "CAMPUS  |  PONDS + LAWNS" };
     int scrollRow = (m_mapChoice >= 6 ? 1 : 0);
     for (int i = 0; i < MAP_COUNT; i++) {
         int row = i / 3 - scrollRow;
@@ -1428,15 +1453,19 @@ void MainWindow::renderMapSelect()
         // top-down layout preview in the biome's own colours
         const ParsedMap &pm = m_parsed[i];
         const Theme &T = THEMES[MAP_THEME[i]];
-        const int box = 128, ts = std::max(1, box / pm.w), pw = pm.w * ts, ph = pm.h * ts;
+        const int box = 128;
+        const float ts = std::min(1.f * box / pm.w, 1.f * box / pm.h) >= 1.f ? std::floor(std::min(1.f * box / pm.w, 1.f * box / pm.h))
+                                                                            : std::min(1.f * box / pm.w, 1.f * box / pm.h);
+        const int pw = int(pm.w * ts), ph = int(pm.h * ts);
         const int px0 = x + (w - pw) / 2, py0 = y + 10 + (box - ph) / 2;
         uint32_t floorC = m_floorTex[MAP_THEME[i]].lv[MIP_LEVELS - 1][0];
         uint32_t wallC = m_wallTex[MAP_THEME[i]][1].lv[MIP_LEVELS - 1][0];
-        for (int my = 0; my < pm.h; my++) for (int mx = 0; mx < pm.w; mx++) {
+        for (int py = 0; py < ph; py++) for (int px = 0; px < pw; px++) {
+            int mx = std::min(pm.w - 1, int(px / ts)), my = std::min(pm.h - 1, int(py / ts));
             int t = pm.type[my][mx];
             uint32_t c = t == CELL_DOOR ? rgb(170, 110, 50) : t == CELL_PILLAR ? scaleCol(wallC, 0.7f) : t ? wallC
-                       : pm.acid[my][mx] ? T.hazLight : scaleCol(floorC, 1.f + pm.plat[my][mx] * 0.9f);
-            m_cv.fillRect(px0 + mx * ts, py0 + my * ts, ts, ts, c);
+                       : pm.acid[my][mx] ? T.hazLight : pm.road[my][mx] ? rgb(78, 80, 86) : scaleCol(floorC, 1.f + pm.plat[my][mx] * 0.9f);
+            m_cv.fillRect(px0 + px, py0 + py, 1, 1, c);
         }
         m_cv.fillCircle(px0 + int(pm.spawnX * ts), py0 + int(pm.spawnY * ts), 2, AMBER);
         if (sel) {
@@ -1448,7 +1477,7 @@ void MainWindow::renderMapSelect()
         text(x + 12, y + 182, w - 24, 40, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, MAP_DESCS[i], QColor(180, 180, 180), 10, 500, false);
         text(x + w - 30, y + 6, 24, 14, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(130, 130, 130), 10, 700, false);
     }
-    menuFooter("ARROWS browse   ENTER or 1-7 select   ESC back");
+    menuFooter("ARROWS browse   ENTER or 1-8 select   ESC back");
 }
 
 void MainWindow::renderDiffSelect()
@@ -1610,7 +1639,7 @@ void MainWindow::renderMultiplayerLobby()
     m_cv.blendRect(s5X, sy, s5W, sh, withAlpha(UI_BG, 230));
     m_cv.rectOutline(s5X, sy, s5W, sh, isHost ? AMBER : withAlpha(0xFFFFFFFF, 40), 1);
     if (isHost) m_menuRects.push_back({s5X, sy, s5W, sh, 24});
-    QString mapName = (st.mapChoice == 6) ? "CITADEL & BUNKER" : (st.mapChoice == 5) ? "HELIX FACILITY" : (st.mapChoice == 4) ? "ASHEN CITY" : "DUNE OUTPOST";
+    QString mapName = (st.mapChoice == MAP_JU) ? "JADAVPUR UNIVERSITY" : (st.mapChoice == 6) ? "CITADEL & BUNKER" : (st.mapChoice == 5) ? "HELIX FACILITY" : (st.mapChoice == 4) ? "ASHEN CITY" : "DUNE OUTPOST";
     text(s5X, sy, s5W, sh, Qt::AlignCenter, QString("MAP: %1").arg(mapName), isHost ? QColor(90, 210, 255) : QColor(200, 200, 200), 10, 800, false);
 
     // Two Team Columns: Team Alpha (Red) & Team Bravo (Blue)

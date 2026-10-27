@@ -114,9 +114,9 @@ void MainWindow::renderTerrain()
                     // hazard pool in the biome's colours: crossing ripple bands + bubbles;
                     // lava / coolant are self-lit and slowly flow, others take the light map
                     bool isQueenAcid = (!m_baseAcid.empty() && size_t(cy * m_mapW + cx) < m_baseAcid.size() && !m_baseAcid[cy * m_mapW + cx]);
-                    uint32_t deepCol = isQueenAcid ? rgb(40, 70, 20) : T.hazDeep;
-                    uint32_t lightCol = isQueenAcid ? rgb(150, 210, 60) : T.hazLight;
-                    bool glow = isQueenAcid ? true : T.hazGlow;
+                    uint32_t deepCol = isQueenAcid ? rgb(40, 70, 20) : m_water ? rgb(22, 44, 36) : T.hazDeep;      // the jheel: algae green
+                    uint32_t lightCol = isQueenAcid ? rgb(150, 210, 60) : m_water ? rgb(62, 98, 76) : T.hazLight;
+                    bool glow = isQueenAcid ? true : m_water ? false : T.hazGlow;
                     float flow = glow ? m_time * 0.25f : 0.f;
                     float w1 = std::sin(m_time * 2.1f + (wx + flow) * 5.f + wy * 3.f), w2 = std::sin(m_time * 1.3f - wx * 3.f + (wy + flow) * 6.f);
                     float w = 0.5f + 0.25f * (w1 + w2);
@@ -129,10 +129,30 @@ void MainWindow::renderTerrain()
                     int lvl = mipFor(d, wallFoot);
                     int sz = WALL_TS >> lvl, msk = sz - 1;
                     uint32_t c = m_wallTex[m_theme][wt].lv[lvl][(int(wy * sz) & msk) * sz + (int(wx * sz) & msk)];
+                    if (m_campus && wt == CELL_BRICK) {
+                        int v = 150 + (R(c) - 128) / 8 + int(hash2(int(wx * 8.f), int(wy * 8.f), 7) * 14.f);
+                        float ex = wx - std::floor(wx), ey = wy - std::floor(wy);
+                        bool rim = (ex < 0.06f && !(cx > 0 && m_map[cy][cx - 1] == CELL_BRICK)) || (ex > 0.94f && !(cx + 1 < m_mapW && m_map[cy][cx + 1] == CELL_BRICK))
+                                || (ey < 0.06f && !(cy > 0 && m_map[cy - 1][cx] == CELL_BRICK)) || (ey > 0.94f && !(cy + 1 < m_mapH && m_map[cy + 1][cx] == CELL_BRICK));
+                        if (rim) v = 205;                                      // the parapet
+                        c = rgb(v, v - 2, v - 6);
+                        if (m_styles.w == m_mapW && m_styles[cy][cx] == 4)      // a canteen: clay tiles
+                            c = rgb(150 + (v - 150) / 2, 70 + (v - 150) / 3, 46);
+                    }
                     int L = int(roofLight * 256);
                     out = shadeFog((R(c) * L) >> 8, (G(c) * L) >> 8, (B(c) * L) >> 8, fogI(d));
                 } else {
                     uint32_t c = gtex[(int(wy * gts) & gmsk) * gsz + (int(wx * gts) & gmsk)];
+                    if (m_campus && !m_road[cy][cx]) {                  // the campus lawn: the ground's grain in green
+                        int lum = (R(c) * 3 + G(c) * 5 + B(c) * 2) / 10;
+                        int k = int(hash2(int(wx * 3.f), int(wy * 3.f), 61) * 18.f) - 9;   // patchy, sun-worn grass
+                        c = 0xFF000000 | (uint32_t(clampi(46 + lum * 2 / 5 + k, 0, 255)) << 16) | (uint32_t(clampi(66 + lum / 2 + k, 0, 255)) << 8) | uint32_t(clampi(34 + lum / 4 + k / 2, 0, 255));
+                    }
+                    if (m_road[cy][cx]) {                               // asphalt: the ground's grain in grey
+                        int lum = (R(c) * 3 + G(c) * 5 + B(c) * 2) / 10;
+                        int v = 46 + lum * 2 / 5;
+                        c = 0xFF000000 | (uint32_t(v) << 16) | (uint32_t(v + 1) << 8) | uint32_t(v + 4);
+                    }
                     int li = clampi(int(wx * LM), 0, LW - 1), lj = clampi(int(wy * LM), 0, m_mapH * LM - 1);
                     int L = lightLut[m_light[size_t(lj) * LW + li]];
                     int r = (R(c) * L) >> 8, g = (G(c) * L) >> 8, b = (B(c) * L) >> 8;
@@ -164,7 +184,11 @@ void MainWindow::renderTerrain()
             int wt = solid ? clampi(m_map[cy][cx], 1, 5) : 1;
             int lvl = mipFor(d, wallFoot);
             int sz = WALL_TS >> lvl, msk = sz - 1;
-            const uint32_t *tex = m_wallTex[m_theme][wt].lv[lvl].data();
+            bool facade = m_campus && solid && (wt == CELL_BRICK || wt == CELL_STONE);
+            const int fst = facade && m_styles.w == m_mapW ? m_styles[cy][cx] : 0;
+            const uint32_t *tex = facade ? m_facadeTex[fst].lv[lvl].data() : m_wallTex[m_theme][wt].lv[lvl].data();
+            const uint32_t *groundTex = facade ? m_facadeGround[fst].lv[lvl].data() : tex;
+            const float vScale = facade ? (fst == 11 ? 1.f / 1.6f : 1.f / STOREY_H) : 1.f;   // a gate column is one tall piece
             float bx = m_camX + rdX * d, by = m_camY + rdY * d;
             float wallX = side == 0 ? by : bx; wallX -= std::floor(wallX);
             if ((side == 0 && rdX > 0) || (side == 1 && rdY < 0)) wallX = 1.f - wallX;
@@ -185,8 +209,10 @@ void MainWindow::renderTerrain()
             float z = m_eye - (r0 + 0.5f - m_hor) * zStep;
             for (int y = r0; y <= r1; y++, z -= zStep) {
                 float v = hHigh - z;
-                uint32_t c = tex[(int((v + vOff) * sz) & msk) * sz + tx];
                 float above = z - hLow;
+                const uint32_t *tt = above < STOREY_H ? groundTex : tex;   // a building's ground floor has its own look
+                uint32_t c = tt[(int((v + vOff) * vScale * sz) & msk) * sz + tx];
+                if (facade && above < 0.1f && above >= 0.f) c = rgb(R(c) * 5 / 8, G(c) * 5 / 8, B(c) * 5 / 8);   // the plinth
                 float ao = above < 0.35f ? 0.55f + 0.45f * std::max(0.f, above) / 0.35f : 1.f;
                 int L = int(lit * ao * 256);
                 int r = (R(c) * L) >> 8, g = (G(c) * L) >> 8, b = (B(c) * L) >> 8;
@@ -510,7 +536,14 @@ void MainWindow::renderSprites()
             float light = (T.ambient + T.sunStrength * 0.7f) * 1.05f;
             // a big crown that hides most of the trunk block (pines start low, broadleaf higher)
             float base = m_theme == BIO_SNOW ? floorH(cx + 0.5f, cy + 0.5f) + 0.35f : top - 0.75f;
-            blit(cx + 0.5f, cy + 0.5f, base, m_theme == BIO_SNOW ? 2.5f : 2.2f, m_canopyTex[m_theme].data(), CANOPY_TS, light, 0, 1.f, false);
+            float crown = m_theme == BIO_SNOW ? 2.5f : 2.2f;
+            if (m_campus) {                                       // a whole tree on one sprite, standing on the ground
+                int var = (cx * 7 + cy * 13) % TREE_VARIANTS;
+                float size = 3.0f + 0.25f * float((cx * 5 + cy * 3) % 4);
+                blit(cx + 0.5f, cy + 0.5f, floorH(cx + 0.5f, cy + 0.5f), size, m_campusTreeTex[var].data(), TREE_TS, light, 0, 1.f, true);
+                break;
+            }
+            blit(cx + 0.5f, cy + 0.5f, base, crown, m_canopyTex[m_theme].data(), CANOPY_TS, light, 0, 1.f, false);
             break;
         }
         case SP_EBULLET: {

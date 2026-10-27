@@ -19,6 +19,7 @@ public:
     Grid<int>     m_map;          // CellType
     Grid<float>   m_plat;         // ledge / pit offsets
     Grid<uint8_t> m_acid;
+    Grid<uint8_t> m_road;                 // asphalt ground cells
     Grid<float>   m_cellBase;     // ground level a wall stands on
     Grid<float>   m_doorT;        // 0 closed .. 1 fully sunk into the floor
     Grid<uint8_t> m_doorMoving;
@@ -34,6 +35,12 @@ public:
     float smoothH(float x, float y) const;        // bilinear rolling terrain
     float floorH(float x, float y) const;         // terrain + ledge/pit of that cell
     float cellTop(int cx, int cy) const;          // top of a solid cell
+    float m_brickH = 1.f;                         // brick blocks' height where no storeys are given
+    bool  m_water = false;                        // the pools are plain water: blue, and harmless
+    bool  m_campus = false;                       // brick cells are buildings: window facades, concrete roofs
+    Grid<uint8_t> m_levels;                       // storeys of each building cell (empty: not used)
+    Grid<uint8_t> m_styles;                       // facade style of each building cell
+    Grid<uint8_t> m_trunk;                        // campus trees: open ground with a slim trunk in the middle
     bool  solidCell(int cx, int cy) const;
     float groundAt(float x, float y) const;       // standing height (wall tops for solid cells)
 

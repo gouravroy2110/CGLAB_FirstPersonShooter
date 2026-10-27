@@ -1,0 +1,14 @@
+Jadavpur University map (map 8) - data sources
+
+Building footprints and heights: Google Open Buildings 2.5D Temporal Dataset (2023), CC BY 4.0
+    W. Sirko et al., https://sites.research.google/gr/open-buildings/temporal/
+Building names, gates, roads, ponds, playground, Open Air Theatre, campus boundary:
+    (c) OpenStreetMap contributors, ODbL 1.0 (https://www.openstreetmap.org/copyright)
+
+Facade, gate and canteen designs are drawn by the game (assets.cpp bakeFacade); their colours and
+details were matched by eye to photographs on Wikimedia Commons by Biswarup Ganguly (CC BY 3.0) and
+Gourav Ghosh / Pinakpani (CC BY-SA), e.g.
+    https://commons.wikimedia.org/wiki/File:Facade_-_Central_Library_-_Jadavpur_University_-_Kolkata_2015-01-08_2416.JPG
+    https://commons.wikimedia.org/wiki/File:Aurobindo_Bhavan_-_Main_Administrative_Building_-_Jadavpur_University_-_Kolkata_2015-01-08_2401.JPG
+    https://commons.wikimedia.org/wiki/File:Jadavpur_University_Gate_No._4.jpg
+    https://commons.wikimedia.org/wiki/File:Ahar_Canteen_-_Jadavpur_University_-_Kolkata_2015-01-08_2403.JPG

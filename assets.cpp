@@ -208,6 +208,274 @@ void bakeFloor(std::vector<uint32_t> &tex, int theme)
 // -----------------------------------------------------------------------------
 //  Wall textures (128×128 per world unit), per biome
 // -----------------------------------------------------------------------------
+// One storey of a campus building, one world unit (4 m) wide, after photos of the JU buildings:
+//   0 cream concrete with a horizontal band (Arts, engineering blocks)
+//   1 white plaster, JU-blue pilasters and window frames (Central Library, Engineering Science)
+//   2 white with red spandrel panels (TEQIP)
+//   3 salmon brick with white slab bands (Meghnad Saha Bhavan, Triguna Sen Auditorium)
+//   4 a canteen hut: timber posts, open front, a low brick wall
+//   5 Central Library: white storeys between JU-blue pilasters, blue window frames; the ground floor blue
+//   6 Aurobindo Bhavan: warm cream, maroon pilasters at every bay, grilled windows
+//   7 Triguna Sen Auditorium / Alumni block: dark red brick, grey concrete bands, grey window frames
+//   8 TEQIP Building: cream with deep red bands and horizontal red louvres
+//   9 the compound wall: cream plaster, a red-brick coping
+//  10 a gate: cream iron grille with the round JU emblem plate, the street dark behind it
+//  11 a gate column: terracotta red, round (shaded across), a cream capital
+//  12 Subarna Jayanti Bhavan (CSE / IT): light beige brick, a dark glass ribbon window
+//  13 Prayukti Bhavan: grey-cream concrete panels, terracotta accent panels
+//  14 Technology Bhavan: cream stucco under wide concrete sunshades
+//  15 Electrical Engineering: red brick masonry, white floor slabs
+//  16 Chemical / Mechanical workshops: industrial brick, external pipe gantries
+//  17 Gandhi Bhavan: red brick between white stone columns
+//  18 Pharmacy: off-white plaster, light green window trim
+//  19 UG Science: deep cream stucco, a band of ventilation grilles
+// `ground` asks for the building's ground floor where it differs (the library's blue base)
+void bakeFacade(std::vector<uint32_t> &tex, int style, bool ground)
+{
+    const int S = WALL_TS;
+    tex.assign(size_t(S) * S, 0);
+    auto h = [](int x, int y) { uint32_t n = uint32_t(x) * 374761393u + uint32_t(y) * 668265263u; n = (n ^ (n >> 13)) * 1274126177u; return int(n >> 24); };
+    struct P { int wall[3], trim[3], frame[3]; };
+    static const P PAL[5] = {
+        {{230, 225, 210}, {176, 172, 160}, {96, 92, 84}},
+        {{236, 236, 230}, {44, 78, 190}, {44, 78, 190}},
+        {{236, 234, 228}, {196, 48, 38}, {110, 106, 100}},
+        {{196, 112, 82}, {232, 228, 216}, {236, 232, 220}},
+        {{150, 96, 58}, {176, 122, 72}, {92, 58, 34}},
+    };
+    auto clamp8 = [](int v) { return std::max(0, std::min(255, v)); };
+    if (style >= 12) {
+        for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+            int n = (h(x, y) - 128) / 24 + (h(x / 4, y / 4 + 99) - 128) / 36;
+            int r, g, b;
+            auto c3 = [&](int R_, int G_, int B_) { r = R_ + n; g = G_ + n; b = B_ + n; };
+            auto brick = [&](int R_, int G_, int B_, int mr, int mg, int mb) {
+                int row = y / 8, off = (row & 1) * 8;
+                if (y % 8 == 0 || (x + off) % 16 == 0) c3(mr, mg, mb);
+                else { int k = (h((x + off) / 16, row + 31) - 128) / 10; c3(R_ + k, G_ + k / 2, B_ + k / 2); }
+            };
+            auto glassAt = [&](int y0, int y1) {
+                float kk = 1.f - float(y - y0) / float(y1 - y0);
+                c3(int(40 + 36 * kk), int(52 + 40 * kk), int(64 + 50 * kk));
+            };
+            auto windows = [&](int fr, int fg, int fb, bool bars) {          // two framed windows per bay
+                for (int w = 0; w < 2; w++) {
+                    int x0 = 18 + w * 56, x1 = x0 + 36, y0 = 28, y1 = 92;
+                    if (x >= x0 - 3 && x < x1 + 3 && y >= y0 - 3 && y < y1 + 3) c3(fr, fg, fb);
+                    if (x >= x0 && x < x1 && y >= y0 && y < y1) {
+                        glassAt(y0, y1);
+                        if (bars && (std::abs(x - (x0 + x1) / 2) < 1 || std::abs(y - (y0 + 30)) < 1)) c3(fr, fg, fb);
+                    }
+                }
+            };
+            switch (style) {
+            case 12:                                                        // Subarna Jayanti: beige brick + ribbon glazing
+                brick(220, 210, 190, 236, 230, 216);
+                if (y >= 34 && y < 84) { glassAt(34, 84); if (x % 32 < 2) c3(70, 72, 76); }
+                if (y >= 84 && y < 88) c3(236, 232, 222);
+                break;
+            case 13:                                                        // Prayukti: concrete panels, terracotta accents
+                c3(210, 206, 196);
+                if (x % 64 == 0 || y % 64 == 0) c3(176, 172, 164);
+                if (x < 14 || (x >= 64 && x < 78)) c3(172, 82, 60);
+                windows(120, 118, 112, true);
+                break;
+            case 14:                                                        // Technology Bhavan: stucco, sunshades
+                c3(232, 222, 196);
+                windows(150, 144, 130, true);
+                if (y >= 16 && y < 24) c3(214, 210, 200);                   // the projecting sunshade
+                if (y >= 24 && y < 40) { r -= 46; g -= 46; b -= 44; }       // its shadow over the window head
+                break;
+            case 15:                                                        // Electrical: red brick, white slabs
+                brick(160, 60, 48, 196, 176, 160);
+                windows(236, 234, 226, true);
+                if (y >= S - 14) c3(236, 234, 226);
+                break;
+            case 16:                                                        // workshops: industrial brick, pipes
+                brick(160, 75, 60, 190, 170, 150);
+                windows(96, 100, 104, false);
+                if (x >= 18 && x < 54 && y >= 28 && y < 92 && ((x - 18) % 9 == 0 || (y - 28) % 9 == 0)) c3(96, 100, 104);   // steel sash
+                if (x >= 72 && x < 92 && y >= 28 && y < 92 && ((x - 72) % 9 == 0 || (y - 28) % 9 == 0)) c3(96, 100, 104);
+                if (x >= 6 && x < 12) { float u = (x - 9) / 3.f; c3(int(150 - 40 * u * u), int(152 - 40 * u * u), int(156 - 40 * u * u)); }   // a down pipe
+                if (y >= 98 && y < 104) { float u = (y - 101) / 3.f; c3(int(170 - 50 * u * u), int(120 - 40 * u * u), int(40)); }          // a gas line
+                break;
+            case 17:                                                        // Gandhi Bhavan: red brick, white columns
+                brick(175, 65, 50, 200, 176, 160);
+                windows(232, 228, 214, true);
+                if (x < 12 || (x >= 60 && x < 72)) {                        // white stone columns
+                    float u = x < 12 ? (x - 6) / 6.f : (x - 66) / 6.f;
+                    int k = int(30 * u * u);
+                    c3(234 - k, 230 - k, 216 - k);
+                }
+                if (y >= S - 10) c3(226, 220, 204);
+                break;
+            case 18:                                                        // Pharmacy: off-white, green trim
+                c3(238, 236, 226);
+                windows(150, 200, 160, true);
+                if (y >= S - 10) c3(222, 220, 210);
+                break;
+            default:                                                        // UG Science: deep cream, vent grilles
+                c3(226, 200, 150);
+                windows(200, 178, 132, true);
+                if (y >= 98 && y < 112 && (x % 6 < 3) && (y % 4 < 2)) c3(90, 76, 56);
+                if (y >= S - 10) c3(206, 180, 132);
+                break;
+            }
+            tex[size_t(y) * S + x] = rgb(clamp8(r), clamp8(g), clamp8(b));
+        }
+        return;
+    }
+    if (style == 5 || style == 6 || style >= 9) {
+        for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+            int n = (h(x, y) - 128) / 24 + (h(x / 4, y / 4 + 99) - 128) / 36;
+            int r, g, b;
+            auto c3 = [&](int R_, int G_, int B_) { r = R_ + n; g = G_ + n; b = B_ + n; };
+            auto glass = [&](int y0, int y1) {
+                float kk = 1.f - float(y - y0) / float(y1 - y0);
+                c3(int(44 + 38 * kk), int(56 + 42 * kk), int(70 + 52 * kk));
+            };
+            if (style == 5) {                                               // the Central Library
+                const int BL[3] = {98, 118, 214}, WH[3] = {240, 240, 236};
+                bool pil = x < 14 || x >= S - 14;
+                if (ground) c3(BL[0], BL[1], BL[2]); else c3(WH[0], WH[1], WH[2]);
+                if (pil) c3(BL[0] - 8, BL[1] - 8, BL[2] - 6);
+                for (int w = 0; w < 2; w++) {
+                    int x0 = 24 + w * 46, x1 = x0 + 34, y0 = 26, y1 = 96;
+                    if (x >= x0 - 4 && x < x1 + 4 && y >= y0 - 4 && y < y1 + 4) { if (ground) c3(236, 236, 230); else c3(BL[0], BL[1], BL[2]); }
+                    if (x >= x0 && x < x1 && y >= y0 && y < y1) {
+                        glass(y0, y1);
+                        if ((x - x0) % 11 == 0 || (y - y0) % 14 == 0) c3(ground ? 236 : BL[0], ground ? 236 : BL[1], ground ? 230 : BL[2]);   // glazing bars
+                    }
+                }
+                if (y >= S - 8) c3(ground ? 70 : 222, ground ? 86 : 222, ground ? 170 : 216);
+            } else if (style == 6) {                                        // Aurobindo Bhavan
+                c3(236, 210, 156);
+                if (x < 12 || (x >= 60 && x < 70)) c3(134, 44, 56);         // maroon pilasters
+                for (int w = 0; w < 2; w++) {
+                    int x0 = 20 + w * 56, x1 = x0 + 34, y0 = 28, y1 = 94;
+                    if (x >= x0 - 3 && x < x1 + 3 && y >= y0 - 3 && y < y1 + 3) c3(214, 190, 140);
+                    if (x >= x0 && x < x1 && y >= y0 && y < y1) {
+                        glass(y0, y1);
+                        if ((x - x0) % 6 == 0 || (y - y0) % 8 == 0) c3(200, 196, 186);   // the window grille
+                    }
+                }
+                if (y >= S - 10) c3(214, 186, 132);
+            } else if (style == 9) {                                        // compound wall
+                c3(226, 214, 186);
+                int stain = std::max(0, 30 - (S - y)) / 3;                  // splash at the foot
+                r -= stain; g -= stain; b -= stain;
+                if (y < 18) {                                               // red-brick coping
+                    int row = y / 6, off = (row & 1) * 8;
+                    bool mortar = y % 6 == 0 || (x + off) % 16 == 0;
+                    if (mortar) c3(190, 176, 160); else c3(170, 74, 56);
+                }
+                if (y >= 18 && y < 21) c3(120, 110, 96);
+                if (y < 12 && x % 8 < 2) c3(46, 48, 50);                    // iron spikes standing on it
+                if (y < 3 && x % 8 < 2) c3(70, 72, 76);
+            } else if (style == 10) {                                       // iron gate with the emblem
+                c3(36, 40, 38);                                             // the street beyond
+                if (y >= 100) c3(70, 68, 64);
+                bool bar = (x % 10) < 3, rail = (y % 30) < 3 || y < 4;
+                float ex = x - 64.f, ey = y - 58.f, er = std::sqrt(ex * ex + ey * ey);
+                if (bar || rail) c3(226, 218, 196);
+                if (er < 26.f) {                                            // the round brass plate
+                    int k = int((1.f - er / 26.f) * 40.f);
+                    c3(196 + k / 2, 160 + k / 2, 82);
+                    if (er > 22.f || (er > 14.f && er < 16.f)) c3(150, 112, 50);
+                    if (er < 8.f && std::fabs(ex) < 4.f) c3(40, 60, 150);  // the gate number
+                }
+            } else {                                                        // gate column
+                float u = (x + 0.5f) / S * 2.f - 1.f;
+                float sh = 0.62f + 0.38f * std::sqrt(std::max(0.f, 1.f - u * u)) - 0.12f * u;
+                c3(int(182 * sh), int(86 * sh), int(68 * sh));
+                if (y < 16) c3(int(232 * sh), int(220 * sh), int(196 * sh));    // the capital
+            }
+            tex[size_t(y) * S + x] = rgb(clamp8(r), clamp8(g), clamp8(b));
+        }
+        return;
+    }
+    if (style == 7 || style == 8) {
+        for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+            int n = (h(x, y) - 128) / 22 + (h(x / 4, y / 4 + 99) - 128) / 34;
+            int r, g, b;
+            auto c3 = [&](int R_, int G_, int B_) { r = R_ + n; g = G_ + n; b = B_ + n; };
+            bool win = x >= 34 && x < 94 && y >= 30 && y < 92;
+            if (style == 7) {
+                int row = y / 7, off = (row & 1) * 9;
+                bool mortar = y % 7 == 0 || (x + off) % 18 == 0;
+                int k = (h((x + off) / 18, row + 7) - 128) / 9;
+                if (mortar) c3(176, 166, 154); else c3(160 + k, 50 + k / 2, 40 + k / 2);
+                if (y >= S - 16) { c3(150, 150, 144); if (h(x, y + 7) > 200) c3(110, 108, 100); }   // exposed-aggregate band at each floor
+                if (x >= 28 && x < 100 && y >= 24 && y < 98) c3(150, 150, 144);   // the window's concrete surround
+                if (win) {
+                    float kk = 1.f - float(y - 30) / 62.f;
+                    c3(int(40 + 36 * kk), int(46 + 38 * kk), int(52 + 44 * kk));
+                    if ((x - 34) % 12 == 0 || (y - 30) % 12 == 0) c3(120, 118, 110);   // the grille
+                }
+            } else {
+                c3(240, 238, 225);
+                if (y >= 72 && y < S - 10) {                                  // the red band, with louvres where there's a window
+                    c3(165, 32, 42);
+                    if (x >= 20 && x < 108 && y >= 80 && (y - 80) % 6 < 2) c3(128, 22, 30);
+                }
+                if (x >= 30 && x < 98 && y >= 22 && y < 66) {                 // a window set in the cream
+                    float kk = 1.f - float(y - 22) / 44.f;
+                    c3(int(46 + 36 * kk), int(56 + 40 * kk), int(64 + 46 * kk));
+                    if (std::abs(x - 64) < 1 || (y - 22) % 11 == 0) c3(70, 66, 60);
+                }
+                if (y >= S - 10) c3(206, 196, 170);
+            }
+            tex[size_t(y) * S + x] = rgb(std::max(0, std::min(255, r)), std::max(0, std::min(255, g)), std::max(0, std::min(255, b)));
+        }
+        return;
+    }
+    const P &p = PAL[std::max(0, std::min(4, style))];
+    for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+        int n = (h(x, y) - 128) / 22 + (h(x / 4, y / 4 + 99) - 128) / 34;
+        int r = p.wall[0] + n, g = p.wall[1] + n, b = p.wall[2] + n;
+        auto set = [&](const int *c, int k = 0) { r = c[0] + n + k; g = c[1] + n + k; b = c[2] + n + k; };
+        if (style == 3) {                                                   // brick courses + mortar
+            int row = y / 8, off = (row & 1) * 8;
+            if (y % 8 == 0 || (x + off) % 16 == 0) { r = 186 + n; g = 176 + n; b = 160 + n; }
+            else { int k = (h((x + off) / 16, row) - 128) / 10; r += k; g += k / 2; b += k / 2; }
+        }
+        if (style == 4) {                                                   // a canteen (Ahar): perforated red-brick jali walls, a wide glazed front
+            int row = y / 8, off = (row & 1) * 8;
+            bool mortar = y % 8 == 0 || (x + off) % 16 == 0;
+            bool hole = ((x + off) % 16 >= 6 && (x + off) % 16 < 10) && (y % 8 >= 3 && y % 8 < 6) && (row % 2 == 0);
+            r = 176 + n; g = 86 + n; b = 62 + n;
+            if (mortar) { r = 196 + n; g = 150 + n; b = 124 + n; }
+            if (hole) { r = 50 + n; g = 34 + n; b = 28 + n; }
+            if (x >= 30 && x < 98 && y >= 30 && y < 100) {                  // the counter window
+                float kk = 1.f - float(y - 30) / 70.f;
+                r = int(52 + 30 * kk); g = int(46 + 26 * kk); b = int(40 + 26 * kk);
+                if (std::abs(x - 64) < 2) { r = 120; g = 84; b = 52; }
+            }
+            if (y >= 100 && y < 106) { r = 214 + n; g = 196 + n; b = 170 + n; }   // the sill band
+            tex[size_t(y) * S + x] = rgb(std::max(0, std::min(255, r)), std::max(0, std::min(255, g)), std::max(0, std::min(255, b)));
+            continue;
+        }
+        // the slab at each floor
+        if (y >= S - 12) { if (style == 3) set(p.trim); else if (style == 0) set(p.trim, -10); else { r -= 34; g -= 34; b -= 32; } }
+        if (y < 3) { r -= 20; g -= 20; b -= 18; }
+        if (style == 1 && (x < 10 || x >= S - 10)) set(p.trim);               // blue pilasters at the bays
+        if (style == 0 && y >= 100 && y < S - 12) set(p.trim, 12);           // the band under the sills
+        for (int w = 0; w < 2; w++) {
+            int x0 = 16 + w * 56, x1 = x0 + 40, y0 = 26, y1 = 92;
+            if (style == 2 && x >= x0 - 6 && x < x1 + 6 && y >= y1 + 4 && y < S - 12) set(p.trim);   // red spandrel
+            if (x >= x0 - 3 && x < x1 + 3 && y >= y0 - 3 && y < y1) set(p.frame);
+            if (x >= x0 && x < x1 && y >= y0 && y < y1 - 3) {
+                float k = 1.f - float(y - y0) / float(y1 - y0);
+                bool glint = (x - x0) + (y - y0) / 2 < 16 && (x - x0) + (y - y0) / 2 > 9;
+                r = int(46 + 40 * k) + (glint ? 50 : 0); g = int(62 + 44 * k) + (glint ? 50 : 0); b = int(80 + 50 * k) + (glint ? 45 : 0);
+                if (std::abs(x - (x0 + x1) / 2) < 1 || std::abs(y - (y0 + 30)) < 1) set(p.frame);
+            }
+            if (style != 2 && x >= x0 - 5 && x < x1 + 5 && y >= y1 && y < y1 + 4) { r = 238; g = 234; b = 222; }
+        }
+        tex[size_t(y) * S + x] = rgb(std::max(0, std::min(255, r)), std::max(0, std::min(255, g)), std::max(0, std::min(255, b)));
+    }
+}
+
 void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
 {
     const int S = WALL_TS;
@@ -376,6 +644,66 @@ void bakeWall(std::vector<uint32_t> &tex, int type, int theme)
 }
 
 // Tree canopy billboards for pillar cells in the swamp (broadleaf) and snow (pine)
+// A broadleaf campus tree, the size of a real one (~13 m): a slim trunk, branches
+// reaching into the crown, and the crown as a cluster of leaf clumps, each lit as a
+// sphere from the upper left, with gaps where the sky shows through
+void bakeCampusTree(std::vector<uint32_t> &tex, int variant)
+{
+    const int S = TREE_TS;
+    tex.assign(size_t(S) * S, 0);
+    auto rnd = [&](int i) { return hash2(i, variant, 4111); };
+    struct Blob { float x, y, r, z; };
+    std::vector<Blob> blobs;
+    int nb = 12 + variant * 2;
+    for (int i = 0; i < nb; i++) {
+        float a = rnd(i * 3) * 6.2832f, rr = std::sqrt(rnd(i * 3 + 1));
+        blobs.push_back({0.5f + std::cos(a) * rr * (0.27f + 0.04f * variant), 0.34f + std::sin(a) * rr * 0.17f,
+                         0.11f + 0.08f * rnd(i * 3 + 2), rnd(i * 7 + 5)});
+    }
+    blobs.push_back({0.5f, 0.32f, 0.2f, 0.5f});
+    auto put = [&](int x, int y, uint32_t c) { if (x >= 0 && y >= 0 && x < S && y < S) tex[size_t(y) * S + x] = c; };
+    // trunk: tapers from the roots up into the crown
+    float lean = (rnd(91) - 0.5f) * 0.05f;
+    for (int y = int(S * 0.42f); y < S; y++) {
+        float v = float(y) / S, half = S * (0.022f + 0.03f * std::max(0.f, (v - 0.75f) / 0.25f) + 0.012f * (v - 0.42f));
+        float cx = S * (0.5f + lean * (1.f - v));
+        for (int x = int(cx - half); x <= int(cx + half); x++) {
+            float u = (x - cx) / std::max(1.f, half);
+            int k = int(80 * (0.75f - 0.45f * u)) + int(18 * (hash2(x, y / 3, 4123) - 0.5f));
+            put(x, y, rgb(clampi(34 + k / 2, 0, 255), clampi(28 + k / 3, 0, 255), clampi(24 + k / 4, 0, 255)));
+        }
+    }
+    // branches: from the top of the trunk out to the clumps
+    for (int i = 0; i < 5; i++) {
+        const Blob &b = blobs[size_t(i * 2 % nb)];
+        float x0 = S * 0.5f, y0 = S * 0.6f, x1 = b.x * S, y1 = (b.y + 0.04f) * S;
+        for (int t = 0; t <= 60; t++) {
+            float k = t / 60.f, x = x0 + (x1 - x0) * k, y = y0 + (y1 - y0) * k - std::sin(k * 3.14159f) * S * 0.03f;
+            int w = k < 0.5f ? 2 : 1;
+            for (int o = -w / 2; o <= w / 2; o++) put(int(x) + o, int(y), rgb(78, 62, 48));
+        }
+    }
+    // crown
+    for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+        float u = (x + 0.5f) / S, v = (y + 0.5f) / S;
+        float best = -1.f, nx = 0.f, ny = 0.f, nz = 0.f;
+        for (const Blob &b : blobs) {
+            float dx = (u - b.x) / b.r, dy = (v - b.y) / b.r, q = dx * dx + dy * dy;
+            float edge = 1.f + 0.22f * (hash2(x / 2, y / 2, 4127 + variant) - 0.5f);     // ragged leafy rim
+            if (q >= edge * edge) continue;
+            float z = std::sqrt(std::max(0.f, 1.f - q)) * b.r + b.z * 0.05f;
+            if (z > best) { best = z; nx = dx; ny = dy; nz = std::sqrt(std::max(0.f, 1.f - q)); }
+        }
+        if (best < 0.f) continue;
+        if (hash2(x / 2, y / 2, 4133 + variant) > 0.965f && nz < 0.6f) continue;           // sky through the leaves
+        float lit = clampf(0.38f + 0.75f * std::max(0.f, -0.45f * nx - 0.55f * ny + 0.7f * nz), 0.3f, 1.25f);
+        float leaf = hash2(x, y, 4139 + variant);
+        float n = fbm(float(x), float(y), S, 16, 3, 4141 + variant);
+        int r = int((40 + 30 * n + (leaf > 0.85f ? 22 : 0)) * lit), g = int((84 + 48 * n + (leaf > 0.85f ? 30 : 0)) * lit), b = int((30 + 18 * n) * lit);
+        put(x, y, rgb(clampi(r, 0, 255), clampi(g, 0, 255), clampi(b, 0, 255)));
+    }
+}
+
 void bakeCanopy(std::vector<uint32_t> &tex, int theme)
 {
     const int S = CANOPY_TS;

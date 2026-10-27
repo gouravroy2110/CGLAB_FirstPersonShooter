@@ -43,8 +43,12 @@ struct MipTex {
 void bakeSky(std::vector<uint32_t> &sky, int theme);
 void bakeFloor(std::vector<uint32_t> &tex, int theme);
 void bakeWall(std::vector<uint32_t> &tex, int type, int theme);
+void bakeFacade(std::vector<uint32_t> &tex, int style, bool ground = false);   // one storey of a campus building (style: game.h FACADE_STYLES)
 // Tree canopy billboard (broadleaf for the swamp, pine for snow)
 static const int CANOPY_TS = 96;
+static const int TREE_TS = 128;            // a whole campus tree (trunk, branches, crown) on one sprite
+static const int TREE_VARIANTS = 3;
+void bakeCampusTree(std::vector<uint32_t> &tex, int variant);
 void bakeCanopy(std::vector<uint32_t> &tex, int theme);
 
 // --- Soldier sprites -----------------------------------------------------------

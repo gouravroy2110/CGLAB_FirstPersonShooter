@@ -13,6 +13,7 @@
 //    render_hud.cpp     HUD, menus, overlays
 // =============================================================================
 #include "mainwindow.h"
+#include "cvinput.h"
 #include "pixelfont.h"
 #include "missions.h"
 #include "radiolines.h"
@@ -62,6 +63,13 @@ MainWindow::MainWindow(QWidget *parent)
             m_wallTex[t][type].build(tmp, WALL_TS);
         }
     }
+    for (int st = 0; st < FACADE_STYLES; st++) {
+        bakeFacade(tmp, st);
+        m_facadeTex[st].build(tmp, WALL_TS);
+        bakeFacade(tmp, st, true);
+        m_facadeGround[st].build(tmp, WALL_TS);
+    }
+    for (int v = 0; v < TREE_VARIANTS; v++) bakeCampusTree(m_campusTreeTex[v], v);
     bakeEnemyAtlas(m_enemyAtlas, m_enemyMask, ENEMY_LOOK);
     bakeEnemyAtlas(m_eliteAtlas, m_eliteMask, ELITE_LOOK);
     bakeEnemyAtlas(m_scoutAtlas, m_scoutMask, SCOUT_LOOK);
@@ -131,6 +139,7 @@ const char* MainWindow::hazardNameAt(int cx, int cy) const
         bool isQueenAcid = (!m_baseAcid.empty() && size_t(cy * m_mapW + cx) < m_baseAcid.size() && !m_baseAcid[cy * m_mapW + cx]);
         if (isQueenAcid) return "ACID";
     }
+    if (m_water) return "LAKE";
     return (m_theme >= 0 && m_theme < THEME_COUNT && THEMES[m_theme].hazName) ? THEMES[m_theme].hazName : "HAZARD";
 }
 
@@ -140,6 +149,7 @@ uint32_t MainWindow::hazardColorAt(int cx, int cy) const
         bool isQueenAcid = (!m_baseAcid.empty() && size_t(cy * m_mapW + cx) < m_baseAcid.size() && !m_baseAcid[cy * m_mapW + cx]);
         if (isQueenAcid) return rs::rgb(150, 210, 60);
     }
+    if (m_water) return rs::rgb(32, 60, 48);
     return (m_theme >= 0 && m_theme < THEME_COUNT) ? THEMES[m_theme].hazLight : 0xFF96E63C;
 }
 
@@ -506,6 +516,9 @@ void MainWindow::loadLevel(int lv)
     int nEnemies = cfg.numEnemies + (lv > 1 ? (lv - 1) * 3 : 0);
     m_gs.killsNeeded = std::min(nEnemies, 4 + (lv - 1) * 2);
     if (m_campaignRun) { static const float DM[3] = { 0.75f, 1.f, 1.3f }; nEnemies = std::max(1, int(MISSIONS[m_mission].enemies * DM[rs::clampi(m_difficulty, 0, 2)] + 0.5f)); }
+    // the campus is about seven times a normal map: more troops, placed where the player is
+    const bool campus = m_loadedMap == MAP_JU && !m_campaignRun;
+    if (campus) nEnemies = std::max(nEnemies * 3, 24);
 
     m_gs.levelComplete = false; m_gs.levelTransTimer = 0;
     m_upgradeCards.clear(); m_selectedUpgradeCard = -1; m_upgradePicked = false; m_showArmory = false;
@@ -576,6 +589,11 @@ void MainWindow::loadLevel(int lv)
     }
     for (size_t i = validFloorTiles.size(); i > 1; i--)
         std::swap(validFloorTiles[i - 1], validFloorTiles[size_t(rand()) % i]);
+    if (campus) {                                       // the fight starts around the player, not a kilometre away
+        auto nearBand = [&](float x, float y) { float d = (x - pl.posX) * (x - pl.posX) + (y - pl.posY) * (y - pl.posY); return d > 100.f && d < 2500.f; };
+        std::stable_partition(validFloorTiles.begin(), validFloorTiles.end(), [&](const std::pair<float, float> &t) { return nearBand(t.first, t.second); });
+        std::stable_partition(spawns.begin(), spawns.end(), [&](const Marker &mk) { return nearBand(mk.x, mk.y); });
+    }
 
     // markers behind secret walls (or cut off in an edited map) aren't used for regular troops
     spawns.erase(std::remove_if(spawns.begin(), spawns.end(), [&](const Marker &mk) { return !reachable(int(mk.x), int(mk.y)); }), spawns.end());
@@ -708,6 +726,7 @@ void MainWindow::advance(float dt)
         updateEnvironment(dt);
         return;
     }
+    if (m_cvMode && m_screen != SCR_PLAYING) stopCvMode();               // left the game: the camera goes off
     if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
     m_mpBonusT = std::max(0.f, m_mpBonusT - dt);
     if (playing && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
@@ -1097,10 +1116,12 @@ void MainWindow::gameStep(float dt)
     }
 
     // Crouch (hold) and lean (hold + A / D): animated stance used by the camera, the body and the AI
+    if (m_cvMode) updateCvControls(dt);                                  // head and hands (webcam)
     bool leaning = isActionPressed(ACT_LEAN);
-    m_crouch = isActionPressed(ACT_CROUCH) && !(shift && moving);          // sprinting stands you up
+    m_crouch = (isActionPressed(ACT_CROUCH) || m_cvCrouch) && !(shift && moving);   // sprinting stands you up
     m_crouchT += ((m_crouch ? 1.f : 0.f) - m_crouchT) * std::min(1.f, dt * 9.f);
     float leanWant = leaning ? float(isActionPressed(ACT_MOVE_RIGHT)) - float(isActionPressed(ACT_MOVE_LEFT)) : 0.f;
+    if (m_cvMode && !leaning && std::fabs(m_cvLean) > 0.01f) leanWant = m_cvLean;   // peeking with the head
     m_leanT += (leanWant - m_leanT) * std::min(1.f, dt * 8.f);
     bool canStartSprint = pl.sprinting ? (pl.stamina > 0.f) : (pl.stamina > 5.f);
     bool wantSprint = moving && shift && !m_staminaExhausted && canStartSprint && !pl.adsMode && !m_charging && !m_cooking && !leaning;
@@ -1166,7 +1187,11 @@ void MainWindow::gameStep(float dt)
     cmd.yaw     = std::atan2(pl.dirY, pl.dirX);
     cmd.seq     = m_gs.frameNum;
     m_jumpQueued = false;
+    float speedKeep = pl.speedMult;
+    int wcx = int(pl.posX), wcy = int(pl.posY);
+    if (m_water && inside(wcx, wcy) && m_acid[wcy][wcx] && pl.footZ <= floorH(pl.posX, pl.posY) + 0.05f) pl.speedMult *= 0.55f;   // wading
     MoveEvents mv = stepMovement(*this, pl, cmd, dt);
+    pl.speedMult = speedKeep;
     if (mv.jumped) sfx(SND_JUMP, 0.5f, frand(0.9f, 1.1f));
     if (mv.landed) {
         if (mv.landVel < -4.f) pl.shakeY += std::min(10.f, -mv.landVel * 1.2f);
@@ -1176,7 +1201,7 @@ void MainWindow::gameStep(float dt)
 
     // Hazard burns/damages while standing in it
     int pcx = int(pl.posX), pcy = int(pl.posY);
-    if (pcx >= 0 && pcx < m_mapW && pcy >= 0 && pcy < m_mapH && m_acid[pcy][pcx] && m_gs.player.footZ <= g + 0.05f) {
+    if (pcx >= 0 && pcx < m_mapW && pcy >= 0 && pcy < m_mapH && m_acid[pcy][pcx] && !m_water && m_gs.player.footZ <= g + 0.05f) {
         m_curHazardName = hazardNameAt(pcx, pcy);
         m_curHazardColor = hazardColorAt(pcx, pcy);
         m_acidAcc += THEMES[m_theme].hazDps * dt * (1.f - pl.damageReduction * 0.5f);
@@ -1564,6 +1589,7 @@ void MainWindow::spawnEnemy(float x, float y, bool elite, EnemyType type)
     if (elite) baseRange += 3.0f;
 
     e.aggroRange = baseRange * dc.aggroRangeMult;
+    if (m_loadedMap == MAP_JU) e.aggroRange = std::max(e.aggroRange, 12.f);   // long campus sightlines: they come for you
     e.fireCooldown = frand(0.4f, 1.2f) * dc.fireCoolMult;
     e.strafeTimer = frand(2.0f, 3.8f);
     e.wanderTimer = frand(0.f, 3.f);
@@ -2223,7 +2249,8 @@ void MainWindow::menuConfirm()
         else if (m_menuCursor == 4) openEditor(m_mapChoice);
         else if (m_menuCursor == 5) openSettings(SCR_MENU);
         else if (m_menuCursor == 6) startDebugMode();
-        else if (m_menuCursor == 7) openStats();
+        else if (m_menuCursor == 7) startCvMode();
+        else if (m_menuCursor == 8) openStats();
         else { saveStats(); QApplication::quit(); }
         break;
     case SCR_SETTINGS: changeSetting(m_settingsRow, 1); break;
@@ -2259,7 +2286,7 @@ void MainWindow::menuBack()
         break;
     case SCR_ARSENAL:     m_screen = SCR_MENU; m_menuCursor = 3; break;
     case SCR_LOADOUT:     closeLoadout(); break;
-    case SCR_STATS:       m_screen = SCR_MENU; m_menuCursor = 7; break;
+    case SCR_STATS:       m_screen = SCR_MENU; m_menuCursor = 8; break;
     case SCR_DIFF_SELECT: m_screen = SCR_MAP_SELECT; break;
     case SCR_CHAR_SELECT: m_screen = SCR_DIFF_SELECT; break;
     case SCR_MULTIPLAYER_LOBBY:
@@ -2390,7 +2417,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == Qt::Key_Up || k == Qt::Key_Down || k == Qt::Key_Left || k == Qt::Key_Right) sfx(SND_UI_MOVE, 0.5f);
         if (m_screen == SCR_MENU) {
             if (k == Qt::Key_Up)   m_menuCursor = std::max(0, m_menuCursor - 1);
-            if (k == Qt::Key_Down) m_menuCursor = std::min(8, m_menuCursor + 1);
+            if (k == Qt::Key_Down) m_menuCursor = std::min(9, m_menuCursor + 1);
             if (k >= Qt::Key_1 && k <= Qt::Key_9) { m_menuCursor = k - Qt::Key_1; menuConfirm(); return; }
         } else if (m_screen == SCR_SETTINGS) {
             if (m_rebindingAction >= 0) {
@@ -2554,6 +2581,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (k == m_keyBinds[ACT_INSPECT] && !isMelee(pl.curWeapon) && pl.reloadTimer <= 0 && pl.switchTimer <= 0) { m_inspectT = 2.2f; sfx(SND_INSPECT, 0.6f); }
         if ((k == m_keyBinds[ACT_WEAPON_STATS] || k == Qt::Key_I) && !e->isAutoRepeat()) { m_showWeaponStats = !m_showWeaponStats; sfx(SND_UI_SELECT, 0.45f); return; }
         if (k == Qt::Key_C) { m_pitch = 0.f; m_aimX = W / 2.f; m_aimY = H / 2.f; }
+        if (k == Qt::Key_K && m_cvMode) { resetCvState(); pushFeed("CV  -  HOLD STILL, MEASURING YOUR NEUTRAL POSE", 2.5f); }
         if (k == Qt::Key_B) { m_freeAim = !m_freeAim; m_aimX = W / 2.f; m_aimY = H / 2.f; pushFeed(m_freeAim ? "FREE AIM: ON" : "FREE AIM: OFF", 2.f); }
         if (k == m_keyBinds[ACT_CAMERA]) { m_tpp = !m_tpp; pushFeed(m_tpp ? "THIRD PERSON" : "FIRST PERSON", 1.5f); sfx(SND_UI_MOVE, 0.4f); }
         if (k == m_keyBinds[ACT_SHOULDER] && m_tpp) m_shoulderLeft = !m_shoulderLeft;
@@ -3379,6 +3407,64 @@ bool MainWindow::snapshot(const QString &dir)
         m_gameMode = MODE_FREEPLAY;
     }
 
+    // --- CV MODE: synthetic camera frames drive peeking, looking, ducking and gestures ----
+    {
+        start(4);
+        Player &pl = m_gs.player;
+        pl.hp = 100;
+        if (!m_cvIn) m_cvIn = new CvInput(this);
+        m_cvMode = true; resetCvState();
+        CvFrame base; base.face = true; base.x = 0.5f; base.y = 0.45f; base.size = 0.25f;
+        auto feed = [&](CvFrame f, float secs) {
+            for (int i = 0; i < int(secs * 60); i++) { m_cvIn->inject(f); advance(1.f / 60.f); }
+        };
+        feed(base, 1.3f);                                           // the neutral pose
+        bool cal = m_cvCal.ok;
+        CvFrame peek = base; peek.x = 0.62f;                        // head to the right
+        feed(peek, 0.6f);
+        float leanR = m_leanT;
+        feed(base, 0.6f);
+        float yaw0 = std::atan2(pl.dirY, pl.dirX);
+        CvFrame look = base; look.yaw = 0.3f;                       // head turned right
+        feed(look, 0.6f);
+        float turned = std::atan2(pl.dirY, pl.dirX) - yaw0;
+        feed(base, 0.6f);
+        float back = std::atan2(pl.dirY, pl.dirX) - yaw0;
+        CvFrame duck = base; duck.y = 0.56f;
+        feed(duck, 0.4f);
+        bool ducked = m_crouch;
+        feed(base, 0.4f);
+        CvFrame lean = base; lean.size = 0.31f;                     // closer to the screen
+        feed(lean, 0.3f);
+        bool aimed = pl.adsMode;
+        feed(base, 0.3f);
+        int gren0 = pl.throwCount[pl.throwSel];
+        CvFrame fist = base; fist.hand = true; fist.gesture = "Closed_Fist"; fist.gscore = 0.9f;
+        feed(fist, 0.5f);
+        bool cooking = m_cooking;
+        feed(base, 0.4f);
+        int gren1 = pl.throwCount[pl.throwSel];
+        int w0 = pl.curWeapon;
+        CvFrame one = base; one.hand = true; one.gesture = "Pointing_Up"; one.gscore = 0.9f; one.fingers = 1; one.up[0] = true;   // one finger: slot 1
+        feed(one, 0.3f); feed(base, 0.8f);
+        int w1 = pl.curWeapon;
+        CvFrame two = one; two.fingers = 2; two.up[1] = true; two.gesture = "Victory";                           // two: slot 2
+        feed(two, 0.3f); feed(base, 0.8f);
+        int w2 = pl.curWeapon;
+        int shots0 = m_gs.shotsFired;
+        CvFrame thumb = base; thumb.hand = true; thumb.gesture = "None"; thumb.thumbOut = true;                    // the finger gun: fire
+        thumb.up[0] = thumb.up[1] = true; thumb.fingers = 2;
+        feed(thumb, 0.4f); feed(base, 0.3f);
+        int shots = m_gs.shotsFired - shots0;
+        log(QString("cv mode: calibrated=%1, head right -> lean %2 (expect > 0.5), head turned -> view turned %3 rad and back to %4, "
+                    "head dropped -> crouch %5, leaned in -> aim %6, fist -> cooking %7, opened -> grenades %8 -> %9, 1 finger -> %10 -> %11, 2 fingers -> %12, finger gun -> shots %13")
+            .arg(cal).arg(leanR, 0, 'f', 2).arg(turned, 0, 'f', 2).arg(back, 0, 'f', 2).arg(ducked).arg(aimed).arg(cooking).arg(gren0).arg(gren1)
+            .arg(w0 >= 0 ? WEAPONS[w0].shortName : "-").arg(w1 >= 0 ? WEAPONS[w1].shortName : "-")
+            .arg(w2 >= 0 ? WEAPONS[w2].shortName : "-").arg(shots));
+        run(1); save("99_cv_mode");
+        stopCvMode();
+    }
+
     // --- Radio commander: situations queue scripted lines with priorities ------------
     {
         start(1);
@@ -3714,6 +3800,45 @@ bool MainWindow::snapshot(const QString &dir)
         run(1); save(QString("95_biome_%1_%2").arg(m).arg(QString(MAP_NAMES[m]).replace(' ', '_')));
         log(QString("biome %1: %2 hour=%3 weather=%4 day=%5 trees=%6 size=%7x%8").arg(MAP_NAMES[m]).arg(THEMES[MAP_THEME[m]].name)
             .arg(m_hour, 0, 'f', 1).arg(m_weather).arg(m_dayLevel, 0, 'f', 2).arg(m_treeCells.size()).arg(m_mapW).arg(m_mapH));
+    }
+    // --- Jadavpur University: landmarks, trees block, both team spawns are open ground ----
+    {
+        start(MAP_JU);
+        setEnvironment(10.f, WX_NONE);
+        // stand on open ground a little way from a landmark, looking at it
+        auto lookAt = [&](const char *name, const char *file) {
+            for (const Landmark &l : JU_LANDMARKS) {
+                if (QString(l.name) != name) continue;
+                for (int r = 9; r < 20; r++) for (int k = 0; k < 16; k++) {
+                    float a = k * 0.3927f, x = l.x + std::cos(a) * r, y = l.y + std::sin(a) * r;
+                    if (!posValid(x, y, 0.3f) || !reachable(int(x), int(y)) || !hasLOS(x, y, floorH(x, y) + 0.6f, l.x, l.y, cellTop(int(l.x), int(l.y)) + 0.3f)) continue;
+                    place(x, y, std::atan2(l.y - y, l.x - x)); m_pitch = 0.05f;
+                    for (int i = 0; i < 10; i++) advance(1.f / 60.f);
+                    run(1); save(file);
+                    return;
+                }
+            }
+            log(QString("jadavpur university: no view of %1").arg(name));
+        };
+        lookAt("CENTRAL LIBRARY", "95_ju_library");
+        lookAt("OPEN AIR THEATRE (OAT)", "95_ju_oat");
+        lookAt("AUROBINDO BHAVAN", "95_ju_aurobindo");
+        lookAt("INDOOR STADIUM", "95_ju_playground");
+        lookAt("GATE 4 (8B BUS STAND)", "95_ju_gate4");
+        lookAt("AHAR CANTEEN", "95_ju_canteen");
+        int trees = 0, blocked = 0;
+        for (int y = 0; y < m_mapH; y++) for (int x = 0; x < m_mapW; x++)
+            if (m_parsed[MAP_JU].type[y][x] == CELL_PILLAR) { trees++; if (!posValid(x + 0.5f, y + 0.5f, 0.25f)) blocked++; }
+        bool alphaOk = posValid(JU_SPAWN[0][0], JU_SPAWN[0][1], 0.3f) && reachable(int(JU_SPAWN[0][0]), int(JU_SPAWN[0][1]));
+        bool bravoOk = posValid(JU_SPAWN[1][0], JU_SPAWN[1][1], 0.3f) && reachable(int(JU_SPAWN[1][0]), int(JU_SPAWN[1][1]));
+        int roads = 0; for (uint8_t r : m_road.v) roads += r;
+        int nearby = 0;
+        for (const Enemy &en : m_gs.enemies) if ((en.x - m_parsed[MAP_JU].spawnX) * (en.x - m_parsed[MAP_JU].spawnX) + (en.y - m_parsed[MAP_JU].spawnY) * (en.y - m_parsed[MAP_JU].spawnY) < 50.f * 50.f) nearby++;
+        log(QString("jadavpur university: %1x%2, %3 landmarks, trees=%4 solid=%5, enemies=%6, alpha spawn ok=%7 bravo spawn ok=%8, road cells=%9, enemies within 50 of the spawn=%10")
+            .arg(m_mapW).arg(m_mapH).arg(int(sizeof(JU_LANDMARKS) / sizeof(JU_LANDMARKS[0]))).arg(trees).arg(blocked)
+            .arg(m_gs.enemies.size()).arg(alphaOk).arg(bravoOk).arg(roads).arg(nearby));
+        m_screen = SCR_MAP_SELECT; m_mapChoice = MAP_JU; run(1); save("95_ju_mapselect");
+        m_screen = SCR_PLAYING;
     }
     start(3); place(m_parsed[3].camX, m_parsed[3].camY, 0.7f);
     setEnvironment(23.f, WX_BLIZZARD); for (int i = 0; i < 30; i++) advance(1.f / 60.f); run(1); save("96_snow_night_blizzard");

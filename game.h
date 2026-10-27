@@ -24,9 +24,9 @@ struct Grid {
 // --- Map types & parsing -------------------------------------------------------
 enum CellType { CELL_FLOOR=0, CELL_STONE=1, CELL_BRICK=2, CELL_PILLAR=3, CELL_DOOR=4, CELL_SECRET=5 };
 
-static const int MAP_COUNT = 7;
+static const int MAP_COUNT = 8;
 // Each map has its own biome (textures, sky, hazard, weather), terrain shape and layout
-static const char* const MAP_NAMES[MAP_COUNT] = { "EMBERFORGE", "DUNE OUTPOST", "MIRE HOLLOW", "FROSTLINE", "ASHEN CITY", "HELIX FACILITY", "THE CITADEL" };
+static const char* const MAP_NAMES[MAP_COUNT] = { "EMBERFORGE", "DUNE OUTPOST", "MIRE HOLLOW", "FROSTLINE", "ASHEN CITY", "HELIX FACILITY", "THE CITADEL", "JADAVPUR UNIVERSITY" };
 static const char* const MAP_DESCS[MAP_COUNT] = {
     "Volcanic tunnels: lava pools, sealed forges and two hidden chambers.",
     "Desert dunes, a fortified mesa and a buried bunker.",
@@ -35,14 +35,25 @@ static const char* const MAP_DESCS[MAP_COUNT] = {
     "64x64 ruined city: gutted blocks, a walled plaza and its main gate.",
     "56x56 research complex: labs, vaults and the reactor hall.",
     "48x48 multi-tier fortress: sub-level vaults, courtyard, and catwalks.",
+    "Our campus from OpenStreetMap: every building, road, pond, the OAT and playground.",
 };
-static const char* const* const ALL_LAYOUTS[MAP_COUNT] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT, FRONTIER_LAYOUT, RUINS_LAYOUT, FACILITY_LAYOUT, CITADEL_LAYOUT };
+static const char* const* const ALL_LAYOUTS[MAP_COUNT] = { DUNGEON_LAYOUT, ARENA_LAYOUT, CRYPT_LAYOUT, FRONTIER_LAYOUT, RUINS_LAYOUT, FACILITY_LAYOUT, CITADEL_LAYOUT, JU_LAYOUT };
 #define LAYOUT_N(L) int(sizeof(L) / sizeof(L[0]))
 static const int LAYOUT_ROWS[MAP_COUNT] = { LAYOUT_N(DUNGEON_LAYOUT), LAYOUT_N(ARENA_LAYOUT), LAYOUT_N(CRYPT_LAYOUT),
-                                            LAYOUT_N(FRONTIER_LAYOUT), LAYOUT_N(RUINS_LAYOUT), LAYOUT_N(FACILITY_LAYOUT), LAYOUT_N(CITADEL_LAYOUT) };
-static const float TERRAIN_AMP[MAP_COUNT] = { 0.3f, 0.85f, 0.3f, 0.9f, 0.1f, 0.02f, 0.05f };   // rolling-hill amplitude
-static const int   MAP_THEME[MAP_COUNT]   = { 0, 1, 2, 3, 4, 5, 4 };                             // biome per map (assets.h Biome)
+                                            LAYOUT_N(FRONTIER_LAYOUT), LAYOUT_N(RUINS_LAYOUT), LAYOUT_N(FACILITY_LAYOUT), LAYOUT_N(CITADEL_LAYOUT),
+                                            LAYOUT_N(JU_LAYOUT) };
+static const float TERRAIN_AMP[MAP_COUNT] = { 0.3f, 0.85f, 0.3f, 0.9f, 0.1f, 0.02f, 0.05f, 0.04f };   // rolling-hill amplitude
+static const int   MAP_THEME[MAP_COUNT]   = { 0, 1, 2, 3, 4, 5, 4, 2 };                          // biome per map (assets.h Biome)
 
+
+static const int MAP_JU = 7;                                   // Jadavpur University
+static const float STOREY_H = 0.85f;                           // one storey of a campus building, in world units
+// facade styles: cream, white + blue, white + red, brick, canteen, then single buildings:
+// the Central Library, Aurobindo Bhavan, Triguna Sen Auditorium, TEQIP; then the campus's
+// compound wall (9), a gate grille with the JU emblem (10) and a gate column (11); then
+// (ju_specs.pdf) Subarna Jayanti, Prayukti, Technology Bhavan, Electrical, the workshops,
+// Gandhi Bhavan, Pharmacy and UG Science (12..19)
+static const int FACADE_STYLES = 20;
 
 // World height of each wall type above its base
 static const float WALL_HEIGHT[6] = { 0.f, 1.15f, 1.0f, 1.5f, 1.0f, 1.15f };
@@ -53,11 +64,12 @@ struct ParsedMap {
     Grid<int>     type;
     Grid<float>   plat;           // ledge / pit offset added to the rolling terrain
     Grid<uint8_t> acid;
+    Grid<uint8_t> road;           // ':' cells: asphalt
     std::vector<Marker> markers;
     float spawnX = 1.5f, spawnY = 1.5f, camX = 2.5f, camY = 2.5f;
 };
 
-inline bool  isGroundChar(char c) { return c == '.' || c == '-' || c == '^' || c == '=' || c == '+' || c == '*' || c == 'v' || c == 'u' || c == 'U' || c == '~'; }
+inline bool  isGroundChar(char c) { return c == '.' || c == ':' || c == '-' || c == '^' || c == '=' || c == '+' || c == '*' || c == 'v' || c == 'u' || c == 'U' || c == '~'; }
 inline float platForChar(char c) {
     switch (c) {
         case '-': return 0.25f;
@@ -79,7 +91,7 @@ inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
     m.h = nRows;
     m.w = 0;
     while (rows[0][m.w]) m.w++;
-    m.type.resize(m.w, m.h); m.plat.resize(m.w, m.h); m.acid.resize(m.w, m.h);
+    m.type.resize(m.w, m.h); m.plat.resize(m.w, m.h); m.acid.resize(m.w, m.h); m.road.resize(m.w, m.h);
     for (int y = 0; y < m.h; y++) for (int x = 0; x < m.w; x++) {
         char c = rows[y][x];
         int t = CELL_FLOOR;
@@ -88,6 +100,7 @@ inline void parseLayout(const char *const *rows, int nRows, ParsedMap &m)
         m.type[y][x] = t;
         m.plat[y][x] = platForChar(c);
         m.acid[y][x] = c == '~';
+        m.road[y][x] = c == ':';
         if (t == CELL_FLOOR && !isGroundChar(c)) {
             // Marker: sit at the most common ground height among the 8 neighbours
             char best = '.'; int bestN = -1;

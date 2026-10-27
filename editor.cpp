@@ -23,7 +23,7 @@ static inline QColor qcE(uint32_t c, int a = 255) { return QColor(R(c), G(c), B(
 
 struct Brush { char c; const char *name; };
 static const Brush BRUSHES[] = {
-    {'.', "GROUND"}, {'#', "STONE WALL"}, {'B', "BRICK WALL"}, {'P', "PILLAR / TREE"}, {'D', "DOOR"}, {'S', "SECRET WALL"},
+    {'.', "GROUND"}, {':', "ROAD"}, {'#', "STONE WALL"}, {'B', "BRICK WALL"}, {'P', "PILLAR / TREE"}, {'D', "DOOR"}, {'S', "SECRET WALL"},
     {'-', "STEP +0.25"}, {'^', "LEDGE +0.5"}, {'=', "HIGH +1.0"}, {'v', "PIT -0.6"}, {'~', "HAZARD POOL"},
     {'@', "PLAYER START"}, {'e', "ENEMY"}, {'x', "ELITE"}, {'k', "MEDKIT"}, {'a', "AMMO"}, {'r', "RIFLE"},
     {'s', "SHOTGUN"}, {'t', "INTEL"}, {'m', "MENU CAMERA"}, {'b', "BOSS SPOT"}, {'1', "MISSION POINT 1"},

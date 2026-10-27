@@ -25,6 +25,7 @@
 
 struct Raster3D;
 struct WorldCam;
+class CvInput;
 
 class MainWindow : public QWidget, public World {
     Q_OBJECT
@@ -76,7 +77,10 @@ private:
     std::vector<uint32_t> m_sky[THEME_COUNT];
     MipTex                m_floorTex[THEME_COUNT];
     MipTex                m_wallTex[THEME_COUNT][6];
+    MipTex                m_facadeTex[FACADE_STYLES];   // campus building storeys
+    MipTex                m_facadeGround[FACADE_STYLES];   // ...and their ground floors
     std::vector<uint32_t> m_canopyTex[THEME_COUNT];
+    std::vector<uint32_t> m_campusTreeTex[TREE_VARIANTS];
     std::vector<uint32_t> m_enemyAtlas, m_eliteAtlas, m_scoutAtlas, m_shotgunAtlas, m_sniperAtlas;
     std::vector<uint8_t>  m_enemyMask, m_eliteMask, m_scoutMask, m_shotgunMask, m_sniperMask;
     std::vector<uint32_t> m_pickupTex;
@@ -477,6 +481,22 @@ private:
     // -- Logic ---------------------------------------------------------------------
     void initGame();
     void startDebugMode();
+
+    // -- CV MODE: webcam controls (cvcontrols.cpp, cvinput.h) ------------------------------
+    struct CvCalib { bool ok = false; float t = 0.f; int n = 0; float x = 0, y = 0, yaw = 0, pitch = 0, roll = 0, size = 0; };
+    CvInput *m_cvIn = nullptr;
+    bool     m_cvMode = false;
+    CvCalib  m_cvCal;
+    float    m_cvLean = 0.f, m_cvYawApplied = 0.f, m_cvPitchApplied = 0.f;
+    bool     m_cvCrouch = false, m_cvAds = false, m_cvFiring = false, m_cvJaw = false, m_cvGestDone = false;
+    QString  m_cvGesture = "None", m_cvCandidate = "None";
+    float    m_cvCandT = 0.f, m_cvGestT = 0.f;
+    void startCvMode();
+    void stopCvMode();
+    void resetCvState();
+    void updateCvControls(float dt);
+    void cvGestureChanged(const QString &from, const QString &to);
+    void renderCvPanel();
     void loadLevel(int lv);
     void gameStep(float dt);
     void updateEnemies(float dt);

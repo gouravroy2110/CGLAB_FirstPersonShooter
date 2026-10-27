@@ -54,3 +54,13 @@ scratch_map.txt
 # Build output
 /fps_game
 /fps_game.exe
+
+# MediaPipe models for CV MODE (tools/cv_control.py downloads them on first run)
+tools/cv_models/
+
+# Reference images for the JU map (Google Maps captures, photos): not redistributed
+ju_real_reference/
+tools/cv_hand_log.txt
+
+# written by qmake (fps_game.pro): the source folder for CV MODE
+raster_srcdir.h

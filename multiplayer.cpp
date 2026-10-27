@@ -43,6 +43,8 @@ QTcpSocket *NetworkManager::socketForId(int id) const
 void NetworkManager::teamSpawn(int team, const World &world, float &x, float &y) const
 {
     if (isCitadel() && world.m_mapW >= 48 && world.m_mapH >= 48) { x = team == 0 ? 2.5f : 44.5f; y = 22.5f; return; }
+    // the campus: Alpha holds the arts side (north), Bravo the engineering side by Aurobindo Bhavan (south)
+    if (m_settings.mapChoice == MAP_JU && world.inside(int(JU_SPAWN[1][0]), int(JU_SPAWN[1][1]))) { x = JU_SPAWN[team & 1][0]; y = JU_SPAWN[team & 1][1]; return; }
     int W = world.m_mapW, H = world.m_mapH;
     for (int r = 0; r < H / 2; r++) {
         for (int k = 0; k < W; k++) {
@@ -817,7 +819,8 @@ void NetworkManager::cycleRoundsToWin()
 void NetworkManager::cycleMap()
 {
     if (!m_isHost) return;
-    if (m_settings.mapChoice == 6) m_settings.mapChoice = 5;
+    if (m_settings.mapChoice == 6) m_settings.mapChoice = MAP_JU;
+    else if (m_settings.mapChoice == MAP_JU) m_settings.mapChoice = 5;
     else if (m_settings.mapChoice == 5) m_settings.mapChoice = 4;
     else if (m_settings.mapChoice == 4) m_settings.mapChoice = 1;
     else m_settings.mapChoice = 6;
