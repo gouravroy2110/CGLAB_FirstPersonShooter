@@ -143,12 +143,7 @@ void MainWindow::hurtPlayer(int dmg, float fromX, float fromY, int killer)
     if (pl.hp <= 0) {
         pl.hp = 0; pl.adsMode = false; m_killerIdx = killer;
         if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
-            m_net->handleDeathDrop(m_net->localPlayerId(), killer, false, m_gs);
-            QTimer::singleShot(5000, [this]() {
-                if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
-                    m_net->handleRespawn(m_net->localPlayerId(), m_gs, *this, m_parsed[m_gs.mapChoice]);
-                }
-            });
+            m_net->handleDeathDrop(m_net->localPlayerId(), killer, false, m_gs);   // the respawn countdown is in gameStep
         } else {
             m_gs.gameOver = true;
         }

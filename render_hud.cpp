@@ -497,12 +497,19 @@ void MainWindow::renderMinimap()
     }
     for (const Actor &a : m_gs.actors) {
         if (!a.alive) continue;
+        if (isMp && a.team != myTeam) {
+            // an enemy shows while spotted: firing (heard), or in plain sight close enough to see
+            float ex = a.posX - pl.posX, ey = a.posY - pl.posY;
+            bool seen = ex * ex + ey * ey < 22.f * 22.f && hasLOS(pl.posX, pl.posY, pl.footZ + 0.6f, a.posX, a.posY, a.footZ + 0.6f);
+            if (!seen && a.spotT <= 0.f) continue;
+        }
         if (toMap(a.posX, a.posY, sx, sy, true)) {
             if (isMp) {
                 bool isEnemy = (a.team != myTeam);
                 uint32_t dotCol = isEnemy ? RED : rgb(80, 170, 255);
                 m_cv.fillCircle(int(sx), int(sy), isEnemy ? 4 : 3, dotCol);
                 m_cv.ring(int(sx), int(sy), isEnemy ? 4.5f : 3.5f, isEnemy ? 6.0f : 4.5f, isEnemy ? withAlpha(RED, 220) : withAlpha(0xFFFFFFFF, 160));
+                if (!isEnemy) text(int(sx) - 30, int(sy) + 4, 60, 10, Qt::AlignCenter, QString(a.name).left(8), QColor(150, 200, 255), 7, 700, false);
             } else {
                 m_cv.fillCircle(int(sx), int(sy), 3, rgb(80, 170, 255));
                 m_cv.ring(int(sx), int(sy), 3.5f, 4.5f, withAlpha(0xFFFFFFFF, 160));
@@ -927,11 +934,14 @@ void MainWindow::renderSquadTags()
 
         if (isMp) {
             bool isEnemy = (a.team != myTeam);
+            if (isEnemy && (!visible || d > 25.f)) continue;
             QColor tagCol = isEnemy ? QColor(255, 75, 75, alpha) : QColor(110, 190, 255, alpha);
             QString label = isEnemy ? QString("%1 [ENEMY]").arg(a.name) : QString("%1 [ALLY]").arg(a.name);
             text(sx - 50, sy - 16, 100, 12, Qt::AlignCenter, label, tagCol, 9, 800);
 
-            float frac = a.hp / 120.f;
+            CharClass ac = CLS_ASSAULT;
+            for (const auto &sl : m_net->playerSlots()) if (sl.id == a.id) ac = sl.cls;
+            float frac = a.hp / float(ac == CLS_SCOUT ? 75 : ac == CLS_TANK ? 200 : 100);
             m_cv.blendRect(int(sx) - 16, int(sy) - 3, 32, 4, withAlpha(0, alpha / 2));
             uint32_t barCol = isEnemy ? RED : rgb(90, 180, 255);
             m_cv.blendRect(int(sx) - 16, int(sy) - 3, int(32 * clampf(frac, 0.f, 1.f)), 4, withAlpha(barCol, alpha));
@@ -1751,12 +1761,39 @@ void MainWindow::renderMultiplayerHUD()
     // Dead / Respawning Screen Overlay
     if (m_gs.player.hp <= 0 && ms.inRound) {
         m_cv.blendRect(0, 0, W, H, withAlpha(RED, 60));
-        int dy = H / 2 - 40;
+        int dy = H / 2 - 150;
         text(0, dy, W, 36, Qt::AlignCenter, "ELIMINATED IN ACTION", QColor(255, 80, 70), 28, 900);
-        text(0, dy + 40, W, 22, Qt::AlignCenter, "HOLDING WEAPON DROPPED AS WORLD LOOT", QColor(240, 240, 240), 13, 700);
+        text(0, dy + 38, W, 22, Qt::AlignCenter, m_mpKilledBy.isEmpty() ? QString("YOUR GUN AND A MEDKIT WERE DROPPED")
+             : QString("KILLED BY  %1   -   YOUR GUN AND A MEDKIT WERE DROPPED").arg(m_mpKilledBy), QColor(240, 240, 240), 13, 700);
         int secLeft = std::max(1, int(m_mpRespawnCountdown + 0.99f));
-        text(0, dy + 68, W, 22, Qt::AlignCenter, QString("RESPAWNING WITH STANDARD CLASS LOADOUT IN %1s...").arg(secLeft), QColor(255, 220, 90), 13, 700);
+        text(0, dy + 62, W, 22, Qt::AlignCenter, QString("RESPAWNING IN %1s").arg(secLeft), QColor(255, 220, 90), 14, 800);
+
+        // the armoury: pick the next life's primary; better guns cost kill coins
+        const int aw = 420, rowH = 22, ah = 40 + MP_ARMOURY_N * rowH, ax = W / 2 - aw / 2, ay = dy + 94;
+        m_cv.blendRect(ax, ay, aw, ah, withAlpha(UI_BG, 235));
+        m_cv.rectOutline(ax, ay, aw, ah, withAlpha(AMBER, 160), 1);
+        text(ax + 12, ay + 6, aw - 24, 20, Qt::AlignLeft, "ARMOURY  -  PRESS 1-9 FOR YOUR NEXT PRIMARY", qc(AMBER), 11, 900, false);
+        text(ax + 12, ay + 6, aw - 24, 20, Qt::AlignRight, QString("%1 COINS").arg(m_mpCoins), QColor(255, 215, 60), 11, 900, false);
+        for (int i = 0; i < MP_ARMOURY_N; i++) {
+            const MpBuy &b = MP_ARMOURY[i];
+            int ry = ay + 30 + i * rowH;
+            bool sel = (i == m_mpBuy), afford = b.cost <= m_mpCoins;
+            if (sel) m_cv.blendRect(ax + 6, ry, aw - 12, rowH - 2, withAlpha(AMBER, 70));
+            QColor c = !afford ? QColor(120, 120, 120) : sel ? QColor(255, 235, 150) : QColor(225, 225, 225);
+            QString name = b.weapon < 0 ? QString("CLASS KIT") : QString(WEAPONS[b.weapon].name);
+            text(ax + 14, ry + 2, 30, rowH - 4, Qt::AlignLeft, QString("[%1]").arg(i + 1), c, 10, 800, false);
+            text(ax + 52, ry + 2, 260, rowH - 4, Qt::AlignLeft, name, c, 10, sel ? 900 : 700, false);
+            text(ax + aw - 120, ry + 2, 106, rowH - 4, Qt::AlignRight, b.cost > 0 ? QString("%1 COINS").arg(b.cost) : QString("FREE"),
+                 b.cost > 0 ? (afford ? QColor(255, 215, 60) : QColor(150, 110, 90)) : QColor(110, 220, 140), 10, 800, false);
+        }
     }
+
+    // Kill bonus, and the coins in hand
+    if (m_mpBonusT > 0.f && m_gs.player.hp > 0 && !m_showScoreboard && !ms.matchOver) {
+        int a = int(255 * std::min(1.f, m_mpBonusT / 0.5f));
+        text(0, H / 2 + 46, W, 24, Qt::AlignCenter, m_mpBonusText, QColor(255, 215, 60, a), 15, 900);
+    }
+    text(16, H - 96, 160, 16, Qt::AlignLeft, QString("%1 COINS").arg(m_mpCoins), QColor(255, 215, 60), 11, 900, false);
 
     // Round Intermission Overlay (Displays after every round)
     if (ms.roundOver && !ms.matchOver) {
@@ -1779,27 +1816,63 @@ void MainWindow::renderMultiplayerHUD()
         text(rx, ry + 128, rw, 24, Qt::AlignCenter, QString("NEXT ROUND BEGINS IN %1s...").arg(nextSec), QColor(90, 230, 140), 14, 800);
     }
 
-    // Match Over / Victory / Defeat Overlay
+    // Match Over: the final results
     if (ms.matchOver) {
-        int mw = 600, mh = 220, mx = W / 2 - mw / 2, my = H / 2 - mh / 2;
+        std::vector<MpPlayerSlot> rows = m_net->playerSlots();
+        std::sort(rows.begin(), rows.end(), [](const MpPlayerSlot &x, const MpPlayerSlot &y) {
+            return x.score != y.score ? x.score > y.score : x.kills != y.kills ? x.kills > y.kills : x.deaths < y.deaths; });
+        const int rowH = 20;
+        int mw = 640, mh = 214 + int(rows.size()) * rowH, mx = W / 2 - mw / 2, my = std::max(8, H / 2 - mh / 2);
         m_cv.blendRect(mx, my, mw, mh, withAlpha(UI_BG, 250));
         uint32_t champCol = (ms.winningTeam == 0) ? RED : 0xFF2878D0;
         m_cv.rectOutline(mx, my, mw, mh, champCol, 3);
 
-        int myTeam = 0;
-        for (const auto &s : m_net->playerSlots()) if (s.id == m_net->localPlayerId()) myTeam = s.team;
+        int myTeam = std::max(0, m_net->teamOf(m_net->localPlayerId()));
         bool victory = (ms.winningTeam == myTeam);
-
-        text(mx, my + 14, mw, 36, Qt::AlignCenter, victory ? "★ TOURNAMENT VICTORY ★" : "MATCH DEFEAT",
-             victory ? QColor(90, 240, 140) : QColor(255, 70, 60), 28, 900);
-
+        text(mx, my + 10, mw, 34, Qt::AlignCenter, victory ? "VICTORY" : "DEFEAT",
+             victory ? QColor(90, 240, 140) : QColor(255, 70, 60), 26, 900);
         QString champStr = (ms.winningTeam == 0) ? "TEAM ALPHA HAS SECURED THE SECTOR" : "TEAM BRAVO HAS SECURED THE SECTOR";
-        text(mx, my + 58, mw, 24, Qt::AlignCenter, champStr, qc(champCol), 15, 800);
+        text(mx, my + 44, mw, 20, Qt::AlignCenter, champStr, qc(champCol), 13, 800);
 
-        QString finalStr = QString("FINAL SERIES:  ALPHA %1  —  %2 BRAVO").arg(ms.roundsWon[0]).arg(ms.roundsWon[1]);
-        text(mx, my + 94, mw, 24, Qt::AlignCenter, finalStr, QColor(240, 240, 240), 14, 800);
+        int tk[2] = {0, 0}, td[2] = {0, 0}, ts[2] = {0, 0};
+        for (const auto &r : rows) { tk[r.team & 1] += r.kills; td[r.team & 1] += r.deaths; ts[r.team & 1] += r.score; }
+        text(mx, my + 68, mw, 20, Qt::AlignCenter,
+             QString("ROUNDS   ALPHA %1  -  %2 BRAVO").arg(ms.roundsWon[0]).arg(ms.roundsWon[1]), QColor(240, 240, 240), 13, 900);
+        text(mx, my + 88, mw / 2 - 10, 18, Qt::AlignRight, QString("ALPHA  %1 K / %2 D / %3 PTS").arg(tk[0]).arg(td[0]).arg(ts[0]), qc(RED), 10, 800, false);
+        text(mx + mw / 2 + 10, my + 88, mw / 2 - 10, 18, Qt::AlignLeft, QString("BRAVO  %1 K / %2 D / %3 PTS").arg(tk[1]).arg(td[1]).arg(ts[1]), QColor(90, 160, 255), 10, 800, false);
 
-        text(mx, my + 148, mw, 28, Qt::AlignCenter, "[ENTER] OR [ESC] RETURN TO LOBBY", QColor(255, 215, 60), 14, 900);
+        // MVP: the top score
+        if (!rows.empty()) {
+            const MpPlayerSlot &mvp = rows.front();
+            m_cv.blendRect(mx + 20, my + 112, mw - 40, 26, withAlpha(AMBER, 60));
+            text(mx + 20, my + 112, mw - 40, 26, Qt::AlignCenter,
+                 QString("MVP   %1   -   %2 KILLS   %3 PTS").arg(mvp.name).arg(mvp.kills).arg(mvp.score), QColor(255, 225, 90), 13, 900);
+        }
+        // every player
+        int ty = my + 146;
+        int cName = mx + 30, cTeam = mx + 250, cK = mx + 360, cD = mx + 430, cKD = mx + 490, cS = mx + 560;
+        QColor head(170, 175, 180);
+        text(cName, ty, 200, 16, Qt::AlignLeft, "OPERATIVE", head, 9, 800, false);
+        text(cTeam, ty, 90, 16, Qt::AlignLeft, "TEAM", head, 9, 800, false);
+        text(cK, ty, 50, 16, Qt::AlignRight, "K", head, 9, 800, false);
+        text(cD, ty, 50, 16, Qt::AlignRight, "D", head, 9, 800, false);
+        text(cKD, ty, 50, 16, Qt::AlignRight, "K/D", head, 9, 800, false);
+        text(cS, ty, 60, 16, Qt::AlignRight, "SCORE", head, 9, 800, false);
+        ty += 18;
+        for (const auto &r : rows) {
+            bool me = r.id == m_net->localPlayerId();
+            if (me) m_cv.blendRect(mx + 20, ty, mw - 40, rowH - 2, withAlpha(0xFFFFFFFF, 30));
+            m_cv.fillRect(mx + 22, ty + 3, 4, rowH - 8, r.team == 0 ? RED : 0xFF2878D0);
+            QColor c = me ? QColor(255, 220, 80) : QColor(225, 225, 225);
+            text(cName, ty + 1, 210, rowH - 2, Qt::AlignLeft, r.name + (r.isBot ? "  [BOT]" : ""), c, 10, me ? 900 : 700, false);
+            text(cTeam, ty + 1, 90, rowH - 2, Qt::AlignLeft, r.team == 0 ? "ALPHA" : "BRAVO", r.team == 0 ? qc(RED) : QColor(90, 160, 255), 10, 800, false);
+            text(cK, ty + 1, 50, rowH - 2, Qt::AlignRight, QString::number(r.kills), c, 10, 800, false);
+            text(cD, ty + 1, 50, rowH - 2, Qt::AlignRight, QString::number(r.deaths), c, 10, 800, false);
+            text(cKD, ty + 1, 50, rowH - 2, Qt::AlignRight, QString::number(r.deaths ? double(r.kills) / r.deaths : double(r.kills), 'f', 2), c, 10, 700, false);
+            text(cS, ty + 1, 60, rowH - 2, Qt::AlignRight, QString::number(r.score), c, 10, 900, false);
+            ty += rowH;
+        }
+        text(mx, my + mh - 30, mw, 22, Qt::AlignCenter, "[ENTER] OR [ESC] RETURN TO LOBBY", QColor(255, 215, 60), 13, 900);
     }
 }
 
@@ -1814,18 +1887,25 @@ void MainWindow::renderScoreboard()
     text(sx, sy + 10, sw, 24, Qt::AlignCenter, "SECTOR WAR  -  TACTICAL SCOREBOARD", qc(AMBER), 16, 900);
 
     auto renderTeamTable = [this](int team, int tx, int ty, int tw, const QString &tName, uint32_t tCol) {
+        std::vector<MpPlayerSlot> rows;
+        int tk = 0, td = 0;
+        for (const auto &slot : m_net->playerSlots()) if (slot.team == team) { rows.push_back(slot); tk += slot.kills; td += slot.deaths; }
+        std::sort(rows.begin(), rows.end(), [](const MpPlayerSlot &x, const MpPlayerSlot &y) { return x.score > y.score; });
         m_cv.fillRect(tx, ty, tw, 22, withAlpha(tCol, 220));
-        text(tx + 8, ty + 2, 160, 18, Qt::AlignLeft, tName, QColor(255, 255, 255), 12, 900, false);
+        text(tx + 8, ty + 2, 200, 18, Qt::AlignLeft, QString("%1   %2 K / %3 D").arg(tName).arg(tk).arg(td), QColor(255, 255, 255), 11, 900, false);
+        text(tx + tw - 230, ty + 2, 40, 18, Qt::AlignRight, "K", QColor(255, 255, 255), 10, 800, false);
+        text(tx + tw - 180, ty + 2, 40, 18, Qt::AlignRight, "D", QColor(255, 255, 255), 10, 800, false);
         text(tx + tw - 80, ty + 2, 70, 18, Qt::AlignRight, "SCORE", QColor(255, 255, 255), 10, 800, false);
 
         int rowY = ty + 24;
-        for (const auto &slot : m_net->playerSlots()) {
-            if (slot.team != team) continue;
+        for (const auto &slot : rows) {
             m_cv.blendRect(tx, rowY, tw, 20, withAlpha(0xFFFFFFFF, (slot.id == m_net->localPlayerId()) ? 30 : 10));
             text(tx + 8, rowY + 2, 160, 16, Qt::AlignLeft, slot.name + (slot.isBot ? " [BOT]" : ""),
                  (slot.id == m_net->localPlayerId()) ? QColor(255, 220, 80) : QColor(220, 220, 220), 10, 700, false);
             const char *cName = (slot.cls == CLS_SCOUT) ? "SCOUT" : (slot.cls == CLS_TANK) ? "TANK" : "ASSAULT";
-            text(tx + 180, rowY + 2, 70, 16, Qt::AlignCenter, cName, QColor(170, 175, 180), 9, 600, false);
+            text(tx + 200, rowY + 2, 70, 16, Qt::AlignLeft, cName, QColor(170, 175, 180), 9, 600, false);
+            text(tx + tw - 230, rowY + 2, 40, 16, Qt::AlignRight, QString::number(slot.kills), QColor(255, 255, 255), 10, 800, false);
+            text(tx + tw - 180, rowY + 2, 40, 16, Qt::AlignRight, QString::number(slot.deaths), QColor(200, 200, 200), 10, 700, false);
             text(tx + tw - 70, rowY + 2, 60, 16, Qt::AlignRight, QString("%1 PTS").arg(slot.score), QColor(255, 255, 255), 10, 800, false);
             rowY += 22;
         }

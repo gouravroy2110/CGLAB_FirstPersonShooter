@@ -27,6 +27,14 @@
 #include "world.h"
 
 static const quint16 MP_DEFAULT_PORT = 7777;
+
+struct MpBuy { int weapon; int cost; };              // weapon -1 = the class kit
+static const MpBuy MP_ARMOURY[] = {
+    {-1, 0}, {WPN_RIFLE, 0}, {WPN_SMG, 0}, {WPN_SHOTGUN, 0},
+    {WPN_BULLPUP, 100}, {WPN_BATTLE_RIFLE, 150}, {WPN_DMR, 200}, {WPN_SNIPER, 300}, {WPN_LMG, 350}
+};
+static const int MP_ARMOURY_N = int(sizeof(MP_ARMOURY) / sizeof(MP_ARMOURY[0]));
+static const int MP_START_COINS = 100;
 static const int MP_MAX_PLAYERS = 8;
 
 enum MpState {
@@ -69,7 +77,9 @@ enum NetEventType : quint8 {
     EV_KEY_PICKED     = 9,
     EV_KEY_DELIVERED  = 10,
     EV_CHAT           = 11,
-    EV_DAMAGE         = 12
+    EV_DAMAGE         = 12,
+    EV_DIED           = 13,   // client -> host: I died (killer, headshot); the host keeps the score
+    EV_SPAWN_PICKUP   = 14    // a gun / medkit / ammo appeared on the ground (everyone adds it)
 };
 
 // --- Operative Starter Loadouts ----------------------------------------------
@@ -216,6 +226,13 @@ public:
     void checkObjectiveInteractions(GameState &gs);
     void resetRound(GameState &gs, World &world, const ParsedMap &pm);
 
+    // Damage goes to whoever owns the target's health: each human owns their own, the host owns the bots
+    void dealDamage(int shooterId, int targetId, int dmg, bool head);
+    // Pickups dropped or taken on this machine are announced to the others
+    void syncPickups(GameState &gs);
+    int     teamOf(int id) const;
+    QString nameOf(int id) const;
+
     // Automated loopback test
     static bool runNetworkTest();
 
@@ -261,6 +278,8 @@ private:
     void             teamSpawn(int team, const World &world, float &x, float &y) const;
 
     float            m_snapshotTimer = 0.f;
+    bool             m_localDeadReported = false;   // our death is counted once, until we respawn
+    int              m_pickupSeq = 0;
     float            m_pingTimer = 0.f;
 
     void processTcpPacket(const QByteArray &data, QTcpSocket *fromSocket = nullptr);
@@ -269,4 +288,9 @@ private:
     void sendUdpPacket(const QByteArray &data, const QHostAddress &addr, quint16 port);
 
     void balanceTeamsAndFillBots();
+    void broadcastExcept(NetMsgType type, const QByteArray &payload, QTcpSocket *skip);
+    void applyLocalHit(int dmg, int shooterId, bool head);
+    void creditKill(int victimId, int killerId, bool head);
+    void spawnFromEvent(const QVariantMap &d);
+    void takeFromEvent(const QVariantMap &d);
 };

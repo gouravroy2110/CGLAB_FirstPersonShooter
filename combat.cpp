@@ -251,6 +251,7 @@ void MainWindow::updateReload(float dt)
 void MainWindow::tryFire()
 {
     Player &pl = m_gs.player;
+    if (pl.hp <= 0) return;                                     // dead: waiting to respawn
     int w = pl.curWeapon;
     if (w < 0) return;
     const WeaponDef &d = WEAPONS[w];
@@ -277,6 +278,7 @@ void MainWindow::tryFire()
 void MainWindow::releaseTrigger()
 {
     Player &pl = m_gs.player;
+    if (pl.hp <= 0) { m_charging = false; pl.charge = 0.f; return; }   // dead: a charge never fires
     if (m_charging && pl.curWeapon >= 0 && WEAPONS[pl.curWeapon].mode == FM_CHARGE) {
         // plasma fires on release at any charge; the railgun needs at least half
         if (pl.curWeapon == WPN_PLASMA || pl.charge >= 0.5f) fireOnce();
@@ -533,15 +535,9 @@ void MainWindow::fireHitscan(int w, float ax, float ay, float spreadPx, float sX
                     if (L.att[AT_AMMO] == 3) mult *= h.part == PART_HEAD ? 0.9f : 1.25f;
                     float dist = std::sqrt((h.x - pl.posX) * (h.x - pl.posX) + (h.y - pl.posY) * (h.y - pl.posY));
                     int dmg = std::max(1, int(effectiveDamage(w) * mult * falloffFor(d, dist) * dmgScale * frandC(0.9f, 1.1f) + 0.5f));
-                    damageActor(h.actor, dmg, pl.posX, pl.posY);
+                    damageActor(h.actor, dmg, pl.posX, pl.posY, -1, h.part == PART_HEAD);
                     if (h.part == PART_HEAD) { m_headMarker = 0.22f; m_headshotBanner = 1.4f; sfx(SND_HEADSHOT, 0.9f); }
                     else { m_hitMarker = 0.18f; sfx(SND_HITMARK, 0.7f); }
-                    QVariantMap dev;
-                    dev["target"] = act.id;
-                    dev["dmg"] = dmg;
-                    dev["head"] = (h.part == PART_HEAD);
-                    dev["shooter"] = m_net->localPlayerId();
-                    m_net->broadcastEvent(EV_DAMAGE, dev);
                 }
                 break;
             }
@@ -794,6 +790,7 @@ void MainWindow::meleeAttack(int w, bool quick)
 void MainWindow::quickMelee()
 {
     Player &pl = m_gs.player;
+    if (pl.hp <= 0) return;
     int mw = pl.slot[SLOT_MELEE];
     if (mw < 0 || pl.attackCooldown > 0 || pl.switchTimer > 0 || isMelee(pl.curWeapon)) return;
     pl.reloadTimer = 0; m_shellReload = false;
@@ -1092,6 +1089,7 @@ bool MainWindow::smokeBlocks(float x0, float y0, float z0, float x1, float y1, f
 void MainWindow::startThrow()
 {
     Player &pl = m_gs.player;
+    if (pl.hp <= 0) return;
     if (m_cooking || pl.throwCount[pl.throwSel] <= 0) {
         if (pl.throwCount[pl.throwSel] <= 0) pushFeed(QString("NO %1 LEFT  [T] CYCLE").arg(THROWS[pl.throwSel].shortName), 1.5f);
         return;
@@ -1104,6 +1102,7 @@ void MainWindow::releaseThrow()
 {
     Player &pl = m_gs.player;
     if (!m_cooking) return;
+    if (pl.hp <= 0) { m_cooking = false; return; }              // killed while cooking: the grenade is dropped, not thrown
     m_cooking = false;
     int k = pl.throwSel;
     if (pl.throwCount[k] <= 0) return;
@@ -1185,6 +1184,7 @@ void MainWindow::cycleThrowable()
 void MainWindow::useGadget()
 {
     Player &pl = m_gs.player;
+    if (pl.hp <= 0) return;
     const GadgetDef &g = GADGETS[pl.gadget];
     if (pl.gadgetCd > 0.f) { pushFeed(QString("%1 RECHARGING  %2 S").arg(g.shortName).arg(int(std::ceil(pl.gadgetCd))), 1.2f); sfx(SND_DRY_FIRE, 0.5f); return; }
     float fx = pl.posX + pl.dirX * 0.9f, fy = pl.posY + pl.dirY * 0.9f;
@@ -1412,6 +1412,10 @@ void MainWindow::updatePickups(float dt)
 {
     Player &pl = m_gs.player;
     m_nearPickup = -1;
+    if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+        m_net->syncPickups(m_gs);                           // tell the others what appeared / was taken here
+        if (pl.hp <= 0) return;                             // the dead pick nothing up
+    }
     const int maxHP = this->maxHP();
     for (auto &k : m_gs.healthKits) {
         if (!k.active) continue;

@@ -19,6 +19,7 @@
 #include "raster3d.h"
 #include <QPainter>
 #include <QDir>
+#include <QKeySequence>
 #include <QFile>
 #include <cstring>
 #include <cmath>
@@ -103,6 +104,9 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_net, &NetworkManager::connectionError, this, [this](const QString &err) {
         pushFeed(err, 4.0f);
+    });
+    connect(m_net, &NetworkManager::matchEvent, this, [this](NetEventType type, const QVariantMap &d) {
+        onMatchEvent(type, d);
     });
     m_curHazardName = THEMES[0].hazName;
     m_curHazardColor = THEMES[0].hazLight;
@@ -234,6 +238,11 @@ void MainWindow::startMultiplayerMatch()
     }
     m_gs.charClass = myCls;
     initClassLoadout(m_gs.player, myCls);
+    m_mpCoins = MP_START_COINS;
+    m_mpKilledBy.clear();
+    m_mpBonusT = 0.f;
+    m_mpRespawnCountdown = -1.f;
+    applyMpArmoury();
 
     m_keys.clear();
     m_lmb = false;
@@ -269,6 +278,90 @@ void MainWindow::startMultiplayerMatch()
     updateAmbience();
     pushFeed("SECTOR WAR INITIATED - ELIMINATE ENEMY OPERATIVES!", 4.5f, true);
     sfx(SND_DEPLOY, 0.9f);
+}
+
+// The primary picked in the respawn armoury, paid for with kill coins
+void MainWindow::applyMpArmoury()
+{
+    if (m_mpBuy < 0 || m_mpBuy >= MP_ARMOURY_N) m_mpBuy = 0;
+    const MpBuy &b = MP_ARMOURY[m_mpBuy];
+    if (b.weapon < 0) return;                                   // the class kit
+    if (b.cost > m_mpCoins) {
+        pushFeed(QString("NOT ENOUGH COINS FOR THE %1 - CLASS KIT ISSUED").arg(WEAPONS[b.weapon].name), 3.f);
+        m_mpBuy = 0;
+        return;
+    }
+    m_mpCoins -= b.cost;
+    Player &pl = m_gs.player;
+    int w = b.weapon, old = pl.slot[SLOT_PRIMARY];
+    if (old >= 0 && old != w) { pl.owned[old] = false; pl.mag[old] = pl.reserve[old] = 0; }
+    pl.slot[SLOT_PRIMARY] = w;
+    pl.owned[w] = true;
+    pl.load[w] = Loadout{};
+    pl.mag[w] = WEAPONS[w].magSize;
+    pl.reserve[w] = std::min(WEAPONS[w].maxReserve, WEAPONS[w].magSize * 3);
+    pl.curWeapon = w;
+    if (b.cost > 0) pushFeed(QString("ARMOURY  %1   -%2 COINS").arg(WEAPONS[w].name).arg(b.cost), 3.f);
+}
+
+// Things that happened in the match, on any machine: kills, hits on us, new rounds
+void MainWindow::onMatchEvent(NetEventType type, const QVariantMap &d)
+{
+    if (m_gameMode != MODE_MULTIPLAYER || !m_net || m_screen != SCR_PLAYING) return;
+    const int me = m_net->localPlayerId();
+    Player &pl = m_gs.player;
+    if (type == EV_KILL) {
+        int victim = d.value("victim").toInt(), killer = d.value("killer").toInt(), w = d.value("weapon").toInt();
+        bool head = d.value("head").toBool();
+        QString vn = m_net->nameOf(victim), kn = m_net->nameOf(killer);
+        float bx = pl.posX, by = pl.posY, bz = pl.footZ;
+        for (Actor &a : m_gs.actors) {
+            if (a.id != victim) continue;
+            bx = a.posX; by = a.posY; bz = a.footZ;
+            if (a.alive) { a.alive = false; a.hp = 0; a.respawnT = 5.f; a.velX = a.velY = 0.f; }
+        }
+        spawnBlood(bx, by, bz + 0.5f, 14, 1.f);
+        addDecal(m_blood, bx, by, 0.35f, 150);
+        QString gun = (w >= 0 && w < WPN_COUNT) ? QString(WEAPONS[w].shortName) : QString("KILLED");
+        if (killer < 0) pushFeed(QString("%1  WAS KILLED").arg(vn), 3.5f);
+        else pushFeed(QString("%1   [%2]   %3%4").arg(kn, gun, vn, head ? "   HEADSHOT" : ""), 4.5f, head);
+        if (killer == me && victim != me) {                     // the kill bonus
+            int pts = head ? 150 : 100, coins = head ? 75 : 50;
+            m_mpCoins += coins;
+            m_gs.score += pts;
+            m_gs.kills++;
+            m_mpBonusText = QString("+%1  %2     +%3 COINS").arg(pts).arg(head ? "HEADSHOT KILL" : "KILL").arg(coins);
+            m_mpBonusT = 2.2f;
+            m_killMarker = 0.4f;
+            sfx(SND_KILL, 0.9f);
+        }
+        if (victim == me) m_mpKilledBy = killer >= 0 && killer != me ? kn : QString();
+    } else if (type == EV_DAMAGE) {
+        if (d.value("target").toInt() != me) return;
+        int shooter = d.value("shooter").toInt();
+        pl.shakeY -= 6.f;
+        sfx(SND_HIT_FLESH, 0.6f, frand(0.9f, 1.1f));
+        if (m_hurtSndT <= 0) { sfx(SND_PLAYER_HURT, 0.85f, frand(0.93f, 1.07f)); m_hurtSndT = 0.35f; }
+        for (const Actor &a : m_gs.actors) if (a.id == shooter) {
+            addDamageMark(a.posX, a.posY, std::min(1.f, d.value("dmg").toInt() / 25.f));
+            m_damageAngle = std::atan2(a.posY - pl.posY, a.posX - pl.posX); m_damageDirTimer = 2.f;
+        }
+        if (pl.hp <= 0) { pl.adsMode = false; m_killerIdx = -1; }
+    } else if (type == EV_ROUND_START) {
+        // the host has already reset its round; a client resets its own copy now
+        if (!m_net->isHost()) m_net->resetRound(m_gs, *this, m_parsed[m_gs.mapChoice]);
+        for (Actor &a : m_gs.actors) { a.planeX = -a.dirY * m_planeLen; a.planeY = a.dirX * m_planeLen; }
+        pl.planeX = -pl.dirY * m_planeLen; pl.planeY = pl.dirX * m_planeLen;
+        m_gs.bullets.clear();
+        m_mpRespawnCountdown = -1.f;
+        m_mpKilledBy.clear();
+        applyMpArmoury();
+        pushFeed(QString("ROUND %1  -  FIGHT!").arg(d.value("round").toInt()), 3.5f, true);
+        sfx(SND_DEPLOY, 0.8f);
+    } else if (type == EV_KEY_DELIVERED) {
+        int team = d.value("team").toInt();
+        pushFeed(QString("VAULT UNLOCKED BY %1  +500").arg(team == 1 ? "BRAVO" : "ALPHA"), 4.f, true);
+    }
 }
 
 
@@ -616,6 +709,7 @@ void MainWindow::advance(float dt)
         return;
     }
     if (playing && !m_paused && !m_gs.gameOver) gameStep(dt);
+    m_mpBonusT = std::max(0.f, m_mpBonusT - dt);
     if (playing && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
         if (m_net->isHost()) {
             m_net->tickServer(dt, m_gs, *this, m_parsed[m_gs.mapChoice]);
@@ -1043,6 +1137,8 @@ void MainWindow::gameStep(float dt)
         if (m_mpRespawnCountdown <= 0.f) {
             m_mpRespawnCountdown = -1.f;
             m_net->handleRespawn(m_net->localPlayerId(), m_gs, *this, m_parsed[m_gs.mapChoice]);
+            applyMpArmoury();
+            m_mpKilledBy.clear();
             pushFeed("DEPLOYED TO BATTLEFIELD", 2.0f);
             m_cmdRespawn = true;
             QVariantMap rev; rev["id"] = m_net->localPlayerId();
@@ -2440,6 +2536,12 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     }
 
     bool live = !m_paused && !m_gs.gameOver;
+    if (live && pl.hp <= 0 && k >= Qt::Key_1 && k < Qt::Key_1 + MP_ARMOURY_N
+        && m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+        m_mpBuy = k - Qt::Key_1;
+        sfx(MP_ARMOURY[m_mpBuy].cost <= m_mpCoins ? SND_UI_SELECT : SND_UI_BACK, 0.5f);
+        return;
+    }
     if (live) {
         if (k == Qt::Key_O || k == Qt::Key_P) { openSettings(SCR_PLAYING); return; }
         if (k == m_keyBinds[ACT_JUMP] && m_gs.player.onGround) m_jumpQueued = true;
@@ -3093,6 +3195,188 @@ bool MainWindow::snapshot(const QString &dir)
             m_pitch = -0.35f;
             run(1); save(QString("59_over_body_%1").arg(k));
         }
+    }
+
+    // --- Multiplayer: a client respawns and stays alive; the dead can't shoot ----------
+    {
+        start(6);                                                  // THE CITADEL, the multiplayer map
+        NetworkManager host, client;
+        bool up = host.startHost(17779, "Host") && client.connectToHost("127.0.0.1", 17779, "Client");
+        QElapsedTimer w; w.start();
+        while (up && w.elapsed() < 2000 && client.playerSlots().size() < 2) QCoreApplication::processEvents();
+        int cid = client.localPlayerId();
+        // put the client on Bravo, start the match on both ends
+        client.setTeam(1);
+        w.restart(); while (w.elapsed() < 300) QCoreApplication::processEvents();
+        host.startMatch();
+        w.restart(); while (w.elapsed() < 300) QCoreApplication::processEvents();
+        GameState hostGs, clientGs;
+        const ParsedMap &pm = m_parsed[6];
+        host.resetRound(hostGs, *this, pm);
+        client.resetRound(clientGs, *this, pm);
+        auto pump = [&](float secs, int &minHp) {
+            QElapsedTimer t; t.start();
+            int steps = int(secs * 60);
+            for (int i = 0; i < steps; i++) {
+                QCoreApplication::processEvents();
+                host.tickServer(1.f / 60.f, hostGs, *this, pm);
+                client.tickClient(1.f / 60.f, clientGs, *this);
+                minHp = std::min(minHp, clientGs.player.hp);
+                while (t.nsecsElapsed() < qint64(i + 1) * 16666666) QCoreApplication::processEvents();
+            }
+        };
+        int minHp = 9999;
+        pump(0.5f, minHp);
+        // the client dies: its own state and the host's copy of it
+        clientGs.player.hp = 0;
+        for (Actor &a : hostGs.actors) if (a.id == cid) { a.hp = 0; a.alive = false; }
+        pump(0.5f, minHp);
+        // ...and respawns, telling the host
+        client.handleRespawn(cid, clientGs, *this, pm);
+        QVariantMap rev; rev["id"] = cid;
+        client.broadcastEvent(EV_RESPAWN, rev);
+        int hpAfter = clientGs.player.hp;
+        minHp = 9999;
+        pump(3.f, minHp);
+        int hostHp = -1; bool hostAlive = false;
+        for (const Actor &a : hostGs.actors) if (a.id == cid) { hostHp = a.hp; hostAlive = a.alive; }
+        log(QString("multiplayer respawn: connected=%1 client team=%2 hp after respawn=%3, lowest hp over the next 3 s=%4 (0 = killed again), host sees client alive=%5 hp=%6")
+            .arg(up && cid > 0).arg(clientGs.player.posX > 24.f ? "Bravo (east)" : "Alpha (west)").arg(hpAfter).arg(minHp).arg(hostAlive).arg(hostHp));
+        host.disconnectSession(); client.disconnectSession();
+        QCoreApplication::processEvents();
+        // a dead player waiting to respawn can't fire
+        start(1);
+        Player &pl = m_gs.player;
+        pl.curWeapon = WPN_PISTOL; pl.mag[WPN_PISTOL] = 12; pl.attackCooldown = 0.f; pl.reloadTimer = pl.switchTimer = 0.f;
+        pl.hp = 0;
+        int shots0 = m_gs.shotsFired;
+        tryFire();
+        int deadShots = m_gs.shotsFired - shots0;
+        pl.hp = 100; pl.attackCooldown = 0.f;
+        tryFire();
+        log(QString("dead can't shoot: shots while dead=%1 (expect 0), shots alive=%2 (expect 1)").arg(deadShots).arg(m_gs.shotsFired - shots0 - deadShots));
+    }
+
+    // --- Multiplayer: the host scores kills; loot, stats and hits reach every machine ----
+    {
+        start(6);
+        NetworkManager host, client;
+        bool up = host.startHost(17783, "Host") && client.connectToHost("127.0.0.1", 17783, "Client");
+        QElapsedTimer w; w.start();
+        while (up && w.elapsed() < 2000 && client.playerSlots().size() < 2) QCoreApplication::processEvents();
+        MpRoomSettings st = host.settings(); st.botFill = false; host.updateSettings(st);   // just the two humans
+        int cid = client.localPlayerId();
+        client.setTeam(1);
+        w.restart(); while (w.elapsed() < 300) QCoreApplication::processEvents();
+        host.startMatch();
+        w.restart(); while (w.elapsed() < 300) QCoreApplication::processEvents();
+        GameState hostGs, clientGs;
+        const ParsedMap &pm = m_parsed[6];
+        host.resetRound(hostGs, *this, pm);
+        client.resetRound(clientGs, *this, pm);
+        int kills = 0, killHead = 0;
+        QObject::connect(&client, &NetworkManager::matchEvent, &client, [&](NetEventType t, const QVariantMap &d) {
+            if (t == EV_KILL && d.value("killer").toInt() == 0 && d.value("victim").toInt() == cid) { kills++; killHead += d.value("head").toBool(); }
+        });
+        auto pump = [&](float secs) {
+            QElapsedTimer t; t.start();
+            int steps = int(secs * 60);
+            for (int i = 0; i < steps; i++) {
+                QCoreApplication::processEvents();
+                host.tickServer(1.f / 60.f, hostGs, *this, pm);
+                client.tickClient(1.f / 60.f, clientGs, *this);
+                host.syncPickups(hostGs); client.syncPickups(clientGs);
+                while (t.nsecsElapsed() < qint64(i + 1) * 16666666) QCoreApplication::processEvents();
+            }
+        };
+        pump(0.4f);
+        // the client shoots the host: its health is the host's to take
+        client.dealDamage(cid, 0, 40, false);
+        pump(0.3f);
+        int hostHp = hostGs.player.hp;
+        // the host headshots the client, twice (the second lands on a body)
+        host.dealDamage(0, cid, 300, true);
+        pump(0.1f);
+        host.dealDamage(0, cid, 300, true);
+        pump(0.6f);
+        int hk = -1, hdth = -1, hsc = -1, ck = -1, cdth = -1;
+        for (const auto &sl : host.playerSlots()) { if (sl.id == 0) { hk = sl.kills; hsc = sl.score; } if (sl.id == cid) hdth = sl.deaths; }
+        for (const auto &sl : client.playerSlots()) { if (sl.id == 0) ck = sl.kills; if (sl.id == cid) cdth = sl.deaths; }
+        int hostGuns = 0, hostKits = 0;
+        for (const auto &wp : hostGs.weaponPickups) if (wp.active && wp.type == PICKUP_WEAPON && wp.netId > 0) hostGuns++;
+        for (const auto &k : hostGs.healthKits) if (k.active && k.netId > 0) hostKits++;
+        log(QString("multiplayer kills: client hit the host for 40 -> host hp=%1 (expect 60); host killed client: client hp=%2, "
+                    "kill events on the client=%3 (expect 1, headshot=%4), host stats kills=%5 score=%6 (expect 1, 150), client deaths=%7 (expect 1), "
+                    "client sees host kills=%8 deaths=%9 (expect 1, 1), alpha score=%10")
+            .arg(hostHp).arg(clientGs.player.hp).arg(kills).arg(killHead).arg(hk).arg(hsc).arg(hdth).arg(ck).arg(cdth).arg(host.matchState().teamScore[0]));
+        // the client's dropped gun and medkit show up on the host; the client takes the medkit back
+        int kitsBefore = hostKits;
+        for (auto &k : clientGs.healthKits) if (k.active) { k.active = false; break; }
+        pump(0.3f);
+        int kitsAfter = 0;
+        for (const auto &k : hostGs.healthKits) if (k.active) kitsAfter++;
+        log(QString("multiplayer loot: on the host after the client died: guns=%1 medkits=%2 (expect 1, 1); after the client took the medkit: %3 (expect 0)")
+            .arg(hostGuns).arg(kitsBefore).arg(kitsAfter));
+        host.disconnectSession(); client.disconnectSession();
+        QCoreApplication::processEvents();
+    }
+
+    // --- Multiplayer match: number keys switch guns, E swaps, the armoury sells guns for coins ----
+    {
+        m_net->startHost(17781, "Host");
+        MpRoomSettings st = m_net->settings(); st.botFill = false; m_net->updateSettings(st);
+        m_screen = SCR_MULTIPLAYER_LOBBY;
+        startMultiplayerMatch();
+        Player &pl = m_gs.player;
+        QString seq = QString("start=%1").arg(pl.curWeapon >= 0 ? WEAPONS[pl.curWeapon].shortName : "-");
+        auto key = [&](int k) {
+            QKeyEvent kd(QEvent::KeyPress, k, Qt::NoModifier); keyPressEvent(&kd);
+            QKeyEvent ku(QEvent::KeyRelease, k, Qt::NoModifier); keyReleaseEvent(&ku);
+        };
+        auto press = [&](int k) {
+            key(k);
+            for (int f = 0; f < 40; f++) advance(1.f / 60.f);
+            seq += QString(" %1->%2").arg(QKeySequence(k).toString()).arg(pl.curWeapon >= 0 ? WEAPONS[pl.curWeapon].shortName : "-");
+        };
+        press(Qt::Key_2); press(Qt::Key_3); press(Qt::Key_1); press(Qt::Key_3);
+        WeaponPickup wp; wp.x = pl.posX + 0.2f; wp.y = pl.posY; wp.type = PICKUP_WEAPON; wp.weapon = WPN_SNIPER; wp.reward = true; wp.mag = 5; wp.reserve = 20;
+        m_gs.weaponPickups.push_back(wp);
+        for (int f = 0; f < 10; f++) advance(1.f / 60.f);
+        press(Qt::Key_E);
+        bool swapped = pl.owned[WPN_SNIPER];
+        // die, pick the AWM (300 coins) with only 100, respawn: the class kit
+        auto dieAndRespawn = [&](int coins, int k) {
+            pl.hp = 0; m_mpCoins = coins;
+            key(k);
+            m_mpRespawnCountdown = 0.05f;
+            for (int f = 0; f < 10; f++) advance(1.f / 60.f);
+        };
+        dieAndRespawn(100, Qt::Key_8);
+        int poor = pl.slot[SLOT_PRIMARY], poorCoins = m_mpCoins;
+        dieAndRespawn(400, Qt::Key_8);
+        int rich = pl.slot[SLOT_PRIMARY], richCoins = m_mpCoins;
+        log(QString("multiplayer guns: %1 | E on a dropped AWM: owned=%2 | armoury with 100 coins -> %3 (coins %4), with 400 -> %5 (coins %6, expect AWM, 100), hp=%7")
+            .arg(seq).arg(swapped).arg(poor >= 0 ? WEAPONS[poor].shortName : "-").arg(poorCoins)
+            .arg(rich >= 0 ? WEAPONS[rich].shortName : "-").arg(richCoins).arg(pl.hp));
+        // screenshots: the armoury while dead, the kill bonus over the Tab scoreboard, the final results
+        st.botFill = true; m_net->updateSettings(st);
+        m_net->resetRound(m_gs, *this, m_parsed[m_mapChoice]);
+        run(2);
+        int downed = 0;
+        for (const auto &sl : m_net->playerSlots()) if (sl.isBot && sl.team == 1 && downed < 2) { m_net->dealDamage(0, sl.id, 999, downed == 0); downed++; }
+        run(2);
+        pl.hp = 0; m_mpCoins = 250; m_mpBuy = 5; m_mpKilledBy = "Viper"; m_mpRespawnCountdown = 3.2f;
+        render(); save("98_mp_armoury");
+        pl.hp = 100; m_mpRespawnCountdown = -1.f; m_showScoreboard = true;
+        m_mpBonusText = "+150  HEADSHOT KILL     +75 COINS"; m_mpBonusT = 2.f;
+        render(); save("98_mp_scoreboard");
+        m_showScoreboard = false;
+        MpMatchState &ms = m_net->matchStateMutable();
+        ms.matchOver = true; ms.winningTeam = 0; ms.roundsWon[0] = 2; ms.roundsWon[1] = 1; ms.inRound = false;
+        render(); save("98_mp_results");
+        ms.matchOver = false;
+        m_net->disconnectSession();
+        m_gameMode = MODE_FREEPLAY;
     }
 
     // --- Radio commander: situations queue scripted lines with priorities ------------

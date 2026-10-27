@@ -17,6 +17,32 @@
 #include <cmath>
 #include <algorithm>
 
+// A squadmate / multiplayer operative as a soldier pose: drawn with it, and shot against it.
+// In multiplayer the colours are the teams': Alpha red, Bravo blue (as the scoreboard).
+bool MainWindow::actorPose(const Actor &a, Soldier3D &sp) const
+{
+    if (!a.alive && a.respawnT <= 0.f) return false;
+    sp = Soldier3D{};
+    sp.x = a.posX; sp.y = a.posY; sp.z = a.footZ;
+    sp.yaw = std::atan2(a.dirY, a.dirX);
+    sp.walk = a.walkPhase;
+    sp.move = std::min(1.f, std::sqrt(a.velX * a.velX + a.velY * a.velY) / 3.f);
+    sp.fall = a.alive ? 0.f : 1.f;
+    sp.weapon = a.curWeapon;
+    if (m_gameMode == MODE_MULTIPLAYER) {
+        sp.look = a.team == 0 ? ENEMY_LOOK : SQUAD_LOOK;
+        sp.band = a.team == 0 ? rs::rgb(230, 60, 50) : rs::rgb(60, 140, 255);
+    } else {
+        sp.look = a.team == 0 ? SQUAD_LOOK : ENEMY_LOOK;
+        sp.band = a.escort ? rs::rgb(240, 240, 240) : a.team == 0 ? rs::rgb(60, 140, 255) : rs::rgb(230, 60, 50);
+    }
+    sp.sprint = a.sprinting;
+    sp.recoil = std::min(1.f, a.shootAnim / 0.12f);
+    sp.seed = float((a.id * 29) % 100) / 100.f;
+    sp.t = m_time;
+    return true;
+}
+
 using namespace rs;
 
 namespace {
@@ -560,20 +586,8 @@ void MainWindow::renderActors3D()
     std::vector<Body> bodies;
     bodies.reserve(m_gs.actors.size() + m_gs.enemies.size() + 1);
     for (const Actor &a : m_gs.actors) {
-        if (!a.alive && a.respawnT <= 0.f) continue;
         Body b;
-        Soldier3D &sp = b.sp;
-        sp.x = a.posX; sp.y = a.posY; sp.z = a.footZ;
-        sp.yaw = std::atan2(a.dirY, a.dirX);
-        sp.walk = a.walkPhase;
-        sp.move = std::min(1.f, std::sqrt(a.velX * a.velX + a.velY * a.velY) / 3.f);
-        sp.fall = a.alive ? 0.f : 1.f;
-        sp.weapon = a.curWeapon;
-        sp.look = a.team == 0 ? SQUAD_LOOK : ENEMY_LOOK;
-        sp.band = a.escort ? rgb(240, 240, 240) : a.team == 0 ? rgb(60, 140, 255) : rgb(230, 60, 50);
-        sp.sprint = a.sprinting;
-        sp.recoil = std::min(1.f, a.shootAnim / 0.12f);
-        sp.seed = float((a.id * 29) % 100) / 100.f;
+        if (!actorPose(a, b.sp)) continue;
         b.light = litAt(a.posX, a.posY) * (a.hitFlash > 0 ? 1.6f : 1.f);
         b.shadow = true;
         bodies.push_back(b);
@@ -604,6 +618,7 @@ void MainWindow::renderActors3D()
         own.look = lookForClass(m_charChoice);
         own.sprint = pl.sprinting;
         own.band = rgb(60, 140, 255);
+        if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->teamOf(m_net->localPlayerId()) == 0) own.band = rgb(230, 60, 50);
         own.recoil = std::min(1.f, m_kick);
         own.crouch = m_crouchT;
         own.lean = m_leanT;

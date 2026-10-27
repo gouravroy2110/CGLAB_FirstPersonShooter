@@ -157,7 +157,7 @@ struct Particle {
 };
 
 // --- Pickups -----------------------------------------------------------------
-struct HealthKit { float x, y, bobPhase=0; bool active=true; bool emergency=false; };
+struct HealthKit { float x, y, bobPhase=0; bool active=true; bool emergency=false; int netId=0; };
 enum PickupType { PICKUP_AMMO, PICKUP_SHOTGUN, PICKUP_RIFLE, PICKUP_INTEL, PICKUP_WEAPON, PICKUP_THROW, PICKUP_KEY };
 struct WeaponPickup {
     float x, y, bobPhase=0; PickupType type=PICKUP_AMMO; bool active=true; bool emergency=false; bool reward=false;
@@ -165,6 +165,7 @@ struct WeaponPickup {
     Loadout load;             // its rarity + attachments
     int   mag=-1, reserve=-1; // a dropped gun keeps its ammo (-1 = fresh)
     int   throwKind=0;        // PICKUP_THROW
+    int   netId=0;            // multiplayer: id shared by every machine (0 = not announced yet, -1 = taken)
 };
 
 // --- Player ------------------------------------------------------------------
@@ -232,6 +233,8 @@ struct Actor : Player {
     float    respawnT = 0.f;
     float    hitFlash = 0.f, shootAnim = 0.f, walkPhase = 0.f;
     int      kills = 0;
+    int      netShots = 0, shotFx = 0;   // multiplayer: shots fired so far, and shots still to play here
+    float    spotT = 0.f;                // multiplayer: seconds this enemy stays on the minimap
     InputCmd cmd;
     // bot brain
     int      target = -1;            // enemy index being engaged

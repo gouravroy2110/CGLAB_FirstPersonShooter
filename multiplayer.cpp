@@ -254,6 +254,11 @@ void NetworkManager::broadcastTcpPacket(NetMsgType type, const QByteArray &paylo
     }
 }
 
+void NetworkManager::broadcastExcept(NetMsgType type, const QByteArray &payload, QTcpSocket *skip)
+{
+    for (QTcpSocket *sock : m_clientSockets) if (sock != skip) sendTcpPacket(sock, type, payload);
+}
+
 void NetworkManager::sendUdpPacket(const QByteArray &data, const QHostAddress &addr, quint16 port)
 {
     if (m_udpSocket) {
@@ -386,8 +391,8 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
         }
         else if (type == NET_INPUT) {
             qint32 pid; float px, py, pz, dx, dy, vx, vy;
-            qint32 gun, hp; quint8 alive, shooting;
-            in >> pid >> px >> py >> pz >> dx >> dy >> vx >> vy >> gun >> hp >> alive >> shooting;
+            qint32 gun, hp, shots = 0; quint8 alive, shooting;
+            in >> pid >> px >> py >> pz >> dx >> dy >> vx >> vy >> gun >> hp >> alive >> shooting >> shots;
             pid = playerId;                                   // a client can only move its own operative
             if (in.status() != QDataStream::Ok || !finitePos(px, py, pz, m_activeWorld) || !std::isfinite(dx) || !std::isfinite(dy)) return;
             gun = clampGun(gun); hp = std::max(0, std::min(int(hp), 500));
@@ -403,6 +408,8 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
                         act.hp = hp;
                         act.alive = (alive != 0);
                         if (shooting) act.shootAnim = 0.15f;
+                        if (shots > act.netShots) act.shotFx = std::min(3, act.shotFx + int(shots - act.netShots));
+                        act.netShots = shots;
                         break;
                     }
                 }
@@ -411,41 +418,38 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
         else if (type == NET_EVENT) {
             quint8 evType; in >> evType;
             QVariantMap data; in >> data;
-            if (evType == EV_DAMAGE) {
-                int target = data.value("target").toInt();
-                int dmg = std::max(0, std::min(data.value("dmg").toInt(), 400));
-                int shooter = playerId;
-                bool head = data.value("head").toBool();
-                data["shooter"] = shooter; data["dmg"] = dmg;
-
+            auto forwardAll = [&](QTcpSocket *skip) {
                 QByteArray fwd; QDataStream fout(&fwd, QIODevice::WriteOnly);
-                fout << (quint8)NET_EVENT << (quint8)EV_DAMAGE << data;
-                broadcastTcpPacket(NET_EVENT, fwd);
-
-                if (m_activeGs) {
-                    if (target == m_localPlayerId) {
-                        if (m_activeGs->player.hp > 0) {
-                            m_activeGs->player.hp = std::max(0, m_activeGs->player.hp - dmg);
-                            m_activeGs->player.damageFlash = 0.4f;
-                            if (m_activeGs->player.hp <= 0) {
-                                handleDeathDrop(m_localPlayerId, shooter, head, *m_activeGs);
-                            }
-                        }
-                    } else {
-                        for (auto &act : m_activeGs->actors) {
-                            if (act.id == target && act.alive) {
-                                act.hp -= dmg;
-                                act.hitFlash = 0.2f;
-                                if (act.hp <= 0) {
-                                    act.hp = 0; act.alive = false;
-                                    act.respawnT = 5.f;
-                                    handleDeathDrop(act.id, shooter, head, *m_activeGs);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
+                fout << (quint8)NET_EVENT << evType << data;
+                broadcastExcept(NET_EVENT, fwd, skip);
+            };
+            if (evType == EV_DAMAGE) {
+                // a client hit someone: route it to whoever owns that health
+                int dmg = std::max(0, std::min(data.value("dmg").toInt(), 400));
+                dealDamage(playerId, data.value("target").toInt(), dmg, data.value("head").toBool());
+                return;
+            }
+            if (evType == EV_DIED) {                                 // a client was killed: the host keeps the score
+                creditKill(playerId, data.value("killer").toInt(), data.value("head").toBool());
+                return;
+            }
+            if (evType == EV_SPAWN_PICKUP || evType == EV_PICKUP) {  // a client dropped / took loot: tell the rest
+                forwardAll(fromSocket);
+                if (evType == EV_SPAWN_PICKUP) spawnFromEvent(data); else takeFromEvent(data);
+                return;
+            }
+            if (evType == EV_KEY_PICKED) {
+                m_match.keyCarrier = playerId;
+                data["carrier"] = playerId;
+                forwardAll(nullptr);
+            }
+            else if (evType == EV_KEY_DELIVERED) {
+                if (!m_match.keyActive) return;                      // already delivered
+                int team = std::max(0, teamOf(playerId));
+                m_match.keyActive = false; m_match.keyCarrier = -1; m_match.vaultUnlocked = true;
+                m_match.teamScore[team] += 500;
+                data["team"] = team; data["points"] = 500;
+                forwardAll(nullptr);
             }
             else if (evType == EV_RESPAWN) {
                 int rid = playerId;
@@ -454,9 +458,15 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
                 fout << (quint8)NET_EVENT << (quint8)EV_RESPAWN << data;
                 broadcastTcpPacket(NET_EVENT, fwd);
 
+                for (auto &sl : m_slots) if (sl.id == rid) sl.alive = true;
                 if (m_activeGs && rid != m_localPlayerId) {
+                    CharClass cls = CLS_ASSAULT;
+                    for (const auto &sl : m_slots) if (sl.id == rid) cls = sl.cls;
                     for (auto &act : m_activeGs->actors) {
                         if (act.id == rid) {
+                            // back to full health and the class kit, or the next snapshot would
+                            // report 0 HP and kill the client again the moment it respawned
+                            initClassLoadout(act, cls);
                             act.alive = true;
                             act.respawnT = 5.f;
                             break;
@@ -534,8 +544,8 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
 
             // Host player (id 0)
             float hx, hy, hz, hdx, hdy, hvx, hvy;
-            qint32 hgun, hhp; quint8 halive, hshooting;
-            in >> hx >> hy >> hz >> hdx >> hdy >> hvx >> hvy >> hgun >> hhp >> halive >> hshooting;
+            qint32 hgun, hhp, hshots; quint8 halive, hshooting;
+            in >> hx >> hy >> hz >> hdx >> hdy >> hvx >> hvy >> hgun >> hhp >> halive >> hshooting >> hshots;
 
             hgun = clampGun(hgun);
             if (m_activeGs && finitePos(hx, hy, hz, m_activeWorld)) {
@@ -547,8 +557,11 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
                         act.velX = hvx; act.velY = hvy;
                         act.curWeapon = hgun;
                         act.hp = hhp;
+                        if (act.alive && !halive) act.respawnT = 5.f;      // keep the body on the ground
                         act.alive = (halive != 0);
                         if (hshooting) act.shootAnim = 0.15f;
+                        if (hshots > act.netShots) act.shotFx = std::min(3, act.shotFx + int(hshots - act.netShots));
+                        act.netShots = hshots;
                         break;
                     }
                 }
@@ -560,19 +573,12 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
                 for (int i = 0; i < actCount && in.status() == QDataStream::Ok; i++) {
                     qint32 aid, ateam, actl;
                     float ax, ay, az, adx, ady, avx, avy;
-                    qint32 agun, ahp; quint8 aalive, ashooting;
-                    in >> aid >> ateam >> actl >> ax >> ay >> az >> adx >> ady >> avx >> avy >> agun >> ahp >> aalive >> ashooting;
+                    qint32 agun, ahp, ashots; quint8 aalive, ashooting;
+                    in >> aid >> ateam >> actl >> ax >> ay >> az >> adx >> ady >> avx >> avy >> agun >> ahp >> aalive >> ashooting >> ashots;
                     agun = clampGun(agun);
                     if (!finitePos(ax, ay, az, m_activeWorld)) continue;
 
-                    if (aid == m_localPlayerId) {
-                        if (ahp < m_activeGs->player.hp) {
-                            m_activeGs->player.damageFlash = 0.35f;
-                        }
-                        m_activeGs->player.hp = ahp;
-                        if (!aalive && m_activeGs->player.hp > 0) m_activeGs->player.hp = 0;
-                        continue;
-                    }
+                    if (aid == m_localPlayerId) continue;            // our own health is ours: hits arrive as events
 
                     for (auto &act : m_activeGs->actors) {
                         if (act.id == aid && act.id != 0) {
@@ -582,11 +588,21 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
                             act.velX = avx; act.velY = avy;
                             act.curWeapon = agun;
                             act.hp = ahp;
+                            if (act.alive && !aalive) act.respawnT = 5.f;
                             act.alive = (aalive != 0);
                             if (ashooting) act.shootAnim = 0.15f;
+                            if (ashots > act.netShots) act.shotFx = std::min(3, act.shotFx + int(ashots - act.netShots));
+                            act.netShots = ashots;
                             break;
                         }
                     }
+                }
+                // everyone's kills, deaths and score (the host keeps them)
+                qint32 nStats = 0; in >> nStats;
+                nStats = std::max(0, std::min(int(nStats), MP_MAX_PLAYERS * 2));
+                for (int i = 0; i < nStats && in.status() == QDataStream::Ok; i++) {
+                    qint32 sid, k, d, sc; in >> sid >> k >> d >> sc;
+                    for (auto &sl : m_slots) if (sl.id == sid) { sl.kills = k; sl.deaths = d; sl.score = sc; }
                 }
             }
         }
@@ -595,36 +611,13 @@ void NetworkManager::processTcpPacket(const QByteArray &data, QTcpSocket *fromSo
             QVariantMap data;
             in >> data;
             if (evType == EV_DAMAGE) {
-                int target = data.value("target").toInt();
-                int dmg = data.value("dmg").toInt();
-                int shooter = data.value("shooter").toInt();
-                bool head = data.value("head").toBool();
-
-                if (m_activeGs) {
-                    if (target == m_localPlayerId) {
-                        if (m_activeGs->player.hp > 0) {
-                            m_activeGs->player.hp = std::max(0, m_activeGs->player.hp - dmg);
-                            m_activeGs->player.damageFlash = 0.4f;
-                            if (m_activeGs->player.hp <= 0) {
-                                handleDeathDrop(m_localPlayerId, shooter, head, *m_activeGs);
-                            }
-                        }
-                    } else {
-                        for (auto &act : m_activeGs->actors) {
-                            if (act.id == target && act.alive) {
-                                act.hp -= dmg;
-                                act.hitFlash = 0.2f;
-                                if (act.hp <= 0) {
-                                    act.hp = 0; act.alive = false;
-                                    act.respawnT = 5.f;
-                                    handleDeathDrop(act.id, shooter, head, *m_activeGs);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
+                if (data.value("target").toInt() == m_localPlayerId)
+                    applyLocalHit(data.value("dmg").toInt(), data.value("shooter").toInt(), data.value("head").toBool());
+                return;
             }
+            if (evType == EV_SPAWN_PICKUP) { spawnFromEvent(data); return; }
+            if (evType == EV_PICKUP) { takeFromEvent(data); return; }
+            if (evType == EV_KEY_PICKED) m_match.keyCarrier = data.value("carrier").toInt();
             else if (evType == EV_RESPAWN) {
                 int rid = data.value("id").toInt();
                 if (m_activeGs && rid != m_localPlayerId) {
@@ -848,6 +841,7 @@ void NetworkManager::startMatch()
     m_match = MpMatchState{};
     m_match.roundTimer = float(m_settings.roundDuration);
     m_match.inRound = true;
+    for (auto &sl : m_slots) { sl.kills = sl.deaths = sl.score = 0; sl.alive = true; }
 
     QByteArray pl; QDataStream out(&pl, QIODevice::WriteOnly);
     out << (quint8)NET_START_MATCH << (qint32)m_settings.mapChoice;
@@ -870,8 +864,14 @@ void NetworkManager::resetRound(GameState &gs, World &world, const ParsedMap &pm
     m_match.catwalkWeaponTimer = 60.f;
     m_match.courtyardWeaponTimer = 60.f;
 
+    m_match.medkitTimer1 = m_match.medkitTimer2 = 35.f;
+    m_match.ammoTimer1 = m_match.ammoTimer2 = 25.f;
+    for (auto &sl : m_slots) sl.alive = true;
+    m_localDeadReported = false;
+
     // Clear pickups & bullets
     gs.weaponPickups.clear();
+    gs.healthKits.clear();
     gs.bullets.clear();
     gs.tracers.clear();
 
@@ -973,32 +973,41 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
             broadcastEvent(EV_KEY_SPAWNED, ev);
         }
 
-        // Power weapon pads (Catwalk AWM Sniper every 60s, Courtyard M249 SAW every 60s)
-        m_match.catwalkWeaponTimer -= dt;
-        if (m_match.catwalkWeaponTimer <= 0.f && world.posValid(23.5f, 10.5f, 0.2f)) {
-            m_match.catwalkWeaponTimer = 60.f;
-            WeaponPickup wp; wp.x = 23.5f; wp.y = 10.5f; wp.type = PICKUP_WEAPON;
-            wp.weapon = (rand() % 2 == 0) ? WPN_SNIPER : WPN_DMR;
+        // Pads: a new item only once the last one there was taken
+        auto padFree = [&](float x, float y) {
+            if (!world.posValid(x, y, 0.2f)) return false;
+            for (const auto &wp : gs.weaponPickups) if (wp.active && std::fabs(wp.x - x) < 0.5f && std::fabs(wp.y - y) < 0.5f) return false;
+            for (const auto &k : gs.healthKits) if (k.active && std::fabs(k.x - x) < 0.5f && std::fabs(k.y - y) < 0.5f) return false;
+            return true;
+        };
+        auto gunPad = [&](float &timer, float x, float y, int w1, int w2) {
+            timer -= dt;
+            if (timer > 0.f) return;
+            timer = 60.f;
+            if (!padFree(x, y)) return;
+            WeaponPickup wp; wp.x = x; wp.y = y; wp.type = PICKUP_WEAPON;
+            wp.weapon = (rand() % 2 == 0) ? w1 : w2;
+            wp.load.rarity = 2;
             wp.reward = true;
             gs.weaponPickups.push_back(wp);
-        }
+        };
+        // Power weapon pads (Catwalk sniper / DMR, Courtyard LMG / auto shotgun, every 60 s)
+        gunPad(m_match.catwalkWeaponTimer, 23.5f, 10.5f, WPN_SNIPER, WPN_DMR);
+        gunPad(m_match.courtyardWeaponTimer, 23.5f, 33.5f, WPN_LMG, WPN_AUTO_SHOTGUN);
 
-        m_match.courtyardWeaponTimer -= dt;
-        if (m_match.courtyardWeaponTimer <= 0.f && world.posValid(23.5f, 33.5f, 0.2f)) {
-            m_match.courtyardWeaponTimer = 60.f;
-            WeaponPickup wp; wp.x = 23.5f; wp.y = 33.5f; wp.type = PICKUP_WEAPON;
-            wp.weapon = (rand() % 2 == 0) ? WPN_LMG : WPN_AUTO_SHOTGUN;
-            wp.reward = true;
-            gs.weaponPickups.push_back(wp);
-        }
-
-        // Supply pads
-        m_match.medkitTimer1 -= dt;
-        if (m_match.medkitTimer1 <= 0.f && world.posValid(8.5f, 7.5f, 0.2f)) {
-            m_match.medkitTimer1 = 35.f;
-            HealthKit hk; hk.x = 8.5f; hk.y = 7.5f; hk.active = true;
-            gs.healthKits.push_back(hk);
-        }
+        // Supply pads: a medkit in two opposite corners, ammo crates in the other two
+        auto supplyPad = [&](float &timer, float period, float x, float y, bool kit) {
+            timer -= dt;
+            if (timer > 0.f) return;
+            timer = period;
+            if (!padFree(x, y)) return;
+            if (kit) { HealthKit hk; hk.x = x; hk.y = y; gs.healthKits.push_back(hk); }
+            else { WeaponPickup wp; wp.x = x; wp.y = y; wp.type = PICKUP_AMMO; gs.weaponPickups.push_back(wp); }
+        };
+        supplyPad(m_match.medkitTimer1, 35.f, 8.5f, 7.5f, true);
+        supplyPad(m_match.medkitTimer2, 35.f, 38.5f, 37.5f, true);
+        supplyPad(m_match.ammoTimer1, 25.f, 8.5f, 37.5f, false);
+        supplyPad(m_match.ammoTimer2, 25.f, 38.5f, 7.5f, false);
 
         // Round Win check by timer expiration
         if (m_match.roundTimer <= 0.f) {
@@ -1073,7 +1082,8 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
             << (float)hpl.velX << (float)hpl.velY
             << (qint32)hpl.curWeapon << (qint32)hpl.hp
             << (quint8)(hpl.hp > 0 ? 1 : 0)
-            << (quint8)(hpl.attackCooldown > 0.05f ? 1 : 0);
+            << (quint8)(hpl.attackCooldown > 0.05f ? 1 : 0)
+            << (qint32)gs.shotsFired;
 
         // Actors (bots and remote operatives)
         qint32 actCount = qint32(gs.actors.size());
@@ -1085,8 +1095,11 @@ void NetworkManager::tickServer(float dt, GameState &gs, World &world, const Par
                 << (float)act.velX << (float)act.velY
                 << (qint32)act.curWeapon << (qint32)act.hp
                 << (quint8)(act.alive ? 1 : 0)
-                << (quint8)(act.shootAnim > 0.01f ? 1 : 0);
+                << (quint8)(act.shootAnim > 0.01f ? 1 : 0)
+                << (qint32)act.netShots;
         }
+        out << (qint32)m_slots.size();
+        for (const auto &sl : m_slots) out << (qint32)sl.id << (qint32)sl.kills << (qint32)sl.deaths << (qint32)sl.score;
 
         broadcastTcpPacket(NET_SNAPSHOT, snapData);
     }
@@ -1116,56 +1129,205 @@ void NetworkManager::tickClient(float dt, GameState &gs, World &world)
         << (qint32)pl.curWeapon
         << (qint32)pl.hp
         << (quint8)(pl.hp > 0 ? 1 : 0)
-        << (quint8)(pl.attackCooldown > 0.05f ? 1 : 0);
+        << (quint8)(pl.attackCooldown > 0.05f ? 1 : 0)
+        << (qint32)gs.shotsFired;
     sendTcpPacket(m_clientSocket, NET_INPUT, plData);
 }
 
 void NetworkManager::handleDeathDrop(int victimId, int killerId, bool headshot, GameState &gs)
 {
+    bool local = (victimId == m_localPlayerId);
+    if (local) {
+        if (m_localDeadReported) return;                    // two hits in the same frame still kill once
+        m_localDeadReported = true;
+    }
+    // The loot comes from the machine that knows the real inventory: our own, or a bot on the host.
+    // It is announced to everyone by syncPickups().
     Player *p = nullptr;
-    int victimTeam = 0;
-    int killerTeam = -1;
-
-    for (const auto &s : m_slots) {
-        if (s.id == victimId) victimTeam = s.team == 1 ? 1 : 0;
-        if (s.id == killerId && killerId != victimId) killerTeam = s.team == 1 ? 1 : 0;
+    if (local) p = &gs.player;
+    else if (m_isHost) { for (auto &a : gs.actors) if (a.id == victimId && a.ctl == CTL_BOT) { p = &a; break; } }
+    if (p) {
+        int dropGun = p->curWeapon;
+        if (dropGun < 0 || dropGun == WPN_KNIFE || !p->owned[dropGun])
+            dropGun = p->slot[SLOT_PRIMARY2] >= 0 ? p->slot[SLOT_PRIMARY2] : p->slot[SLOT_PRIMARY];
+        if (dropGun >= 0 && dropGun < WPN_COUNT && p->owned[dropGun]) {
+            WeaponPickup wp;
+            wp.x = p->posX; wp.y = p->posY;
+            wp.bobPhase = float(rand() % 100) * 0.1f;
+            wp.type = PICKUP_WEAPON;
+            wp.weapon = dropGun;
+            wp.load = p->load[dropGun];
+            wp.mag = p->mag[dropGun];
+            wp.reserve = p->reserve[dropGun];
+            wp.reward = true;
+            gs.weaponPickups.push_back(wp);
+        }
+        // ...and a medkit beside the body
+        float kx = p->posX - p->dirY * 0.45f, ky = p->posY + p->dirX * 0.45f;
+        if (m_activeWorld && !m_activeWorld->posValid(kx, ky, 0.1f)) { kx = p->posX; ky = p->posY; }
+        HealthKit hk; hk.x = kx; hk.y = ky;
+        gs.healthKits.push_back(hk);
     }
-
-    if (victimId == m_localPlayerId) p = &gs.player;
-    else {
-        for (auto &a : gs.actors) { if (a.id == victimId) { p = &a; break; } }
+    if (m_isHost) creditKill(victimId, killerId, headshot);
+    else if (local) {
+        QVariantMap ev; ev["killer"] = killerId; ev["head"] = headshot;
+        broadcastEvent(EV_DIED, ev);
     }
+}
 
-    if (!p) return;
+// Host: one death is scored once. Kill +100 (+150 headshot) to the killer and their team, -50 to the victim's team.
+void NetworkManager::creditKill(int victimId, int killerId, bool head)
+{
+    if (!m_isHost) return;
+    for (auto &sl : m_slots) if (sl.id == victimId) { if (!sl.alive) return; sl.alive = false; sl.deaths++; }
+    int vt = std::max(0, teamOf(victimId));
+    int kt = (killerId >= 0 && killerId != victimId) ? teamOf(killerId) : -1;
+    int pts = head ? 150 : 100;
+    if (kt >= 0 && kt != vt) {
+        m_match.teamScore[kt] += pts;
+        for (auto &sl : m_slots) if (sl.id == killerId) { sl.kills++; sl.score += pts; }
+    } else killerId = -1;                                    // the map (acid, fire, a fall) or their own grenade
+    m_match.teamScore[vt] = std::max(0, m_match.teamScore[vt] - 50);
 
-    // Drop active weapon
-    int dropGun = p->curWeapon;
-    if (dropGun == WPN_KNIFE) {
-        dropGun = p->slot[SLOT_PRIMARY2] >= 0 ? p->slot[SLOT_PRIMARY2] : p->slot[SLOT_PRIMARY];
+    int weapon = -1;
+    if (m_activeGs && killerId >= 0) {
+        if (killerId == m_localPlayerId) weapon = m_activeGs->player.curWeapon;
+        else for (const auto &a : m_activeGs->actors) if (a.id == killerId) weapon = a.curWeapon;
     }
-    if (dropGun >= 0 && dropGun < WPN_COUNT && p->owned[dropGun]) {
-        WeaponPickup wp;
-        wp.x = p->posX; wp.y = p->posY;
-        wp.bobPhase = float(rand() % 100) * 0.1f;
-        wp.type = PICKUP_WEAPON;
-        wp.weapon = dropGun;
-        wp.load = p->load[dropGun];
-        wp.mag = p->mag[dropGun];
-        wp.reserve = p->reserve[dropGun];
-        wp.reward = true;
-        gs.weaponPickups.push_back(wp);
-    }
-
-    // Points calculation: +100 kill (+150 for headshot), -50 for death
-    if (killerTeam >= 0 && killerTeam != victimTeam) m_match.teamScore[killerTeam] += headshot ? 150 : 100;
-    m_match.teamScore[victimTeam] = std::max(0, m_match.teamScore[victimTeam] - 50);
-
     QVariantMap kev;
     kev["victim"] = victimId;
     kev["killer"] = killerId;
-    kev["head"] = headshot;
-    kev["weapon"] = dropGun;
+    kev["head"] = head;
+    kev["weapon"] = weapon;
     broadcastEvent(EV_KILL, kev);
+}
+
+void NetworkManager::dealDamage(int shooterId, int targetId, int dmg, bool head)
+{
+    if (!m_isHost) {                                         // the host routes it
+        QVariantMap ev; ev["target"] = targetId; ev["dmg"] = dmg; ev["head"] = head;
+        broadcastEvent(EV_DAMAGE, ev);
+        return;
+    }
+    if (shooterId != targetId && shooterId >= 0 && teamOf(shooterId) == teamOf(targetId)) return;   // no friendly fire
+    if (targetId == m_localPlayerId) { applyLocalHit(dmg, shooterId, head); return; }
+    if (!m_activeGs) return;
+    for (auto &act : m_activeGs->actors) {
+        if (act.id != targetId) continue;
+        if (!act.alive) return;
+        if (act.ctl == CTL_REMOTE) {                         // a human: their own machine applies it
+            QVariantMap ev; ev["target"] = targetId; ev["dmg"] = dmg; ev["head"] = head; ev["shooter"] = shooterId;
+            QByteArray pl; QDataStream out(&pl, QIODevice::WriteOnly);
+            out << (quint8)NET_EVENT << (quint8)EV_DAMAGE << ev;
+            sendTcpPacket(socketForId(targetId), NET_EVENT, pl);
+            act.hitFlash = 0.2f;
+            return;
+        }
+        int d = std::max(1, int(dmg * (1.f - act.damageReduction)));
+        act.hp -= d; act.hitFlash = 0.2f;
+        if (act.hp <= 0) {
+            act.hp = 0; act.alive = false; act.respawnT = 5.f;
+            act.velX = act.velY = 0.f;
+            handleDeathDrop(act.id, shooterId, head, *m_activeGs);
+        }
+        return;
+    }
+}
+
+void NetworkManager::applyLocalHit(int dmg, int shooterId, bool head)
+{
+    if (!m_activeGs) return;
+    Player &pl = m_activeGs->player;
+    if (pl.hp <= 0) return;
+    int d = std::max(1, int(dmg * (1.f - pl.damageReduction)));
+    pl.hp = std::max(0, pl.hp - d);
+    pl.damageFlash = 0.45f;
+    QVariantMap ev; ev["target"] = m_localPlayerId; ev["dmg"] = d; ev["shooter"] = shooterId; ev["head"] = head;
+    emit matchEvent(EV_DAMAGE, ev);                          // the game plays the hurt sound / direction marker
+    if (pl.hp <= 0) handleDeathDrop(m_localPlayerId, shooterId, head, *m_activeGs);
+}
+
+void NetworkManager::syncPickups(GameState &gs)
+{
+    if (!isMultiplayerActive()) return;
+    auto newId = [&]() { return (m_localPlayerId + 1) * 100000 + (++m_pickupSeq % 100000); };
+    for (auto &wp : gs.weaponPickups) {
+        if (wp.active && wp.netId == 0) {
+            wp.netId = newId();
+            QVariantMap ev;
+            ev["nid"] = wp.netId; ev["kit"] = false; ev["x"] = wp.x; ev["y"] = wp.y;
+            ev["type"] = int(wp.type); ev["weapon"] = wp.weapon; ev["mag"] = wp.mag; ev["reserve"] = wp.reserve;
+            ev["throw"] = wp.throwKind; ev["reward"] = wp.reward; ev["rarity"] = int(wp.load.rarity);
+            QVariantList att; for (int a = 0; a < AT_COUNT; a++) att << int(wp.load.att[a]);
+            ev["att"] = att;
+            broadcastEvent(EV_SPAWN_PICKUP, ev);
+        } else if (!wp.active && wp.netId > 0) {
+            QVariantMap ev; ev["nid"] = wp.netId;
+            broadcastEvent(EV_PICKUP, ev);
+            wp.netId = -1;
+        }
+    }
+    for (auto &k : gs.healthKits) {
+        if (k.active && k.netId == 0) {
+            k.netId = newId();
+            QVariantMap ev; ev["nid"] = k.netId; ev["kit"] = true; ev["x"] = k.x; ev["y"] = k.y;
+            broadcastEvent(EV_SPAWN_PICKUP, ev);
+        } else if (!k.active && k.netId > 0) {
+            QVariantMap ev; ev["nid"] = k.netId;
+            broadcastEvent(EV_PICKUP, ev);
+            k.netId = -1;
+        }
+    }
+}
+
+void NetworkManager::spawnFromEvent(const QVariantMap &d)
+{
+    if (!m_activeGs) return;
+    int nid = d.value("nid").toInt();
+    if (nid <= 0) return;
+    for (const auto &wp : m_activeGs->weaponPickups) if (wp.netId == nid) return;
+    for (const auto &k : m_activeGs->healthKits) if (k.netId == nid) return;
+    float x = d.value("x").toFloat(), y = d.value("y").toFloat();
+    if (!std::isfinite(x) || !std::isfinite(y)) return;
+    if (d.value("kit").toBool()) {
+        HealthKit hk; hk.x = x; hk.y = y; hk.netId = nid;
+        m_activeGs->healthKits.push_back(hk);
+        return;
+    }
+    WeaponPickup wp;
+    wp.x = x; wp.y = y; wp.netId = nid;
+    wp.type = PickupType(std::max(0, std::min(d.value("type").toInt(), int(PICKUP_KEY))));
+    int w = d.value("weapon").toInt();
+    wp.weapon = (w >= 0 && w < WPN_COUNT) ? w : -1;
+    if (wp.type == PICKUP_WEAPON && wp.weapon < 0) return;
+    wp.mag = d.value("mag").toInt(); wp.reserve = d.value("reserve").toInt();
+    wp.throwKind = std::max(0, std::min(d.value("throw").toInt(), TH_COUNT - 1));
+    wp.reward = d.value("reward").toBool();
+    wp.load.rarity = uint8_t(std::max(0, std::min(d.value("rarity").toInt(), RARITY_COUNT - 1)));
+    QVariantList att = d.value("att").toList();
+    for (int a = 0; a < AT_COUNT && a < att.size(); a++) wp.load.att[a] = uint8_t(std::max(0, std::min(att[a].toInt(), 7)));
+    m_activeGs->weaponPickups.push_back(wp);
+}
+
+void NetworkManager::takeFromEvent(const QVariantMap &d)
+{
+    if (!m_activeGs) return;
+    int nid = d.value("nid").toInt();
+    if (nid <= 0) return;
+    for (auto &wp : m_activeGs->weaponPickups) if (wp.netId == nid) { wp.active = false; wp.netId = -1; }
+    for (auto &k : m_activeGs->healthKits) if (k.netId == nid) { k.active = false; k.netId = -1; }
+}
+
+int NetworkManager::teamOf(int id) const
+{
+    for (const auto &s : m_slots) if (s.id == id) return s.team == 1 ? 1 : 0;
+    return -1;
+}
+
+QString NetworkManager::nameOf(int id) const
+{
+    for (const auto &s : m_slots) if (s.id == id) return s.name;
+    return QString();
 }
 
 void NetworkManager::handleRespawn(int actorId, GameState &gs, const World &world, const ParsedMap &pm)
@@ -1185,7 +1347,9 @@ void NetworkManager::handleRespawn(int actorId, GameState &gs, const World &worl
         sx = rx; sy = ry;
     }
 
+    for (auto &sl : m_slots) if (sl.id == actorId) sl.alive = true;
     if (actorId == m_localPlayerId) {
+        m_localDeadReported = false;
         gs.player.posX = sx; gs.player.posY = sy;
         gs.player.dirX = (team == 0) ? 1.f : -1.f;
         gs.player.dirY = 0.f;
@@ -1239,9 +1403,8 @@ void NetworkManager::checkObjectiveInteractions(GameState &gs)
             m_match.keyCarrier = -1;
             m_match.vaultUnlocked = true;
 
-            int team = 0;
-            for (const auto &s : m_slots) { if (s.id == m_localPlayerId) team = s.team == 1 ? 1 : 0; }
-            m_match.teamScore[team] += 500; // +500 points for team!
+            int team = std::max(0, teamOf(m_localPlayerId));
+            if (m_isHost) m_match.teamScore[team] += 500;   // +500 points for team (a client's is added by the host)
 
             // Spawn Vault power weapons
             WeaponPickup w1; w1.x = 22.5f; w1.y = 23.5f; w1.type = PICKUP_WEAPON; w1.weapon = WPN_RAILGUN; w1.reward = true;

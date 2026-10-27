@@ -40,7 +40,12 @@ static const int UPGRADE_MAX[4] = { 3, 3, 3, 2 };
 // ─────────────────────────────────────────────────────────────────────────────
 //  Persistent player stats (campaign upgrades)
 // ─────────────────────────────────────────────────────────────────────────────
-int MainWindow::maxHP() const { return CHAR_PROFILES[m_charChoice].hp + (m_campaignRun ? 20 * m_upg[1] : 0); }
+int MainWindow::maxHP() const
+{
+    if (m_gameMode == MODE_MULTIPLAYER)                    // the operative class sets it
+        return m_gs.charClass == CLS_SCOUT ? 75 : m_gs.charClass == CLS_TANK ? 200 : 100;
+    return CHAR_PROFILES[m_charChoice].hp + (m_campaignRun ? 20 * m_upg[1] : 0);
+}
 float MainWindow::maxStamina() const { return CHAR_PROFILES[m_charChoice].stamina * (1.f + (m_campaignRun ? 0.25f * m_upg[2] : 0.f)); }
 float MainWindow::reloadMul() const { return 1.f - (m_campaignRun ? 0.1f * m_upg[3] : 0.f); }
 

@@ -491,7 +491,7 @@ private:
     void  spawnSquad();
     void  updateActors(float dt);
     int   hostileTarget(float x, float y, float z, float &tx, float &ty, float &tz, float &dist) const;
-    void  damageActor(int i, int dmg, float fromX, float fromY);
+    void  damageActor(int i, int dmg, float fromX, float fromY, int shooterId = -1, bool head = false);
     void spawnBlood(float wx, float wy, float wz, int count, float force);
     void spawnImpact(float wx, float wy, float wz, bool floor);
     void tryOpenDoor();
@@ -729,6 +729,14 @@ private:
     bool    m_mpTypingName = false;
     bool    m_showScoreboard = false;
     float   m_mpRespawnCountdown = -1.f;
+    int     m_mpCoins = 0;              // kill coins: spent in the respawn armoury
+    int     m_mpBuy = 0;                // armoury pick for the next life (MP_ARMOURY index)
+    QString m_mpKilledBy;               // who got us last
+    QString m_mpBonusText;              // "+100 KILL  +50 COINS"
+    float   m_mpBonusT = 0.f;
+    void onMatchEvent(NetEventType type, const QVariantMap &d);
+    void applyMpArmoury();
+    bool actorPose(const Actor &a, struct Soldier3D &sp) const;
     void renderMultiplayerLobby();
     void renderMultiplayerHUD();
     void renderScoreboard();

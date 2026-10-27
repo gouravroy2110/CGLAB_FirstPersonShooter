@@ -63,10 +63,17 @@ int MainWindow::hostileTarget(float x, float y, float z, float &tx, float &ty, f
     return best;
 }
 
-void MainWindow::damageActor(int i, int dmg, float fromX, float fromY)
+void MainWindow::damageActor(int i, int dmg, float fromX, float fromY, int shooterId, bool head)
 {
     Actor &a = m_gs.actors[size_t(i)];
     if (!a.alive) return;
+    if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
+        // the target's owner applies it (each human their own health, the host the bots) and scores the kill
+        a.hitFlash = 0.15f;
+        sfxAt(SND_HIT_FLESH, a.posX, a.posY, 0.6f, frandA(0.9f, 1.1f));
+        m_net->dealDamage(shooterId >= 0 ? shooterId : m_net->localPlayerId(), a.id, dmg, head);
+        return;
+    }
     a.hp -= dmg; a.hitFlash = 0.15f;
     sfxAt(SND_HIT_FLESH, a.posX, a.posY, 0.6f, frandA(0.9f, 1.1f));
     if (a.target < 0) {                                    // turn towards the shooter
@@ -74,17 +81,11 @@ void MainWindow::damageActor(int i, int dmg, float fromX, float fromY)
         a.dirX = dx / d; a.dirY = dy / d;
     }
     if (a.hp <= 0) {
-        bool mp = (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive());
-        a.hp = 0; a.alive = false; a.respawnT = mp ? 5.f : 12.f;
+        a.hp = 0; a.alive = false; a.respawnT = 12.f;
         a.velX = a.velY = 0.f;
         spawnBlood(a.posX, a.posY, a.footZ + 0.5f, 14, 1.f);
         addDecal(m_blood, a.posX, a.posY, 0.35f, 150);
-        if (mp) {
-            pushFeed(QString("%1 ELIMINATED").arg(a.name), 3.0f, true);
-            m_net->handleDeathDrop(a.id, m_net->localPlayerId(), false, m_gs);
-        } else {
-            pushFeed(QString("SQUAD  %1 IS DOWN - BACK IN 12 S").arg(a.name), 3.5f);
-        }
+        pushFeed(QString("SQUAD  %1 IS DOWN - BACK IN 12 S").arg(a.name), 3.5f);
         sfx(SND_RADIO, 0.6f);
     }
 }
@@ -96,6 +97,7 @@ void MainWindow::updateActors(float dt)
         Actor &a = m_gs.actors[size_t(ai)];
         a.hitFlash = std::max(0.f, a.hitFlash - dt);
         a.shootAnim = std::max(0.f, a.shootAnim - dt);
+        a.spotT = std::max(0.f, a.spotT - dt);
         if (!a.alive) {
             if (a.escort) continue;                        // a story NPC stays down
             if (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive()) {
@@ -124,8 +126,28 @@ void MainWindow::updateActors(float dt)
             continue;
         }
 
-        // Remote human player: NEVER puppet with bot AI! Controlled strictly by network updates.
-        if (a.ctl == CTL_REMOTE) continue;
+        // Remote human players, and every bot on a client, are driven by the network:
+        // only the host thinks for bots, everyone else animates what it sends
+        if (a.ctl == CTL_REMOTE || (m_gameMode == MODE_MULTIPLAYER && m_net && m_net->isMultiplayerActive() && !m_net->isHost())) {
+            a.walkPhase += std::sqrt(a.velX * a.velX + a.velY * a.velY) * dt * 9.f;
+            for (; a.shotFx > 0; a.shotFx--) {                     // their shots: the sound and a tracer
+                int w = a.curWeapon;
+                if (w < 0 || w >= WPN_COUNT || isMelee(w)) continue;
+                WeaponClass wc = WEAPONS[w].cls;
+                sfxAt(wc == WC_SHOTGUN ? SND_SHOTGUN : wc == WC_SNIPER ? SND_SNIPER : wc == WC_PISTOL ? SND_PISTOL : SND_RIFLE,
+                      a.posX, a.posY, 0.6f, frandA(0.95f, 1.05f));
+                a.shootAnim = 0.12f;
+                a.spotT = 2.f;
+                Tracer t;
+                t.x0 = a.posX + a.dirX * 0.5f; t.y0 = a.posY + a.dirY * 0.5f; t.z0 = a.footZ + 0.64f;
+                float reach = 1.f;
+                while (reach < 30.f && posValid(a.posX + a.dirX * reach, a.posY + a.dirY * reach, 0.f)) reach += 0.5f;
+                t.x1 = a.posX + a.dirX * reach; t.y1 = a.posY + a.dirY * reach; t.z1 = t.z0;
+                t.len = reach - 0.5f;
+                m_gs.tracers.push_back(t);
+            }
+            continue;
+        }
 
         float az = a.footZ + 0.55f;
 
@@ -218,6 +240,7 @@ void MainWindow::updateActors(float dt)
                 bool sniper = (a.curWeapon == WPN_SNIPER || a.curWeapon == WPN_DMR);
                 a.fireT = shotgun ? frandA(0.85f, 1.25f) : sniper ? frandA(1.3f, 1.7f) : frandA(0.18f, 0.32f);
                 a.shootAnim = 0.12f;
+                a.netShots++; a.spotT = 2.f;                       // clients play this shot from the count
                 sfxAt(shotgun ? SND_SHOTGUN : sniper ? SND_SNIPER : SND_RIFLE, a.posX, a.posY, 0.6f, frandA(0.95f, 1.05f));
                 float hitChance = clampf(1.05f - d / 24.f, 0.25f, 0.85f) * (shotgun ? (d < 6.f ? 1.f : 0.4f) : 1.f);
                 Tracer t; t.x0 = a.posX + a.dirX * 0.5f; t.y0 = a.posY + a.dirY * 0.5f; t.z0 = a.footZ + 0.64f;
@@ -230,7 +253,7 @@ void MainWindow::updateActors(float dt)
                         if (a.target == -2) {
                             hurtPlayer(dmg, a.posX, a.posY, a.id);
                         } else if (a.target >= 0 && a.target < int(m_gs.actors.size())) {
-                            damageActor(a.target, dmg, a.posX, a.posY);
+                            damageActor(a.target, dmg, a.posX, a.posY, a.id, head);
                         }
                     } else {
                         damageEnemy(a.target, dmg, head ? PART_HEAD : PART_BODY, t.x1, t.y1, t.z1, ai);
@@ -345,7 +368,7 @@ void MainWindow::updateActors(float dt)
         int cx = int(a.posX), cy = int(a.posY);
         if (inside(cx, cy) && m_acid[cy][cx] && a.footZ <= floorH(a.posX, a.posY) + 0.05f) {
             a.cmd.seq += 1;
-            if (a.cmd.seq % 20 == 0) damageActor(ai, 4, a.posX, a.posY);
+            if (a.cmd.seq % 20 == 0) damageActor(ai, 4, a.posX, a.posY, a.id);
         }
     }
 }

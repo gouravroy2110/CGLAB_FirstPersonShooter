@@ -551,16 +551,16 @@ MainWindow::HitResult MainWindow::hitscan(float ax, float ay, float startDist) c
             if (!a.alive) continue;
             float spX = a.posX - m_camX, spY = a.posY - m_camY;
             float txX = invDet * (pl.dirY * spX - pl.dirX * spY), txY = invDet * (-eplY * spX + eplX * spY);
-            if (txY < 0.1f + m_boomCur * 0.85f || txY < startDist || txY >= res.depth) continue;
-            float base = a.footZ;
-            float scrX = W / 2.f * (1.f + txX / txY);
-            float sz = m_K * 1.0f / txY;
-            float top = m_hor + (m_eye - base - 1.0f) * m_K / txY;
-            float u = (ax - (scrX - sz / 2)) / sz, v = (ay - top) / sz;
-            if (u < 0.18f || u > 0.82f || v < 0.f || v > 1.0f) continue;
-            HitPart part = v < 0.26f ? PART_HEAD : PART_BODY;
-            res.actor = i; res.enemy = -1; res.part = part; res.depth = txY;
-            res.x = m_camX + rdX * txY; res.y = m_camY + rdY * txY; res.z = m_eye + slope * txY;
+            if (txY < -1.f || txY - 1.f >= res.depth) continue;
+            (void)txX;
+            // the ray against the capsules of the drawn skeleton: head, body and limbs where you see them
+            Soldier3D sp;
+            if (!actorPose(a, sp)) continue;
+            float tHit;
+            int part = raySoldier(sp, m_camX, m_camY, m_eye, rdX, rdY, slope, tHit);
+            if (!part || tHit >= res.depth || tHit < startDist || tHit < 0.1f + m_boomCur * 0.85f) continue;
+            res.actor = i; res.enemy = -1; res.part = HitPart(part); res.depth = tHit;
+            res.x = m_camX + rdX * tHit; res.y = m_camY + rdY * tHit; res.z = m_eye + slope * tHit;
             res.wall = res.floor = res.sky = false;
         }
     }
