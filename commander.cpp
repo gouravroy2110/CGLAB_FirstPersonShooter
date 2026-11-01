@@ -23,7 +23,9 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
-#include <QProcess>
+#if QT_CONFIG(process)
+#include <QProcess>                       // the Windows speech helper (not on phones)
+#endif
 #include <QTextStream>
 #include <cmath>
 #include <algorithm>
@@ -212,6 +214,10 @@ void MainWindow::queueVoice(int speaker, const QString &text)
 void MainWindow::startVoiceJob()
 {
     if (m_voiceProc || m_voicePending.empty() || m_voiceDir.isEmpty()) return;
+#if !defined(Q_OS_WIN) || !QT_CONFIG(process)
+    m_voicePending.clear();                                      // new lines are spoken by Windows; elsewhere the bundled ones play
+    return;
+#else
     QString script = m_voiceDir + "/make_voices.ps1";
     QFile f(script);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) return;
@@ -249,6 +255,7 @@ void MainWindow::startVoiceJob()
         startVoiceJob();                                            // anything asked for meanwhile
     });
     m_voiceProc->start("powershell", { "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script });
+#endif
 }
 
 // The playable clip for a line, or -1 (not generated yet: it is queued for next time)

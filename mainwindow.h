@@ -12,6 +12,7 @@
 #include <QWheelEvent>
 #include <QApplication>
 #include <set>
+#include <map>
 #include <unordered_map>
 #include <vector>
 #include <QString>
@@ -46,6 +47,7 @@ public:
     void hostMultiplayer();
     void joinMultiplayer();
     void startMultiplayerMatch();
+    void enableTouchUI();                                 // phones (and --touch): on-screen controls, letterboxed frame
 
 protected:
     void paintEvent(QPaintEvent *)      override;
@@ -67,7 +69,7 @@ private:
     uint32_t  *m_pixels;
     rs::Canvas m_cv;
     std::vector<float> m_depth;          // per-pixel z-buffer (view depth), 1e30 = sky
-    int        m_colTop[W];              // first terrain row per column; sky above it
+    int        m_colTop[W_MAX];              // first terrain row per column; sky above it
 
     // -- World ---------------------------------------------------------------------
     // (grid, heightfield, light map and decals live in World)
@@ -481,6 +483,24 @@ private:
     // -- Logic ---------------------------------------------------------------------
     void initGame();
     void startDebugMode();
+
+    // -- Phones and tablets: on-screen touch controls (touch.cpp) --------------------------
+    // On by default on Android / iOS; on the desktop with --touch (a mouse drag acts as a finger)
+    struct TouchPt { int role = 0, btn = -1; QPointF start, last; };
+    bool     m_touchUI = false;
+    std::map<int, TouchPt> m_touches;                      // finger id -> what it is doing
+    QPointF  m_stickBase;
+    bool     m_stickOn = false, m_touchSprint = false, m_touchCrouch = false, m_touchThrow = false;
+    float    m_touchMoveX = 0.f, m_touchMoveY = 0.f;       // the joystick, -1..1 (y down = backwards)
+    bool touchLive() const;
+    void touchDown(int id, QPointF frame);
+    void touchMove(int id, QPointF frame);
+    void touchUp(int id);
+    void touchReset();
+    bool touchAction(KeyAction act) const;
+    void renderTouchControls();
+    QRect frameViewport(int ww, int wh) const;
+    bool event(QEvent *e) override;
 
     // -- CV MODE: webcam controls (cvcontrols.cpp, cvinput.h) ------------------------------
     struct CvCalib { bool ok = false; float t = 0.f; int n = 0; float x = 0, y = 0, yaw = 0, pitch = 0, roll = 0, size = 0; };

@@ -187,7 +187,7 @@ void MainWindow::saveSettings() const
 // Field of view -> length of the camera plane (the renderer's FOV), volume -> mixer
 void MainWindow::applySettings()
 {
-    m_planeLen = std::tan(float(m_fovDeg) * 3.14159265f / 360.f);
+    m_planeLen = std::tan(float(m_fovDeg) * 3.14159265f / 360.f) * (float(W) / 800.f);   // a wider frame sees wider, not stretched
     Player &pl = m_gs.player;
     float l = std::sqrt(pl.planeX * pl.planeX + pl.planeY * pl.planeY);
     if (l > 1e-4f) { pl.planeX *= m_planeLen / l; pl.planeY *= m_planeLen / l; }

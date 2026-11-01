@@ -271,7 +271,7 @@ void MainWindow::renderSky()
     const Theme &T = m_env;
     const std::vector<uint32_t> &sky = m_sky[m_theme];
     float facing = std::atan2(pl.dirY, pl.dirX);
-    static int colIdx[W], rowIdx[H];
+    static int colIdx[W_MAX], rowIdx[H];
     for (int x = 0; x < W; x++) {
         float camX = 2.f * x / W - 1.f;
         float ang = facing + std::atan(camX * m_planeLen * m_adsFOVMult);

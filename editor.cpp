@@ -9,6 +9,7 @@
 //  next time the game starts; F5 play-tests the edited map straight away.
 // =============================================================================
 #include "mainwindow.h"
+#include <QStandardPaths>
 #include <QDir>
 #include <QFile>
 #include <QTextStream>
@@ -30,9 +31,19 @@ static const Brush BRUSHES[] = {
 };
 static const int BRUSH_COUNT = int(sizeof(BRUSHES) / sizeof(BRUSHES[0]));
 
+// Edited maps live next to the game; a phone's app folder is read-only, so there they go to its data folder
+static QString mapsDir()
+{
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/maps";
+#else
+    return QCoreApplication::applicationDirPath() + "/maps";
+#endif
+}
+
 static QString mapFilePath(int map)
 {
-    return QCoreApplication::applicationDirPath() + "/maps/" + QString(MAP_NAMES[map]).replace(' ', '_') + ".txt";
+    return mapsDir() + "/" + QString(MAP_NAMES[map]).replace(' ', '_') + ".txt";
 }
 
 // The built-in rows of a map, or the saved override if one exists
@@ -154,7 +165,7 @@ void MainWindow::editorSave()
     m_layoutRows[m_edMap] = m_edRows;
     applyLayoutRows(m_edMap);
     if (!m_testMode) {
-        QDir().mkpath(QCoreApplication::applicationDirPath() + "/maps");
+        QDir().mkpath(mapsDir());
         QFile f(mapFilePath(m_edMap));
         if (f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
             QTextStream out(&f);

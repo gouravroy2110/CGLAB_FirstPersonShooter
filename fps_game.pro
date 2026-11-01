@@ -36,7 +36,8 @@ SOURCES += \
     stats.cpp \
     commander.cpp \
     cvinput.cpp \
-    cvcontrols.cpp
+    cvcontrols.cpp \
+    touch.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -72,6 +73,19 @@ DEFINES += QT_DEPRECATED_WARNINGS
 RASTER_SRCDIR_LINE = "$${LITERAL_HASH}define RASTER_SRC_DIR \"$$PWD\""
 write_file($$OUT_PWD/raster_srcdir.h, RASTER_SRCDIR_LINE)
 INCLUDEPATH += $$OUT_PWD
+
+# --- Phones ---------------------------------------------------------------------------
+# Android (Qt for Android kit): landscape, full screen, network for multiplayer
+android {
+    ANDROID_PACKAGE_SOURCE_DIR = $$PWD/android
+    DISTFILES += android/AndroidManifest.xml
+}
+# iOS (Qt for iOS kit, on a Mac with Xcode): landscape, full screen, local network for multiplayer
+ios {
+    QMAKE_INFO_PLIST = $$PWD/ios/Info.plist
+    QMAKE_TARGET_BUNDLE_PREFIX = com.cglab
+    QMAKE_BUNDLE = rasterfps
+}
 
 # Default rules for deployment
 qnx: target.path = /tmp/$${TARGET}/bin

@@ -8,7 +8,10 @@
 // =============================================================================
 #pragma once
 #include <QObject>
-#include <QProcess>
+#include <QtGlobal>
+#if QT_CONFIG(process)
+#include <QProcess>                       // not on iOS: CV MODE is a desktop feature
+#endif
 #include <QString>
 #include <QUdpSocket>
 #include <vector>
@@ -41,7 +44,6 @@ public:
     bool start();                        // start listening + the helper script
     void stop();
     bool running() const { return m_sock != nullptr; }
-    bool helperAlive() const { return m_proc && m_proc->state() != QProcess::NotRunning; }
     QString status() const;                  // what to show while there are no camera frames
 
     const CvFrame &frame() const { return m_frame; }
@@ -55,7 +57,7 @@ private slots:
 
 private:
     QUdpSocket *m_sock = nullptr;
-    QProcess   *m_proc = nullptr;
+    class QProcess *m_proc = nullptr;
     CvFrame     m_frame;
     float       m_age = 99.f;
     float       m_upT = 0.f;                 // seconds since start()

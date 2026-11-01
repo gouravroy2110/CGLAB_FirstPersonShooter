@@ -1158,7 +1158,7 @@ void MainWindow::updateThrow(float dt)
     Player &pl = m_gs.player;
     if (!m_cooking) return;
     m_cookT += dt;
-    bool held = m_keys.count(m_keyBinds[ACT_THROW]) || (m_cvMode && m_cvGesture == "Closed_Fist");   // a closed fist holds it too
+    bool held = m_keys.count(m_keyBinds[ACT_THROW]) || (m_cvMode && m_cvGesture == "Closed_Fist") || m_touchThrow;   // a fist, a finger on the button
     if (!held) { releaseThrow(); return; }
     // a frag cooked past its fuse goes off in your hand
     if (pl.throwSel == TH_FRAG && m_cookT >= THROWS[TH_FRAG].fuse) {

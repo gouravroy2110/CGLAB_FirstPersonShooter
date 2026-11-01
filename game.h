@@ -7,7 +7,12 @@
 #include <cstdint>
 #include <algorithm>
 
-static const int W = 800, H = 600;
+// The framebuffer: 600 rows always; 800 columns on the desktop (4:3), wider on a phone so the
+// picture fills a 20:9 screen. W is chosen once at start-up (main.cpp), before anything is drawn.
+inline int W = 800;
+static const int H = 600;
+static const int W_MAX = 1440;                 // the widest frame (24:10 and beyond letterbox)
+static const float PHONE_SIDE_MARGIN = 0.03f;  // phones: kept clear at each short edge (rounded corners, camera)
 
 // Row-major 2D array sized at run time; g[y][x] indexing like a C array
 template <class T>

@@ -49,6 +49,10 @@ bool CvInput::start()
     connect(m_sock, &QUdpSocket::readyRead, this, &CvInput::onDatagram);
     m_age = 99.f; m_count = 0; m_upT = 0.f; m_noCamera = false;
 
+#if !QT_CONFIG(process)
+    m_status = "CV MODE NEEDS THE DESKTOP VERSION";              // no helper processes on this platform
+    return true;
+#else
     QString script = findScript();
     if (script.isEmpty()) { m_status = "tools/cv_control.py NOT FOUND - RUN IT BY HAND"; return true; }
     m_proc = new QProcess(this);
@@ -62,13 +66,16 @@ bool CvInput::start()
     }
     m_status.clear();
     return true;
+#endif
 }
 
 QString CvInput::status() const
 {
     if (!m_status.isEmpty()) return m_status;
+#if QT_CONFIG(process)
     if (m_proc && m_proc->state() == QProcess::NotRunning)
         return "CAMERA HELPER STOPPED - RUN  python tools/cv_control.py --show  TO SEE WHY";
+#endif
     if (m_noCamera) return "THE CAMERA GIVES NO IMAGES - CLOSE OTHER APPS USING IT";
     if (m_count == 0) return QString("STARTING THE CAMERA... %1 S - TAKES ABOUT 10 S").arg(int(m_upT));
     return "WAITING FOR THE CAMERA...";
@@ -76,11 +83,13 @@ QString CvInput::status() const
 
 void CvInput::stop()
 {
+#if QT_CONFIG(process)
     if (m_proc) {
         m_proc->kill();
         m_proc->waitForFinished(1500);
         delete m_proc; m_proc = nullptr;
     }
+#endif
     if (m_sock) { m_sock->close(); delete m_sock; m_sock = nullptr; }
     m_frame = CvFrame{};
     m_age = 99.f;

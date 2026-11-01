@@ -1,4 +1,6 @@
 #include <QApplication>
+#include <QScreen>
+#include <algorithm>
 #include <iostream>
 #ifdef _WIN32
 #include <windows.h>
@@ -25,6 +27,17 @@ int main(int argc, char *argv[])
 
     QStringList args = app.arguments();
 
+    // The frame's width: a phone gets its screen's shape (landscape), --width N tries one on the desktop
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    if (QScreen *scr = QGuiApplication::primaryScreen()) {
+        QSize sz = scr->size();
+        float aspect = float(std::max(sz.width(), sz.height())) / float(std::max(1, std::min(sz.width(), sz.height())));
+        W = std::clamp(int(H * aspect * (1.f - 2.f * PHONE_SIDE_MARGIN) + 0.5f) & ~1, 800, W_MAX);
+    }
+#endif
+    int wi = args.indexOf("--width");
+    if (wi >= 0 && wi + 1 < args.size()) W = std::clamp(args[wi + 1].toInt() & ~1, 800, W_MAX);
+
     // Automated loopback network test
     if (args.contains("--test-net")) {
         std::cout << "\n[NET TEST] Running loopback multiplayer handshake test..." << std::endl;
@@ -49,6 +62,11 @@ int main(int argc, char *argv[])
     }
 
     MainWindow win;
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    win.enableTouchUI();                                         // a phone: fingers, full screen
+#else
+    if (args.contains("--touch")) win.enableTouchUI();           // try the phone controls with a mouse
+#endif
 
     // Developer aid: "fps_game --snapshot <dir>" renders scripted scenes to PNGs
     int si = args.indexOf("--snapshot");
@@ -83,7 +101,11 @@ int main(int argc, char *argv[])
     win.loadSettings();
     win.enableAudio();
     win.setWindowTitle("Raster FPS  |  CG Lab  |  Sector War Multiplayer Active");
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    win.showFullScreen();
+#else
     win.show();
+#endif
 
     return app.exec();
 }

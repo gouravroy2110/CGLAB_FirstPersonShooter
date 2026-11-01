@@ -14,6 +14,8 @@
 // =============================================================================
 #include "mainwindow.h"
 #include "cvinput.h"
+#include <QInputDialog>
+#include <QTouchEvent>
 #include "pixelfont.h"
 #include "missions.h"
 #include "radiolines.h"
@@ -123,6 +125,7 @@ MainWindow::MainWindow(QWidget *parent)
 bool MainWindow::isActionPressed(KeyAction act) const
 {
     if (act < 0 || act >= ACT_COUNT) return false;
+    if (m_touchUI && touchAction(act)) return true;                    // a finger on the screen
     int k = m_keyBinds[act];
     return k > 0 && m_keys.count(k) > 0;
 }
@@ -282,8 +285,10 @@ void MainWindow::startMultiplayerMatch()
     m_emergencyAmmoCooldown = 0.f; m_emergencyHealthCooldown = 0.f;
 
     setFocus();
-    QCursor::setPos(mapToGlobal(QPoint(width() / 2, height() / 2)));
-    setCursor(Qt::BlankCursor);
+    if (!m_touchUI) {                                            // a phone has no pointer to capture
+        QCursor::setPos(mapToGlobal(QPoint(width() / 2, height() / 2)));
+        setCursor(Qt::BlankCursor);
+    }
 
     updateAmbience();
     pushFeed("SECTOR WAR INITIATED - ELIMINATE ENEMY OPERATIVES!", 4.5f, true);
@@ -696,7 +701,8 @@ void MainWindow::tick()
 
     advance(dt);
 
-    bool captured = m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver && !m_gs.levelComplete && !m_showArmory && hasFocus();
+    if (m_touchUI && !m_touches.empty() && !touchLive()) touchReset();   // paused / died mid-touch: let go of everything
+    bool captured = !m_touchUI && m_screen == SCR_PLAYING && !m_paused && !m_gs.gameOver && !m_gs.levelComplete && !m_showArmory && hasFocus();
     Qt::CursorShape want = captured ? Qt::BlankCursor : Qt::ArrowCursor;
     if (cursor().shape() != want) setCursor(want);
 
@@ -1179,6 +1185,9 @@ void MainWindow::gameStep(float dt)
     } else {
         cmd.forward = float(isActionPressed(ACT_MOVE_FWD)) - float(isActionPressed(ACT_MOVE_BACK));
         cmd.strafe  = leaning ? 0.f : float(isActionPressed(ACT_MOVE_RIGHT)) - float(isActionPressed(ACT_MOVE_LEFT));   // A / D lean instead
+        if (m_touchUI && (std::fabs(m_touchMoveX) > 0.05f || std::fabs(m_touchMoveY) > 0.05f)) {
+            cmd.forward = -m_touchMoveY; cmd.strafe = m_touchMoveX;          // the joystick is analog: a light push walks slowly
+        }
         cmd.sprint  = wantSprint;
         cmd.jump    = m_jumpQueued;
         cmd.ads     = pl.adsMode;
@@ -2249,7 +2258,13 @@ void MainWindow::menuConfirm()
         else if (m_menuCursor == 4) openEditor(m_mapChoice);
         else if (m_menuCursor == 5) openSettings(SCR_MENU);
         else if (m_menuCursor == 6) startDebugMode();
-        else if (m_menuCursor == 7) startCvMode();
+        else if (m_menuCursor == 7) {
+#if QT_CONFIG(process)
+            startCvMode();
+#else
+            pushFeed("CV MODE RUNS ON THE DESKTOP VERSION", 2.5f);
+#endif
+        }
         else if (m_menuCursor == 8) openStats();
         else { saveStats(); QApplication::quit(); }
         break;
@@ -2303,6 +2318,7 @@ void MainWindow::menuBack()
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
     int k = e->key();
+    if (k == Qt::Key_Back) k = Qt::Key_Escape;                  // Android's back button: pause / back
     m_keys.insert(k);
     if (m_screen == SCR_EDITOR) { editorKey(e); return; }
     if (m_screen == SCR_CAMPAIGN || m_screen == SCR_BRIEFING || m_screen == SCR_DEBRIEF) { if (!e->isAutoRepeat()) campaignKey(k); return; }
@@ -2622,6 +2638,16 @@ void MainWindow::focusOutEvent(QFocusEvent *) { m_keys.clear(); m_lmb = false; }
 
 void MainWindow::mousePressEvent(QMouseEvent *e)
 {
+    if (m_touchUI && touchLive()) { touchDown(-1, widgetToFrame(e->position())); return; }   // --touch on a desktop: the mouse is a finger
+    if (m_screen == SCR_PLAYING && m_gs.gameOver) {                 // the game-over panel's lines are buttons too
+        QPointF f = widgetToFrame(e->position());
+        const int w = 460, h = 320, x = W / 2 - w / 2, y = H / 2 - h / 2;
+        int key = 0;
+        if (f.x() >= x && f.x() < x + w && f.y() >= y + 214 && f.y() < y + 246) key = Qt::Key_R;
+        else if (f.x() >= x && f.x() < x + w && f.y() >= y + 246 && f.y() < y + 276) key = f.x() < W / 2 + 40 ? Qt::Key_M : Qt::Key_Q;
+        if (key) { QKeyEvent kd(QEvent::KeyPress, key, Qt::NoModifier); keyPressEvent(&kd); m_keys.erase(key); }
+        return;
+    }
     if (m_screen == SCR_EDITOR) {
         QPointF f = widgetToFrame(e->position());
         for (const HitRect &r : m_menuRects) {
@@ -2748,6 +2774,16 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
                 }
                 else if (r.id == 6) { hostMultiplayer(); }
                 else if (r.id == 7) { joinMultiplayer(); }
+                else if ((r.id == 8 || r.id == 9) && m_touchUI) {          // a phone: its own keyboard, in a dialog
+                    bool ok = false;
+                    QString v = QInputDialog::getText(this, r.id == 8 ? "Callsign" : "Host address",
+                                                      r.id == 8 ? "Your callsign:" : "Host IP:port", QLineEdit::Normal,
+                                                      r.id == 8 ? m_mpPlayerName : m_mpInputAddr, &ok);
+                    if (ok && !v.trimmed().isEmpty()) {
+                        if (r.id == 8) { m_mpPlayerName = v.trimmed().left(15); if (m_net) m_net->setPlayerName(m_mpPlayerName); }
+                        else m_mpInputAddr = v.trimmed();
+                    }
+                }
                 else if (r.id == 8) { m_mpTypingName = true; m_mpTypingAddr = false; sfx(SND_UI_SELECT, 0.5f); }
                 else if (r.id == 9) { m_mpTypingAddr = true; m_mpTypingName = false; sfx(SND_UI_SELECT, 0.5f); }
                 else if (r.id == 20) { m_net->cycleTeamSize(); sfx(SND_UI_SELECT, 0.5f); }
@@ -2824,12 +2860,17 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
 }
 void MainWindow::mouseReleaseEvent(QMouseEvent *e)
 {
+    if (m_touchUI && m_touches.count(-1)) { touchUp(-1); return; }
     if (e->button() == Qt::LeftButton) { m_lmb = false; releaseTrigger(); }
     if (e->button() == Qt::RightButton) m_gs.player.adsMode = false;
 }
 void MainWindow::mouseMoveEvent(QMouseEvent *e)
 {
     m_mouseWidget = e->position();
+    if (m_touchUI) {                                             // no captured pointer to steer with
+        if (m_touches.count(-1)) touchMove(-1, widgetToFrame(e->position()));
+        if (m_screen == SCR_PLAYING && touchLive()) return;
+    }
     if (m_screen == SCR_EDITOR) { if (e->buttons() & (Qt::LeftButton | Qt::RightButton)) editorMouse(widgetToFrame(e->position()), e->buttons()); return; }
     if (m_screen != SCR_PLAYING) {
         QPointF f = widgetToFrame(e->position());
@@ -2915,7 +2956,8 @@ void MainWindow::zoomOrigin(float &x0, float &y0) const
 QPointF MainWindow::widgetToFrame(const QPointF &p) const
 {
     float x0, y0; zoomOrigin(x0, y0);
-    float fx = float(p.x()) * W / std::max(1, width()), fy = float(p.y()) * H / std::max(1, height());
+    QRect v = frameViewport(width(), height());
+    float fx = float(p.x() - v.x()) * W / std::max(1, v.width()), fy = float(p.y() - v.y()) * H / std::max(1, v.height());
     return QPointF(x0 + fx / m_rasterZoom, y0 + fy / m_rasterZoom);
 }
 
@@ -2924,6 +2966,38 @@ QPointF MainWindow::widgetToFrame(const QPointF &p) const
 // With the magnifier at 6+ screen pixels per box, a 1-pixel grid is drawn
 // between boxes and the pixel under the cursor/crosshair is outlined with its
 // coordinates and colour. QPainter only copies the finished image 1:1.
+// Touch screens: fingers that land on the game are its controls; anywhere else (menus)
+// the touch is left alone, so Qt turns it into a mouse click
+bool MainWindow::event(QEvent *e)
+{
+    switch (e->type()) {
+    case QEvent::TouchBegin: case QEvent::TouchUpdate: case QEvent::TouchEnd: case QEvent::TouchCancel: {
+        if (!m_touchUI) break;
+        if (e->type() == QEvent::TouchCancel) { touchReset(); return true; }
+        if (e->type() == QEvent::TouchBegin && !touchLive()) { e->ignore(); return false; }   // a tap on a menu
+        auto *te = static_cast<QTouchEvent *>(e);
+        for (const QEventPoint &p : te->points()) {
+            QPointF f = widgetToFrame(p.position());
+            if (p.state() == QEventPoint::Pressed) { if (touchLive()) touchDown(p.id(), f); }
+            else if (p.state() == QEventPoint::Released) touchUp(p.id());
+            else touchMove(p.id(), f);
+        }
+        e->accept();
+        return true;
+    }
+    default: break;
+    }
+    return QWidget::event(e);
+}
+
+void MainWindow::enableTouchUI()
+{
+    m_touchUI = true;
+    m_freeAim = false;                                           // the crosshair stays in the middle; the view turns
+    setAttribute(Qt::WA_AcceptTouchEvents);
+    setCursor(Qt::ArrowCursor);
+}
+
 void MainWindow::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -2934,6 +3008,18 @@ void MainWindow::paintEvent(QPaintEvent *)
 const QImage &MainWindow::composeDisplay(int ww, int wh)
 {
     if (m_display.width() != ww || m_display.height() != wh) m_display = QImage(ww, wh, QImage::Format_ARGB32);
+    QRect vp = frameViewport(ww, wh);                            // a phone: the 4:3 frame between black bars
+    if (vp.width() != ww || vp.height() != wh) {
+        m_display.fill(0xFF000000);
+        uint32_t *full = reinterpret_cast<uint32_t *>(m_display.bits());
+        const int vw = vp.width(), vh = vp.height();
+        for (int y = 0; y < vh; y++) {
+            const uint32_t *srow = m_pixels + std::min(H - 1, y * H / vh) * W;
+            uint32_t *drow = full + size_t(vp.y() + y) * ww + vp.x();
+            for (int x = 0; x < vw; x++) drow[x] = srow[std::min(W - 1, x * W / vw)];
+        }
+        return m_display;
+    }
     uint32_t *dst = reinterpret_cast<uint32_t *>(m_display.bits());
     float x0, y0; zoomOrigin(x0, y0);
     const float pxX = float(ww) / W * m_rasterZoom, pxY = float(wh) / H * m_rasterZoom;   // screen px per fb px
@@ -3463,6 +3549,48 @@ bool MainWindow::snapshot(const QString &dir)
             .arg(w2 >= 0 ? WEAPONS[w2].shortName : "-").arg(shots));
         run(1); save("99_cv_mode");
         stopCvMode();
+    }
+
+    // --- Phones: the on-screen controls (fingers through the same calls a touch screen makes) ---
+    {
+        start(4);
+        Player &pl = m_gs.player;
+        pl.hp = 100;
+        bool wasTouch = m_touchUI;
+        m_touchUI = true; m_freeAim = false;
+        float x0 = pl.posX, y0 = pl.posY, yaw0 = std::atan2(pl.dirY, pl.dirX);
+        touchDown(1, QPointF(150, 420));                               // left thumb down...
+        for (int i = 0; i < 60; i++) { touchMove(1, QPointF(150, 420 - std::min(55, i * 4))); advance(1.f / 60.f); }   // ...pushed forwards
+        float walked = std::sqrt((pl.posX - x0) * (pl.posX - x0) + (pl.posY - y0) * (pl.posY - y0));
+        bool stickShown = m_stickOn;
+        run(1); save("99_touch_controls");
+        composeDisplay(2400, 1080).save(dir + "/99_phone_android_2400x1080.png");   // as a phone shows it: letterboxed
+        composeDisplay(2556, 1179).save(dir + "/99_phone_iphone15_2556x1179.png");
+        touchUp(1);
+        touchDown(2, QPointF(W * 0.6f, 300));                          // right thumb drags to look
+        for (int i = 1; i <= 20; i++) { touchMove(2, QPointF(W * 0.6f + i * 6, 300)); advance(1.f / 60.f); }
+        touchUp(2);
+        float turned = std::atan2(pl.dirY, pl.dirX) - yaw0;
+        int shots0 = m_gs.shotsFired;
+        pl.attackCooldown = 0.f; pl.reloadTimer = pl.switchTimer = 0.f;
+        touchDown(3, QPointF(W - 92, 404));                            // FIRE
+        for (int i = 0; i < 6; i++) advance(1.f / 60.f);
+        touchUp(3);
+        int fired = m_gs.shotsFired - shots0;
+        int gren0 = pl.throwCount[pl.throwSel];
+        touchDown(4, QPointF(W - 272, 444));                           // GRENADE: held cooks...
+        for (int i = 0; i < 20; i++) advance(1.f / 60.f);
+        bool cooking = m_cooking;
+        touchUp(4);                                                    // ...let go throws
+        for (int i = 0; i < 3; i++) advance(1.f / 60.f);
+        int gren1 = pl.throwCount[pl.throwSel];
+        touchDown(5, QPointF(W - 28, 74)); touchUp(5);                 // pause
+        bool paused = m_paused;
+        log(QString("touch controls: stick forward 1 s -> walked %1 (expect > 1), joystick shown %2, look drag -> turned %3 rad, "
+                    "fire button -> shots %4, grenade held -> cooking %5, released -> grenades %6 -> %7, pause button -> paused %8")
+            .arg(walked, 0, 'f', 2).arg(stickShown).arg(turned, 0, 'f', 2).arg(fired).arg(cooking).arg(gren0).arg(gren1).arg(paused));
+        m_paused = false; touchReset();
+        m_touchUI = wasTouch;
     }
 
     // --- Radio commander: situations queue scripted lines with priorities ------------

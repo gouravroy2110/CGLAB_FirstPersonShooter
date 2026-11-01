@@ -258,6 +258,7 @@ void MainWindow::renderHUD()
         if (m_showScoreboard) renderScoreboard();
     }
     if (m_cvMode) renderCvPanel();                                     // webcam controls
+    if (m_touchUI && touchLive()) renderTouchControls();               // phones: the on-screen buttons
 
 
     float ax, ay; aimPoint(ax, ay);
@@ -309,7 +310,7 @@ void MainWindow::renderHUD()
         text(0, H - 16, W, 14, Qt::AlignCenter, QString("PIXEL BLOCK %1x%1  ( [ ] to change )").arg(m_pixelScale), QColor(255, 200, 100, 200), 11, 600);
     if (m_gs.frameNum < 420 && m_gs.level == 1 && !scoped) {
         m_cv.blendRect(0, H - 20, W, 20, withAlpha(0, 150));
-        text(0, H - 19, W, 18, Qt::AlignCenter, "WASD move  LMB fire  RMB sights  R reload  1-4 weapons  SPACE jump  CTRL crouch  ALT+A/D lean  E use  ESC pause",
+        if (!m_touchUI) text(0, H - 19, W, 18, Qt::AlignCenter, "WASD move  LMB fire  RMB sights  R reload  1-4 weapons  SPACE jump  CTRL crouch  ALT+A/D lean  E use  ESC pause",
              QColor(220, 220, 220, 220), 11, 500, false);
     }
 }
@@ -1398,7 +1399,12 @@ void MainWindow::renderMenu()
     text(70, 182, 520, 30, Qt::AlignLeft | Qt::AlignVCenter, "T A C T I C A L   S H O O T E R", qc(AMBER), 18, 700);
     text(70, 212, 520, 18, Qt::AlignLeft, "Every pixel is computed on the CPU  -  pure software rasterization", QColor(170, 175, 180), 12, 500);
 
-    const char *opts[10] = { "CAMPAIGN", "FREE PLAY", "MULTIPLAYER", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", "CV MODE (WEBCAM)", "STATS", "EXIT" };
+#if QT_CONFIG(process)
+    const char *cvLabel = "CV MODE (WEBCAM)";
+#else
+    const char *cvLabel = "CV MODE (DESKTOP ONLY)";
+#endif
+    const char *opts[10] = { "CAMPAIGN", "FREE PLAY", "MULTIPLAYER", "ARSENAL", "MAP EDITOR", "SETTINGS", "FIRING RANGE", cvLabel, "STATS", "EXIT" };
     for (int i = 0; i < 10; i++) {
         bool sel = m_menuCursor == i;
         int x = 48, y = 230 + i * 33, w = 300, h = 30;
