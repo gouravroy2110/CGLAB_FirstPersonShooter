@@ -23,6 +23,7 @@
 #include "world.h"
 #include "sim.h"
 #include "multiplayer.h"
+#include "rogue_brain.h"
 
 struct Raster3D;
 struct WorldCam;
@@ -322,6 +323,11 @@ private:
     void  renderEditor();
     // -- Campaign (campaign.cpp) ---------------------------------------------------------
     GameMode m_gameMode = MODE_FREEPLAY;   // current game mode: Free Play, Campaign, or Multiplayer
+    bool  m_adaptiveAI = false;          // Free Play: Adaptive AI & Rogue Infiltration mode
+    RoguePolicyEngine   m_rogueBrain;    // Local Q-learning policy engine for the Rogue
+    PlayerCombatTracker m_combatTracker; // Profiles player tactical tendencies
+    RogueThreatReport   m_rogueStats;    // Post-match after-action threat report
+    float m_rogueRespawnT = 0.f;        // Respawn timer for evolved Rogue generations
     bool  m_campaignRun = false;        // playing a story mission (not free play)
     void  openCampaign();
     int   maxHP() const;
@@ -537,6 +543,10 @@ private:
     void tryOpenDoor();
     void updateDoors(float dt);
     void spawnPickup(float x, float y);
+    int  weaponForEnemyType(EnemyType type, int level) const;
+    void spawnEnemyDrop(const Enemy &e);
+    void spawnRogueOperative();
+    void updateRogueAI(int idx, float dt, float tgX, float tgY, float tgZ, float d, bool los);
     bool findEmergencyDropPos(float &outX, float &outY) const;
     bool findHotZoneDropPos(float &outX, float &outY) const;
     void checkEmergencyDrops(float dt);

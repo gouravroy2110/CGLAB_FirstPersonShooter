@@ -119,6 +119,7 @@ void MainWindow::loadSettings()
     m_crossColor = clampi(s.value("crosshair", 0).toInt(), 0, 3);
     m_showFps    = s.value("showFps", true).toBool();
     m_radioVoice = s.value("radioVoice", true).toBool();
+    m_adaptiveAI = s.value("freeplay/adaptiveAI", false).toBool();
 
     static const char *const ACTION_SLUGS[ACT_COUNT] = {
         "move_fwd", "move_back", "move_left", "move_right", "jump", "sprint",
@@ -169,6 +170,7 @@ void MainWindow::saveSettings() const
     s.setValue("crosshair", m_crossColor);
     s.setValue("showFps", m_showFps);
     s.setValue("radioVoice", m_radioVoice);
+    s.setValue("freeplay/adaptiveAI", m_adaptiveAI);
     s.setValue("keybind_v2", true);
 
     static const char *const ACTION_SLUGS[ACT_COUNT] = {

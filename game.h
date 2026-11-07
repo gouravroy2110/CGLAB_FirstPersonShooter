@@ -281,6 +281,10 @@ struct Enemy {
     float alertDirX=0.f, alertDirY=0.f, alertDist=0.f;
     float lostT=0.f;              // seconds since target was lost from sight
     float hpShow=0.f;             // seconds left to show the floating health bar
+    bool  isRogue=false;          // Rogue neutral agent (hostile to both player and regular enemies)
+    int   rogueTarget=-1;         // -1 = targeting player, >= 0 = targeting another enemy index
+    float roguePolicyT=0.f;       // timer for policy re-evaluation
+    int   rogueAction=0;          // current tactical action selected by RL engine
     bool  boss=false;             // zone commander: big, tough, drops a weapon
     float scale=1.f;              // sprite / hit-box size in world units
     // Status effects

@@ -411,6 +411,7 @@ void MainWindow::fireOnce()
     }
     m_actionT = 1.f;
     m_gs.shotsFired++; m_gs.zoneShots++;
+    m_combatTracker.recordShot(d.cls);
 
     computeView();
     float ax, ay; aimPoint(ax, ay);
@@ -719,6 +720,7 @@ void MainWindow::meleeAttack(int w, bool quick)
     m_camKick += (m_knifeSwing ? 1.0f : -0.8f) * (w == WPN_AXE ? 1.8f : 1.f);
     m_kick = std::min(1.2f, m_kick + 0.35f);
     m_gs.shotsFired++; m_gs.zoneShots++;
+    m_combatTracker.recordShot(d.cls);
 
     computeView();
     float ax, ay; aimPoint(ax, ay);
@@ -1346,7 +1348,7 @@ void MainWindow::updateAreaEffects(float dt)
                     sfxAt(SND_ENEMY_DEATH, te.x, te.y, 0.8f);
                     pushFeed("TURRET  HOSTILE DOWN", 3.f);
                     addDecal(m_blood, te.x, te.y, 0.42f, 170);
-                    if (te.boss || te.elite) dropReward(te.x, te.y, te.boss);
+                    spawnEnemyDrop(te);
                 }
             } else { tr.x1 = e.x + frandC(-0.7f, 0.7f); tr.y1 = e.y + frandC(-0.7f, 0.7f); tr.z1 = ez + frandC(-0.3f, 0.5f); }
             tr.len = std::sqrt((tr.x1 - tr.x0) * (tr.x1 - tr.x0) + (tr.y1 - tr.y0) * (tr.y1 - tr.y0) + (tr.z1 - tr.z0) * (tr.z1 - tr.z0));
@@ -1570,4 +1572,75 @@ void MainWindow::dropReward(float x, float y, bool boss)
     }
     pushFeed(QString("%1 DROPPED  %2 %3").arg(boss ? "COMMANDER" : "ELITE").arg(RARITY_NAMES[L.rarity]).arg(WEAPONS[w].name), 4.5f, true);
     sfx(SND_RADIO, 0.5f);
+}
+
+
+int MainWindow::weaponForEnemyType(EnemyType type, int level) const
+{
+    switch (type) {
+    case ET_SNIPER:
+        return (level >= 3 && (rand() % 3 == 0)) ? WPN_DMR : WPN_SNIPER;
+    case ET_SHOTGUNNER:
+        if (level >= 4 && (rand() % 3 == 0)) return WPN_AUTO_SHOTGUN;
+        if (level >= 2 && (rand() % 2 == 0)) return WPN_DOUBLE_BARREL;
+        return WPN_SHOTGUN;
+    case ET_RIFLEMAN:
+        if (level >= 4 && (rand() % 4 == 0)) return WPN_BATTLE_RIFLE;
+        if (level >= 3 && (rand() % 3 == 0)) return WPN_BURST_RIFLE;
+        if (level >= 2 && (rand() % 3 == 0)) return WPN_BULLPUP;
+        return WPN_RIFLE;
+    case ET_SCOUT:
+        if (level >= 3 && (rand() % 3 == 0)) return WPN_PDW;
+        if (level >= 2 && (rand() % 2 == 0)) return WPN_MACHINE_PISTOL;
+        return WPN_SMG;
+    case ET_HEAVY:
+        return WPN_LMG;
+    case ET_GRENADIER:
+        return (level >= 3 && (rand() % 3 == 0)) ? WPN_ROCKET : WPN_GRENADE_LAUNCHER;
+    case ET_SHIELD:
+        return (rand() % 2 == 0) ? WPN_REVOLVER : WPN_PISTOL;
+    case ET_MEDIC:
+        return (rand() % 2 == 0) ? WPN_PDW : WPN_PISTOL;
+    case ET_STALKER:
+        return (rand() % 2 == 0) ? WPN_MACHETE : WPN_KNIFE;
+    case ET_DRONE:
+        return WPN_PLASMA;
+    case ET_TURRET:
+        return WPN_SMG;
+    default:
+        return WPN_RIFLE;
+    }
+}
+
+void MainWindow::spawnEnemyDrop(const Enemy &e)
+{
+    if (e.decoy) return;
+    if (e.boss || e.elite || e.isRogue) {
+        dropReward(e.x, e.y, e.boss || e.isRogue);
+        return;
+    }
+    // 55% overall drop chance on regular kills (up from 33%)
+    if ((rand() % 100) >= 55) return;
+
+    int roll = rand() % 100;
+    if (roll < 45) {
+        // 45%: Drop the matching weapon!
+        int w = weaponForEnemyType(e.type, m_gs.level);
+        Loadout L = rollLoadout(w, m_gs.level, false);
+        spawnWeaponPickup(e.x, e.y, w, L, false);
+    } else if (roll < 80) {
+        // 35%: Universal ammo crate
+        WeaponPickup wp; wp.x = e.x; wp.y = e.y; wp.bobPhase = frandC(0, 6.28f); wp.type = PICKUP_AMMO;
+        m_gs.weaponPickups.push_back(wp);
+    } else {
+        // 20%: Tactical throwable or Medkit
+        if (e.type == ET_MEDIC || (m_gs.player.hp < maxHP() / 2 && rand() % 2 == 0)) {
+            HealthKit k; k.x = e.x; k.y = e.y; k.bobPhase = frandC(0, 6.28f); k.active = true;
+            m_gs.healthKits.push_back(k);
+        } else {
+            WeaponPickup wp; wp.x = e.x; wp.y = e.y; wp.type = PICKUP_THROW;
+            wp.throwKind = (e.type == ET_GRENADIER) ? TH_FRAG : (rand() % TH_COUNT);
+            m_gs.weaponPickups.push_back(wp);
+        }
+    }
 }

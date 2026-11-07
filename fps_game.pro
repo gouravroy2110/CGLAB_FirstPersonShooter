@@ -37,7 +37,8 @@ SOURCES += \
     commander.cpp \
     cvinput.cpp \
     cvcontrols.cpp \
-    touch.cpp
+    touch.cpp \
+    rogue_ai.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -58,7 +59,8 @@ HEADERS += \
     pixelfont.h \
     audio.h \
     multiplayer.h \
-    cvinput.h
+    cvinput.h \
+    rogue_brain.h
 
 FORMS +=
 

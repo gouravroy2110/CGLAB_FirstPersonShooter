@@ -685,6 +685,12 @@ void MainWindow::loadLevel(int lv)
         else continue;
         m_gs.weaponPickups.push_back(wp);
     }
+    if (m_adaptiveAI && !m_campaignRun && m_gameMode == MODE_FREEPLAY) {
+        m_combatTracker.reset();
+        m_rogueStats.reset();
+        m_rogueRespawnT = 0.f;
+        spawnRogueOperative();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -840,6 +846,7 @@ void MainWindow::advance(float dt)
     m_probeEnemy = -1; m_probePart = 0;
     m_nearSecret = false; m_nearDoor = false;
     if (playing && !m_gs.gameOver) {
+        if (m_adaptiveAI) m_combatTracker.updateTime(dt, pl.sprinting, m_crouchT > 0.2f, isPlayerMoving());
         computeView();
         float ax, ay; aimPoint(ax, ay);
         HitResult h = hitscan(ax, ay);
@@ -1277,6 +1284,25 @@ void MainWindow::gameStep(float dt)
             }
         }
         if (hitActor) { b.alive = false; continue; }
+        if (m_adaptiveAI && b.shooter >= 0 && b.shooter < int(m_gs.enemies.size())) {
+            bool shooterIsRogue = m_gs.enemies[b.shooter].isRogue;
+            bool hitEnemy = false;
+            for (int ei = 0; ei < int(m_gs.enemies.size()) && !hitEnemy; ei++) {
+                if (ei == b.shooter) continue;
+                Enemy &target = m_gs.enemies[ei];
+                if (!target.alive) continue;
+                if (target.isRogue != shooterIsRogue) {
+                    float ex = b.x - target.x, ey = b.y - target.y;
+                    float ez = floorH(target.x, target.y);
+                    if (ex * ex + ey * ey < 0.22f && b.z > ez && b.z < ez + 1.2f) {
+                        b.alive = false;
+                        hitEnemy = true;
+                        damageEnemy(ei, b.damage > 0 ? b.damage : 15, PART_BODY, b.x, b.y, b.z, shooterIsRogue ? -2 : -3);
+                    }
+                }
+            }
+            if (hitEnemy) continue;
+        }
         // closest point of this frame's path (prev -> now) to the player: fast rounds can't skip through
         auto closest = [&](float cx, float cy, float &ox, float &oy, float &oz) {
             float sx = b.x - b.px, sy = b.y - b.py, l2 = sx * sx + sy * sy;
@@ -1379,6 +1405,18 @@ void MainWindow::updateEnemies(float dt)
         float tgX, tgY, tgZ, d;
         if (m_gs.actors.empty()) { tgX = pl.posX; tgY = pl.posY; tgZ = playerAimZ(); d = std::sqrt((tgX - e.x) * (tgX - e.x) + (tgY - e.y) * (tgY - e.y)); }
         else hostileTarget(e.x, e.y, ez, tgX, tgY, tgZ, d);
+        if (!e.isRogue && m_adaptiveAI) {
+            for (size_t ri = 0; ri < m_gs.enemies.size(); ri++) {
+                const Enemy &ro = m_gs.enemies[ri];
+                if (ro.alive && ro.isRogue) {
+                    float rd = std::hypot(ro.x - e.x, ro.y - e.y);
+                    if (rd < d && rd < e.aggroRange * 1.5f && hasLOS(e.x, e.y, ez, ro.x, ro.y, floorH(ro.x, ro.y) + 0.62f)) {
+                        tgX = ro.x; tgY = ro.y; tgZ = floorH(ro.x, ro.y) + 0.62f; d = rd;
+                        break;
+                    }
+                }
+            }
+        }
         float dx = tgX - e.x, dy = tgY - e.y;
         float detectRange = e.aggroRange * 1.5f;
         if (m_campaignRun && MISSIONS[m_mission].stealth) {
@@ -1420,6 +1458,10 @@ void MainWindow::updateEnemies(float dt)
                     e.alertDist = 0.f;
                 }
             }
+        }
+        if (e.isRogue) {
+            updateRogueAI(int(i), dt, tgX, tgY, tgZ, d, los);
+            continue;
         }
         if (e.bossKind) { updateBoss(int(i), dt, tgX, tgY, tgZ, d, los); continue; }
         if (e.type >= ET_GRENADIER) { updateSpecialEnemy(int(i), dt, tgX, tgY, tgZ, d, los, detectRange); continue; }
@@ -1608,8 +1650,42 @@ void MainWindow::spawnEnemy(float x, float y, bool elite, EnemyType type)
 
 void MainWindow::checkReinforcements(float dt)
 {
+    if (m_gs.levelComplete || m_gs.gameOver) return;
+
+    if (m_adaptiveAI && !m_campaignRun && m_gameMode == MODE_FREEPLAY) {
+        if (m_rogueRespawnT > 0.f) {
+            m_rogueRespawnT -= dt;
+            if (m_rogueRespawnT <= 0.f) {
+                spawnRogueOperative();
+            }
+        }
+        int aliveCount = 0;
+        for (const auto &e : m_gs.enemies) if (e.alive && !e.isRogue) aliveCount++;
+        if (aliveCount < 10) {
+            m_reinforceTimer -= dt;
+            if (m_reinforceTimer <= 0.f) {
+                const Player &pl = m_gs.player;
+                for (int tries = 0; tries < 40; tries++) {
+                    int rx = 2 + rand() % (m_mapW - 4), ry = 2 + rand() % (m_mapH - 4);
+                    if (m_map[ry][rx] != CELL_FLOOR || m_acid[ry][rx] || !reachable(rx, ry) || m_plat[ry][rx] < -0.1f) continue;
+                    float fx = rx + 0.5f, fy = ry + 0.5f;
+                    float dsq = (fx - pl.posX) * (fx - pl.posX) + (fy - pl.posY) * (fy - pl.posY);
+                    if (dsq < 100.f || dsq > 600.f) continue;
+                    float fz = floorH(fx, fy) + 0.5f;
+                    if (hasLOS(fx, fy, fz, pl.posX, pl.posY, m_gs.player.footZ + 0.5f)) continue;
+                    if (!posValid(fx, fy, 0.28f)) continue;
+
+                    EnemyType rt = (rand() % 100 < 35) ? ET_SCOUT : (rand() % 100 < 65) ? ET_RIFLEMAN : (rand() % 100 < 85) ? ET_SHOTGUNNER : ET_SNIPER;
+                    spawnEnemy(fx, fy, frand() < 0.25f, rt);
+                    m_reinforceTimer = frand(8.f, 15.f);
+                    break;
+                }
+            }
+        }
+    }
+
     // In higher procedural zones (level >= 2), periodically spawn out-of-sight reinforcements
-    if (m_gs.level < 2 || m_gs.levelComplete || m_gs.gameOver || m_reinforceLeft <= 0) return;
+    if (m_gs.level < 2 || m_reinforceLeft <= 0) return;
     m_reinforceTimer -= dt;
     if (m_reinforceTimer > 0) return;
 
@@ -1672,7 +1748,43 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
     Enemy &e = m_gs.enemies[idx];
     if (!e.alive) return;
     bool head = part == PART_HEAD;
-    bool mine = byActor < 0;
+    bool mine = (byActor == -1);
+    if (byActor == -2) {
+        if (e.shielded) { spawnImpact(hx, hy, hz, false); sfxAt(SND_RICOCHET, hx, hy, 0.6f); return; }
+        dmg = std::max(1, int(dmg * (1.f - e.armor)));
+        e.hp -= dmg; e.hitFlash = 0.16f;
+        e.hpShow = 2.2f;
+        sfxAt(SND_HIT_FLESH, hx, hy, 0.8f, frand(0.9f, 1.1f));
+        if (e.hp <= 0) {
+            e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0;
+            m_gs.killsThisLevel++;
+            m_rogueStats.infightingKills++;
+            m_rogueBrain.updateReward(22.f, m_rogueBrain.lastState);
+            sfxAt(SND_ENEMY_DEATH, e.x, e.y, 0.85f);
+            pushFeed(QString("ROGUE OPERATIVE ELIMINATED A %1").arg(enemyTypeName(e)), 3.f);
+            addDecal(m_blood, e.x, e.y, 0.42f, 170);
+            spawnEnemyDrop(e);
+        }
+        return;
+    }
+    if (byActor == -3) {
+        if (e.shielded) { spawnImpact(hx, hy, hz, false); sfxAt(SND_RICOCHET, hx, hy, 0.6f); return; }
+        dmg = std::max(1, int(dmg * (1.f - e.armor)));
+        e.hp -= dmg; e.hitFlash = 0.16f;
+        e.hpShow = 2.2f;
+        sfxAt(SND_HIT_FLESH, hx, hy, 0.8f, frand(0.9f, 1.1f));
+        if (e.hp <= 0) {
+            e.hp = 0; e.alive = false; e.state = ES_DEAD; e.deathTime = 0;
+            m_gs.killsThisLevel++;
+            m_rogueBrain.updateReward(-30.f, m_rogueBrain.lastState);
+            m_rogueRespawnT = 30.f;
+            sfxAt(SND_ENEMY_DEATH, e.x, e.y, 0.85f);
+            pushFeed(QString("ROGUE OPERATIVE OVERWHELMED BY PATROL  [GEN %1]").arg(m_rogueBrain.generation), 4.f);
+            addDecal(m_blood, e.x, e.y, 0.42f, 170);
+            spawnEnemyDrop(e);
+        }
+        return;
+    }
     if (e.shielded) { spawnImpact(hx, hy, hz, false); sfxAt(SND_RICOCHET, hx, hy, 0.6f); return; }
     dmg = std::max(1, int(dmg * (1.f - e.armor)));
     e.hp -= dmg; e.hitFlash = 0.16f;
@@ -1743,7 +1855,14 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
         a.kills++;
         pushFeed(QString("%1  %2").arg(a.name).arg(head ? "HEADSHOT - HOSTILE DOWN" : "HOSTILE DOWN"), 3.5f);
         addDecal(m_blood, e.x, e.y, 0.42f, 170);
-        if (e.boss || e.elite) dropReward(e.x, e.y, e.boss);
+        if (e.isRogue) {
+            m_rogueStats.playerWon++;
+            m_rogueBrain.updateReward(-45.f, m_rogueBrain.lastState);
+            m_rogueRespawnT = 35.f;
+            pushFeed(QString("ROGUE OPERATIVE ELIMINATED  [GEN %1]").arg(m_rogueBrain.generation), 4.5f, true);
+            sfx(SND_RADIO, 0.9f);
+        }
+        spawnEnemyDrop(e);
         return;
     }
     if (e.hp <= 0) {
@@ -1760,8 +1879,14 @@ void MainWindow::damageEnemy(int idx, int dmg, HitPart part, float hx, float hy,
         pushFeed((m_combo > 1 ? QString("x%1  ").arg(m_combo) : QString()) + (head ? "HEADSHOT KILL" : "ENEMY DOWN"), 4.5f, head);
         addDecal(m_blood, e.x, e.y, 0.42f, 170);
         if (e.boss) { m_gs.zoneBossKilled = true; m_gs.score += 1000 * m_gs.level; }
-        if (e.boss || e.elite) dropReward(e.x, e.y, e.boss);      // bosses and elites always drop a gun
-        else if (rand() % 3 == 0) spawnPickup(e.x, e.y);
+        if (e.isRogue) {
+            m_rogueStats.playerWon++;
+            m_rogueBrain.updateReward(-45.f, m_rogueBrain.lastState);
+            m_rogueRespawnT = 35.f;
+            pushFeed(QString("ROGUE OPERATIVE ELIMINATED  [GEN %1]").arg(m_rogueBrain.generation), 4.5f, true);
+            sfx(SND_RADIO, 0.9f);
+        }
+        spawnEnemyDrop(e);
     }
 }
 
@@ -2428,6 +2553,12 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     }
 
     if (m_screen != SCR_PLAYING) {
+        if ((m_screen == SCR_MAP_SELECT || m_screen == SCR_DIFF_SELECT) && (k == Qt::Key_T || k == Qt::Key_Tab)) {
+            m_adaptiveAI = !m_adaptiveAI;
+            saveSettings();
+            sfx(SND_UI_SELECT, 0.7f);
+            return;
+        }
         int *sel = m_screen == SCR_MAP_SELECT ? &m_mapChoice : m_screen == SCR_DIFF_SELECT ? &m_difficulty :
                    m_screen == SCR_CHAR_SELECT ? &m_charChoice : nullptr;
         if (k == Qt::Key_Up || k == Qt::Key_Down || k == Qt::Key_Left || k == Qt::Key_Right) sfx(SND_UI_MOVE, 0.5f);
@@ -2796,9 +2927,16 @@ void MainWindow::mousePressEvent(QMouseEvent *e)
             }
             if (m_screen == SCR_ARSENAL) { m_arsenalSel = r.id; sfx(SND_UI_MOVE, 0.5f); return; }
 
+            if (r.id == 999) {
+                m_adaptiveAI = !m_adaptiveAI;
+                saveSettings();
+                sfx(SND_UI_SELECT, 0.7f);
+                return;
+            }
+
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
-            if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
+            if (m_screen == SCR_DIFF_SELECT && r.id >= 0 && r.id < 3) m_difficulty = r.id;
             if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
             menuConfirm();
             return;
@@ -2887,7 +3025,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *e)
             }
             if (m_screen == SCR_MENU) m_menuCursor = r.id;
             if (m_screen == SCR_MAP_SELECT) m_mapChoice = r.id;
-            if (m_screen == SCR_DIFF_SELECT) m_difficulty = r.id;
+            if (m_screen == SCR_DIFF_SELECT && r.id >= 0 && r.id < 3) m_difficulty = r.id;
             if (m_screen == SCR_CHAR_SELECT) m_charChoice = r.id;
             if (m_screen == SCR_CAMPAIGN && r.id >= 0 && r.id < MISSION_COUNT) m_cSel = r.id;
         }

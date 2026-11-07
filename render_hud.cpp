@@ -1307,21 +1307,64 @@ void MainWindow::renderPauseMenu()
 void MainWindow::renderGameOver()
 {
     for (int i = 0; i < W * H; i++) { uint32_t c = m_pixels[i]; int l = (R(c) * 77 + G(c) * 150 + B(c) * 29) >> 8; m_pixels[i] = rgb(l * 2 / 5 + 30, l / 4, l / 4); }
-    const int w = 460, h = 320, x = W / 2 - w / 2, y = H / 2 - h / 2;
+    bool ad = m_adaptiveAI && !m_campaignRun && m_gameMode == MODE_FREEPLAY;
+    const int w = ad ? 560 : 460, h = ad ? 430 : 320, x = W / 2 - w / 2, y = H / 2 - h / 2;
     panel(x, y, w, h, true, RED);
-    text(x, y + 16, w, 52, Qt::AlignCenter, "MISSION FAILED", QColor(255, 80, 66), 42, 900);
+    text(x, y + 14, w, 44, Qt::AlignCenter, "MISSION FAILED", QColor(255, 80, 66), 38, 900);
     int acc = m_gs.shotsFired ? int(100.f * m_gs.shotsHit / m_gs.shotsFired) : 0;
     struct Stat { const char *k; QString v; };
     const Stat st[6] = { {"KILLS", QString::number(m_gs.kills)}, {"HEADSHOTS", QString::number(m_gs.headshots)}, {"ACCURACY", QString("%1%").arg(acc)},
                          {"SCORE", QString::number(m_gs.score)}, {"ZONE", QString::number(m_gs.level)}, {"COINS", QString::number(m_gs.coins)} };
+    int statW = ad ? 160 : 128;
+    int colOff = ad ? (w - 3 * statW - 20) / 2 : 30;
+    int rowGap = ad ? statW + 10 : 136;
     for (int i = 0; i < 6; i++) {
-        int cx = x + 30 + (i % 3) * 136, cy = y + 84 + (i / 3) * 62;
-        m_cv.blendRect(cx, cy, 128, 54, withAlpha(0xFFFFFFFF, 12));
-        text(cx, cy + 6, 128, 14, Qt::AlignCenter, st[i].k, QColor(160, 160, 160), 10, 700, false);
-        text(cx, cy + 20, 128, 30, Qt::AlignCenter, st[i].v, QColor(255, 255, 255), 22, 800);
+        int cx = x + colOff + (i % 3) * rowGap, cy = y + 66 + (i / 3) * 56;
+        m_cv.blendRect(cx, cy, statW, 48, withAlpha(0xFFFFFFFF, 12));
+        text(cx, cy + 5, statW, 14, Qt::AlignCenter, st[i].k, QColor(160, 160, 160), 10, 700, false);
+        text(cx, cy + 18, statW, 26, Qt::AlignCenter, st[i].v, QColor(255, 255, 255), 20, 800);
     }
-    text(x, y + 220, w, 24, Qt::AlignCenter, "[R]  REDEPLOY", QColor(255, 200, 100), 17, 800);
-    text(x, y + 250, w, 22, Qt::AlignCenter, "[M]  MAIN MENU          [Q]  QUIT", QColor(210, 210, 210), 14, 600);
+
+    if (ad) {
+        // Tactical Threat Report
+        int ry = y + 184, rw = w - 40, rx = x + 20, rh = 138;
+        m_cv.blendRect(rx, ry, rw, rh, withAlpha(0xFF0E1216, 210));
+        m_cv.rectOutline(rx, ry, rw, rh, withAlpha(0xFF3CD2F0, 80));
+        m_cv.fillRect(rx, ry, rw, 2, 0xFF3CD2F0);
+
+        text(rx + 12, ry + 6, rw - 24, 16, Qt::AlignLeft, "TACTICAL THREAT REPORT  //  ADAPTIVE AI POLICY ENGINE", QColor(80, 230, 255), 11, 800);
+
+        QString arch = m_combatTracker.diagnoseCombatStyle();
+        text(rx + 12, ry + 28, rw - 24, 16, Qt::AlignLeft, QString("DIAGNOSED COMBAT PROFILE:  %1").arg(arch), QColor(255, 220, 100), 11, 800);
+
+        text(rx + 12, ry + 48, rw - 24, 16, Qt::AlignLeft,
+             QString("INFILTRATOR STATUS:  GEN %1  |  ADAPTATION: %2%  |  INFIGHTING KILLS: %3")
+             .arg(m_rogueBrain.generation)
+             .arg(int(m_rogueStats.adaptationScore))
+             .arg(m_rogueStats.infightingKills),
+             QColor(210, 210, 210), 10, 600, false);
+
+        text(rx + 12, ry + 68, rw - 24, 16, Qt::AlignLeft,
+             QString("COUNTER-TACTICS:  KITES: %1  |  FLANKS: %2  |  PUNISHES: %3  |  LURES: %4")
+             .arg(m_rogueStats.kitesExecuted)
+             .arg(m_rogueStats.flanksExecuted)
+             .arg(m_rogueStats.punishesExecuted)
+             .arg(m_rogueStats.puppeteerLures),
+             QColor(180, 180, 180), 10, 600, false);
+
+        QString analysis = QString("Avg Distance: %1m | Weapon Bias: %2 | Mobility: %3%")
+                           .arg(QString::number(m_combatTracker.avgCombatDist, 'f', 1))
+                           .arg(m_combatTracker.favoriteWeaponName())
+                           .arg(int(m_combatTracker.movementPcnt() * 100.f));
+        text(rx + 12, ry + 90, rw - 24, 16, Qt::AlignLeft, analysis, QColor(150, 200, 230), 10, 600, false);
+
+        int btnY = y + 338;
+        text(x, btnY, w, 22, Qt::AlignCenter, "[R]  REDEPLOY", QColor(255, 200, 100), 16, 800);
+        text(x, btnY + 28, w, 20, Qt::AlignCenter, "[M]  MAIN MENU          [Q]  QUIT", QColor(210, 210, 210), 13, 600);
+    } else {
+        text(x, y + 220, w, 24, Qt::AlignCenter, "[R]  REDEPLOY", QColor(255, 200, 100), 17, 800);
+        text(x, y + 250, w, 22, Qt::AlignCenter, "[M]  MAIN MENU          [Q]  QUIT", QColor(210, 210, 210), 14, 600);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1483,12 +1526,36 @@ void MainWindow::renderMapSelect()
         text(x + 12, y + 182, w - 24, 40, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, MAP_DESCS[i], QColor(180, 180, 180), 10, 500, false);
         text(x + w - 30, y + 6, 24, 14, Qt::AlignCenter, QString("[%1]").arg(i + 1), QColor(130, 130, 130), 10, 700, false);
     }
-    menuFooter("ARROWS browse   ENTER or 1-8 select   ESC back");
+    menuFooter(QString("ARROWS browse   ENTER select   [T] ADAPTIVE AI: %1   ESC back").arg(m_adaptiveAI ? "ON" : "OFF"));
 }
 
 void MainWindow::renderDiffSelect()
 {
     menuHeader(QString("STEP 2 / 3   -   %1").arg(MAP_NAMES[m_mapChoice]), "SELECT DIFFICULTY");
+
+    // Interactive Adaptive AI Checkbox Panel (ID: 999)
+    int cw = 700, ch = 52, cx = (W - cw) / 2, cy = 92;
+    m_menuRects.push_back({cx, cy, cw, ch, 999});
+    bool adOn = m_adaptiveAI;
+    uint32_t aCol = adOn ? 0xFF3CD2F0 : withAlpha(AMBER, 190);
+    panel(cx, cy, cw, ch, adOn, aCol);
+
+    int sqX = cx + 18, sqY = cy + 13, sqS = 26;
+    m_cv.rectOutline(sqX, sqY, sqS, sqS, aCol, 2);
+    if (adOn) {
+        m_cv.fillRect(sqX + 4, sqY + 4, sqS - 8, sqS - 8, aCol);
+        m_cv.line(sqX + 7, sqY + 13, sqX + 11, sqY + 18, 0xFF0E1216);
+        m_cv.line(sqX + 11, sqY + 18, sqX + 19, sqY + 8, 0xFF0E1216);
+    }
+
+    QString title = adOn ? "[X] ADAPTIVE AI POLICY ENGINE (ROGUE INFILTRATION ACTIVE)"
+                         : "[  ] CLASSIC BOT PATROLS (STANDARD STATIC AI)";
+    QString desc = adOn ? "Autonomous Rogue Operative with local Q-Learning adapts in real-time to your combat style. 3-way faction war & continuous reinforcements enabled."
+                        : "Original hard-coded bot logic with standard patrols and scripted squad maneuvers. Click or press [T] to enable Adaptive AI.";
+
+    text(cx + 56, cy + 8, cw - 65, 18, Qt::AlignLeft, title, adOn ? QColor(80, 230, 255) : QColor(220, 220, 220), 12, 900);
+    text(cx + 56, cy + 28, cw - 65, 16, Qt::AlignLeft, desc, adOn ? QColor(170, 225, 255) : QColor(160, 160, 160), 9, 500, false);
+
     const uint32_t cols[3] = { GREEN, AMBER, RED };
     for (int i = 0; i < 3; i++) {
         const DiffConfig &dc = DIFF_CFG[i];
@@ -1515,7 +1582,7 @@ void MainWindow::renderDiffSelect()
         bar(y + 222, "DAMAGE TAKEN", dc.dmgReceivedMult / 1.5f);
         bar(y + 252, "ENEMY ACCURACY", dc.enemyAccuracy);
     }
-    menuFooter("LEFT/RIGHT browse   ENTER or 1-3 select   ESC back");
+    menuFooter(QString("LEFT/RIGHT browse   ENTER select   [T] ADAPTIVE AI: %1   ESC back").arg(m_adaptiveAI ? "ON" : "OFF"));
 }
 
 void MainWindow::renderCharSelect()
